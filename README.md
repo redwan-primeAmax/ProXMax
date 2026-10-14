@@ -1,167 +1,142 @@
-# ProXMax — English → Bangla Video Translator
+# ProXMax — ইংরেজি ভিডিও থেকে বাংলা
 
-A **standalone Google Colab notebook** for local-first video dubbing, with timestamp alignment, sequential model loading, resumable stages and automatic Google Drive output.
+Google Colab-এ ইংরেজি ভিডিওর কথা শনাক্ত করে বাংলা অনুবাদ ও অডিও তৈরি করে। ভিডিও আগে local storage-এ নেওয়া হয়; কাজ শেষে ফলাফল Google Drive-এ সংরক্ষিত হয়।
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebooks/ProXMax_English_to_Bangla.ipynb)
+[![Colab-এ খুলুন](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebooks/ProXMax_English_to_Bangla.ipynb)
 
-> The badge works once this notebook is pushed/merged into `main`. Before then, download [`ProXMax_English_to_Bangla.ipynb`](notebooks/ProXMax_English_to_Bangla.ipynb) and use **Colab → File → Upload notebook**. No clone or API key is required by the notebook.
+> নতুন পরিবর্তন `main`-এ merge হওয়ার আগে [notebook ফাইলটি](notebooks/ProXMax_English_to_Bangla.ipynb) নামিয়ে **Colab → File → Upload notebook** দিয়ে খুলুন। Git clone বা API key প্রয়োজন নেই।
 
-## Quick start
+## ব্যবহার
 
-1. Open the notebook in Google Colab and select **Runtime → Change runtime type → T4 GPU**.
-2. Run the setup and Drive-mount cells. Authorize through Colab's Google sign-in prompt.
-3. Upload English videos into **My Drive → Video → input**.
-4. Run the remaining cells. The input scan is non-recursive; videos run one at a time.
-5. Find each completed bundle in **My Drive → Video → output → `<unique-job>`**.
+১. **Runtime → Change runtime type → T4 GPU** নির্বাচন করুন।
+২. ইংরেজি ভিডিও রাখুন **My Drive → Video → input** folder-এ। ভেতরের subfolder খোঁজা হয় না।
+৩. একমাত্র **▶ Setup ও App চালু করুন** cell চালান। Setup, Drive সংযোগ ও অনুবাদ পরপর নিজে থেকেই হবে। প্রথমবার Drive-এর অনুমতি ও কয়েক GB model download লাগবে।
+৪. ফলাফল পাবেন **My Drive → Video → output → `<job>`** folder-এ।
 
-| Purpose | Colab path |
+| কী থাকে | Colab-এর অবস্থান |
 |---|---|
-| Requested `drive/Video/input` | `/content/drive/MyDrive/Video/input` |
-| Local media and checkpoints | `/content/proxmax-work` |
-| Local model cache | `/content/proxmax-model-cache` |
-| Requested `drive/Video/output` | `/content/drive/MyDrive/Video/output` |
+| মূল ভিডিও | `/content/drive/MyDrive/Video/input` |
+| অনুবাদ করা ভিডিও | `/content/drive/MyDrive/Video/output` |
+| কাজের ফাইল ও checkpoint | `/content/proxmax-work` |
+| model cache | `/content/proxmax-model-cache` |
+| আলাদা environment, worker ও log | `/content/proxmax-app` |
 
-Input videos are **copied to local storage before any probing, decoding or inference**. Originals are never modified. Only finished artifacts and the batch summary are written to Drive. Shared Drive users can change the input/output paths in the configuration cell.
+Notebook-এ **একটিই cell**। Processing code স্বাভাবিক Colab ভিউতে লুকানো থাকে; শুধু Run, প্রয়োজনীয় status ও ফলাফল দেখা যায়। এটি code-এর নিরাপত্তা-সীমা নয়—প্রয়োজনে **Show code** দিয়ে source দেখা যায়।
 
-## Architecture
+মূল ভিডিও বদলানো বা মুছে ফেলা হয় না। একবারে একটি ভিডিও চলে। Shared Drive হলে সেটিংসে input/output path বদলান।
 
-```text
-Google Drive / Video / input
-           │ sequential copy + content hash
-           ▼
-Local Colab SSD → FFmpeg → 16 kHz mono English audio
-           │
-           ▼
-faster-whisper large-v3-turbo · VAD · English word timestamps
-           │ unload ASR model
-           ▼
-NLLB-200 distilled 600M · eng_Latn → ben_Beng · bounded batches
-           │ unload translation model
-           ▼
-MMS Bengali VITS · reusable uroman · local, single-voice synthesis
-           │ per-phrase cache; unload TTS model
-           ▼
-Pitch-preserving duration fit → absolute-timestamp PCM timeline
-           │
-           ▼
-FFmpeg · copy H.264 video where possible, otherwise transcode
-           │ validate durations; copy files; verify checksums
-           ▼
-Google Drive / Video / output / <unique-job> / manifest.json LAST
-```
+## আবার চালালে কী হবে?
 
-**[Full architecture blueprint](docs/ARCHITECTURE.md)** · **[Colab acceptance checklist](docs/COLAB_SMOKE_TEST.md)**
+- **“Drive already mounted” কোনো error নয়।** এখন সক্রিয় mount থাকলে সেটিই ব্যবহার হয়; অকারণে আবার mount করা হয় না।
+- সফল Setup থাকলে আবার package install হয় না। প্যাকেজ notebook kernel-এ নয়, নিজস্ব `venv`-এ install হয়। Colab-এর torch/CUDA ব্যবহার করা হয়, বদলানো হয় না।
+- প্রতিবার অনুবাদ **নতুন Python worker process**-এ চলে। আগের run-এর import cache বা CUDA state নতুন worker-এ যায় না। শেষ হলে process-এর model/GPU memory ছেড়ে যায়।
+- Stop চাপলে worker এবং তার FFmpeg subprocess-ও বন্ধ হয়। একই cell আবার চালাতে পারেন।
+- অসম্পূর্ণ কাজের checkpoint থাকে। একই input/settings দিয়ে আবার চালালে সম্পন্ন ASR/translation ধাপ এবং তৈরি TTS clip পুনর্ব্যবহার হয়।
+- সফল কাজের local checkpoint সাধারণত মুছে যায়; সেগুলো রাখতে `keep_local=True` করুন। সফল ভিডিও স্বয়ংক্রিয়ভাবে বাদ দেওয়া হয় না—পরের run-এ আবার render হতে পারে।
+- Runtime **delete করার প্রয়োজন ছাড়াই সাধারণ rerun** সমর্থনের জন্য এই ব্যবস্থা। তবে প্রকৃত GPU OOM, driver failure, Drive/network সমস্যা বা নষ্ট ভিডিও আলাদা করে সমাধান করতে হবে। Runtime হারিয়ে গেলে local checkpoint-ও হারাবে; Drive-এর ফলাফল থাকবে।
 
-### What is included
+একই work/output folder নিয়ে একসঙ্গে দুটি run চালাবেন না। আগে Stop হওয়া শেষ হতে দিন।
 
-- Faster-whisper with CUDA INT8/FP16 or CPU INT8 decoding, VAD and word timestamps.
-- Batched local English-to-Bengali translation; no silently truncated input/output text.
-- Local Bengali speech synthesis, with no paid service or voice API.
-- No cumulative concatenation drift: clips are placed at absolute source times.
-- Phrase speed warnings; optional strict mode rejects over-compressed speech instead of clipping words.
-- Disk-backed audio timeline; only one inference model is resident at a time.
-- Local ASR/translation checkpoints, per-phrase TTS caching, atomic file writes and per-video errors.
-- Verified Drive copies and a manifest-last completion protocol.
-- Separate English/Bangla subtitles and machine-readable diagnostics for review.
+## ফলাফলের ফাইল
 
-### Output bundle
+প্রতিটি `<job>` folder-এ পাবেন:
+
+- `translated_bn.mp4` — বাংলা অডিওসহ ভিডিও।
+- `english.srt`, `bangla.srt` — আলাদা subtitle ফাইল।
+- `segments.json` — কথার সময়, অনুবাদ, গতি ও যাচাইয়ের চিহ্ন।
+- `asr.json` — ইংরেজি শনাক্তকরণের তথ্য।
+- `manifest.json` — সম্পন্ন হওয়ার চিহ্ন, checksum, সংস্করণ ও সময়ের তথ্য।
+
+ফাইল কপি ও checksum যাচাইয়ের **সবশেষে** manifest লেখা হয়। এটি ছাড়া folder-টিকে সম্পন্ন ধরবেন না। `Video/output/batch_results.json`-এ সর্বশেষ batch-এর ফলাফল থাকে। Drive mount থেকে checksum পড়া যাচাই করা হয়; Google server-এ তাৎক্ষণিক স্থায়ী সংরক্ষণের নিশ্চয়তা নয়।
+
+## কাজের ধারা
 
 ```text
-Video/output/
-├── batch_results.json                  # successes and errors from the latest batch
-└── <safe-name>-<content-hash>-<recipe-hash>/
-    ├── translated_bn.mp4               # original picture + Bengali audio
-    ├── english.srt                     # source phrase subtitles
-    ├── bangla.srt                      # Bengali subtitles (UTF-8, separate file)
-    ├── segments.json                   # texts, times, speed factors, review flags
-    ├── asr.json                        # words/confidence, source segments, ASR settings
-    └── manifest.json                   # completion marker, hashes, versions and model commits
+Drive → local copy → FFmpeg → ইংরেজি ASR → বাংলা অনুবাদ
+      → বাংলা TTS → সময় অনুযায়ী অডিও বসানো → MP4 → Drive
 ```
 
-A folder without a complete `manifest.json` is **not a completed bundle**. Copy verification confirms bytes read back from the mounted filesystem, not instantaneous durability of Google's remote servers.
+- **faster-whisper large-v3-turbo:** ইংরেজি কথা ও word timestamp; GPU-তে INT8/FP16।
+- **NLLB distilled 600M:** `eng_Latn → ben_Beng`, ছোট batch-এ অনুবাদ।
+- **MMS Bengali + uroman:** স্থানীয়ভাবে একটি বাংলা কণ্ঠ তৈরি।
+- Model-গুলো একটির পর একটি চলে। অডিও timeline disk-backed; সম্ভব হলে H.264 picture re-encode না করে কপি করা হয়।
 
-## Requirements and tradeoffs
+[স্থাপত্যের বিস্তারিত](docs/ARCHITECTURE.md) · [Colab-এ পরীক্ষার তালিকা](docs/COLAB_SMOKE_TEST.md)
 
-- Current Colab, Python 3.10+, torch 2.6+; GPU recommended. The pinned CTranslate2 stack targets **CUDA 12/cuDNN 9**. The notebook keeps Colab's torch installation rather than replacing it.
-- Allow several GB for first-run model downloads, **at least 10 GB of free local disk for a small trial**, and additional room for your video. The pipeline reserves 6 GiB plus media estimates. Model downloads require Hugging Face access; later inference is local.
-- English → Bangla only. One generic voice; no diarization, voice cloning or lip-sync. Mixed-language and overlapping speech are not supported reliably.
-- The original audio is **replaced**, including music and ambience; no source-separation model is included. Only the first real video stream and first audio stream are processed. Subtitles are not burned into the picture.
-- Silent recordings with an audio stream produce a silent output track and warning; video without an audio stream fails explicitly.
-- Translation quality and speed depend on content/hardware. Names, numbers, idioms, ASR errors and rushed phrases need fluent review. No benchmark, accuracy percentage or faster-than-real-time guarantee is claimed.
-- Whisper loads the source audio into host memory. The final timeline is disk-backed, but this is not an unbounded/constant-memory streaming system; split very long videos.
+## প্রয়োজন ও সীমাবদ্ধতা
 
-### Tuning
+- Python 3.10+, torch 2.6+ এবং FFmpeg/ffprobe। T4 GPU প্রস্তাবিত; CPU ধীর। বর্তমান CTranslate2 pin **CUDA 12/cuDNN 9** লক্ষ্য করে।
+- ছোট পরীক্ষার জন্য অন্তত **10 GB local disk** খালি রাখুন। দীর্ঘ ভিডিওতে বেশি জায়গা/RAM লাগবে। Whisper পুরো অডিও host memory-তে নেয়; খুব দীর্ঘ ভিডিও ভাগ করুন।
+- শুধু ইংরেজি → বাংলা। একটি সাধারণ কণ্ঠ; speaker আলাদা করা, voice cloning বা lip-sync নেই।
+- **মূল অডিও সম্পূর্ণ বদলে যায়**, অর্থাৎ ইংরেজি কথার সঙ্গে গান/পরিবেশের শব্দও থাকে না। প্রথম ভিডিও ও প্রথম audio track নেওয়া হয়।
+- নাম, সংখ্যা, বাগ্‌ধারা, ভুল ASR ও দ্রুত উচ্চারণ নিজে যাচাই করুন। নির্দিষ্ট accuracy বা realtime speed-এর প্রতিশ্রুতি নেই।
+- Audio track আছে কিন্তু কথা নেই—এমন ভিডিওতে নীরব output ও সতর্কতা আসবে। Audio track-ই না থাকলে error হবে।
 
-Change fields in the notebook's `Config(...)` cell:
+### দরকারি সেটিংস
 
-| Goal | Setting | Tradeoff |
-|---|---|---|
-| Faster inference | `asr_beam_size=1`, `translation_beams=1` | May reduce recognition/translation quality |
-| Lower translation VRAM | `translation_batch_size=1` | Lower throughput |
-| CPU / smaller ASR | `device="cpu"`, `asr_model="Systran/faster-whisper-small.en"` | Slower than a GPU; less accurate ASR |
-| Reject rushed dubbing | `overflow_policy="error"` | Stops if speech needs more than the comfort limit |
-| Preserve review checkpoints | `keep_local=True` | Uses more local disk |
-| Reproducible model weights | Set all three `*_revision` fields to Hub commit IDs | Defaults follow `main` |
+সাধারণ ব্যবহারে code খুলতে হবে না। উন্নত সেটিংস বদলাতে cell-এর **Show code** থেকে `CONFIG` অংশটি সম্পাদনা করুন।
 
-Defaults stretch complete speech to fit its slot and flag rates above `1.50×`. Speech is never cropped to fit. Shorter speech is padded with silence. These flags indicate timing risk, not semantic correctness.
+| প্রয়োজন | সেটিংস |
+|---|---|
+| কম GPU memory | `translation_batch_size=1` |
+| দ্রুত, কিছু মানের ছাড়সহ | `asr_beam_size=1`, `translation_beams=1` |
+| CPU-তে ছোট ASR model | `device="cpu"`, `asr_model="Systran/faster-whisper-small.en"` |
+| অতিরিক্ত দ্রুত উচ্চারণে থামা | `overflow_policy="error"` |
+| সফল কাজের checkpoint রাখা | `keep_local=True` |
+| একই model snapshot ধরে রাখা | তিনটি `*_revision`-এ Hub commit ID |
 
-Failed jobs retain local checkpoints. Rerun with the same input/settings to resume. With `keep_local=True`, edit only `bangla` strings in the local job's `translation.json` to correct wording; changed phrases are resynthesized. A Colab runtime reset loses local checkpoints; completed Drive bundles remain. Do not run concurrent batches against the same work/output directories.
+স্বাভাবিকভাবে কথাকে সময়ের মধ্যে ধরাতে গতি বাড়ে; `1.50×` ছাড়ালে যাচাইয়ের চিহ্ন দেওয়া হয়। কথা কেটে ছোট করা হয় না। ছোট অডিওর শেষে নীরবতা বসে; অংশগুলো মূল timestamp অনুযায়ী বসানো হয়।
 
-## Repository layout
+## সমস্যা হলে
 
-```text
-notebooks/ProXMax_English_to_Bangla.ipynb  # complete standalone deliverable
-proxmax/pipeline.py                      # canonical modular implementation
-proxmax/__main__.py                      # optional command-line runner
-docs/ARCHITECTURE.md                     # design, reliability, limitations
-docs/COLAB_SMOKE_TEST.md                 # real-model acceptance procedure
-scripts/build_notebook.py                # deterministic source → notebook generator
-tests/                                  # unit + real FFmpeg integration tests
-requirements-colab.txt                   # pinned core inference stack
-requirements-dev.txt                    # lightweight test dependencies
-.github/workflows/ci.yml                 # notebook and pipeline checks
-```
+| সমস্যা | করণীয় |
+|---|---|
+| Drive সংযোগ নষ্ট | একই cell-এর `REMOUNT_DRIVE` ঘরটি নির্বাচন করে চালান; ঠিক হলে আবার `False` করুন |
+| GPU OOM | batch size `1`, ছোট model বা ছোট ভিডিও ব্যবহার করুন; একই setting বারবার চালালে OOM ঠিক হবে না |
+| CUDA/cuDNN error | উপযুক্ত Colab GPU runtime বা `device="cpu"`; kernel-এর torch এলোমেলোভাবে বদলাবেন না |
+| Download error | ইন্টারনেট/Hugging Face সংযোগ ঠিক করে আবার চালান |
+| ভিডিও পাওয়া যাচ্ছে না | সঠিক input folder, সমর্থিত extension ও সম্পূর্ণ upload নিশ্চিত করুন |
+| অনুবাদ ভুল/খুব দ্রুত | `keep_local=True` রেখে local job-এর `translation.json`-এ শুধু `bangla` লেখা ঠিক করে আবার চালান |
+| অন্য error | শেষে দেখানো `/content/proxmax-app/runs/*.log` এবং local `failure.json`-এর তথ্য দিন |
 
-### Development and validation
+সংশোধনের সময় phrase-এর ID/timestamp বদলাবেন না। Drive-এর `segments.json` বদলালে তা input checkpoint হিসেবে নেওয়া হয় না। Log-এ transcript/path থাকতে পারে—শেয়ার করার আগে ব্যক্তিগত তথ্য সরান। তৃতীয় পক্ষের error/traceback ও কারিগরি field name মূল ভাষাতেই থাকে।
+
+## উন্নয়ন ও পরীক্ষা
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-# Install ffmpeg AND ffprobe through your OS package manager for media tests.
+# OS package manager দিয়ে ffmpeg ও ffprobe install করুন।
 python scripts/build_notebook.py
 python scripts/build_notebook.py --check
 python -m pytest -q
 ```
 
-The notebook embeds the tested source; regenerate it after changing `proxmax/pipeline.py` or dependencies. CI checks notebook freshness, schema, code-cell syntax, clean outputs, timing math, caching, failed publication, and real synthetic-media extraction/fitting/muxing. Media tests skip when FFmpeg/ffprobe are absent.
+`proxmax/pipeline.py`, `colab_runtime.py`, `worker.py` বা dependency বদলালে notebook আবার generate করুন। Notebook source সঙ্গে নিয়েই চলে; GitHub থেকে code download করে না। একমাত্র cell-টি Colab form view-তে থাকে; processing source সাধারণ ভিউতে দেখা যায় না।
 
-**Validation boundary:** lightweight tests use synthetic media and stub inference for the orchestration test. They do not establish ASR/translation quality, model-download availability, current Colab image compatibility or actual GPU throughput. Run the [Colab smoke test](docs/COLAB_SMOKE_TEST.md) before a release.
+পরীক্ষায় timing, cache, FFmpeg, প্রকাশের checksum, পুনরায় setup, worker isolation ও notebook যাচাই হয়। **আসল model download/GPU inference/বাংলা উচ্চারণ এই lightweight test-এ যাচাই হয় না।** Release-এর আগে [Colab checklist](docs/COLAB_SMOKE_TEST.md) অনুসরণ করুন।
 
-### Optional local command line
-
-Install a compatible torch 2.6+ build, FFmpeg/ffprobe, and `requirements-colab.txt` in an isolated Python environment, then run from the repository root:
+চাইলে repository থেকে আলাদা CLI-ও চালানো যায়; compatible torch, FFmpeg ও `requirements-colab.txt` আগে install করতে হবে:
 
 ```bash
 python -m proxmax \
   --input-dir /path/to/input \
   --output-dir /path/to/output \
-  --work-dir /path/to/local-ssd/work \
+  --work-dir /path/to/local-work \
   --device auto
 ```
 
-`--config settings.json` accepts other `Config` fields; explicit CLI path/device/keep-local arguments take precedence. Exit status is nonzero if any video fails. The CLI does not mount Google Drive.
+অতিরিক্ত setting দিতে `--config settings.json`; CLI path/device/keep-local argument অগ্রাধিকার পায়। কোনো ভিডিও ব্যর্থ হলে exit status nonzero হয়। CLI নিজে Drive mount করে না।
 
-## Privacy, licensing and publishing
+## গোপনীয়তা ও লাইসেন্স
 
-Use media you are authorized to process. Input, transcripts, local checkpoints and output all contain user content. Processing happens on the Colab VM; it is not on-device processing on your own computer. Model downloads contact Hugging Face, but inference does not send speech/text to an external inference API.
+নিজের অনুমোদিত ভিডিও ব্যবহার করুন। Model download Hugging Face থেকে হয়; speech/text কোনো hosted inference API-তে পাঠানো হয় না। তবে Colab ও Drive নিজেরাই cloud service।
 
-Review the model cards and licenses before distributing or commercially using the system:
+- [Whisper conversion](https://huggingface.co/Systran/faster-whisper-large-v3-turbo)
+- [NLLB](https://huggingface.co/facebook/nllb-200-distilled-600M) — **CC-BY-NC-4.0**
+- [MMS Bengali](https://huggingface.co/facebook/mms-tts-ben) — **CC-BY-NC-4.0**
 
-- [faster-whisper large-v3-turbo](https://huggingface.co/Systran/faster-whisper-large-v3-turbo) / [Whisper](https://github.com/openai/whisper)
-- [NLLB-200 distilled 600M](https://huggingface.co/facebook/nllb-200-distilled-600M) — CC-BY-NC-4.0 model restrictions.
-- [MMS Bengali TTS](https://huggingface.co/facebook/mms-tts-ben) — CC-BY-NC-4.0 model restrictions.
+শেষের দুটি model-এ non-commercial সীমাবদ্ধতা আছে; এই stack অবাধ বাণিজ্যিক ব্যবহারের জন্য নয়। Repository-এর code license মালিককে নির্ধারণ করতে হবে; সেটি model-এর license বদলাবে না।
 
-**This model combination is not an unrestricted commercial-use stack.** No repository code license is chosen on the owner's behalf. Add the appropriate code license before open-source distribution; it does not override the checkpoints' licenses.
-
-Notebooks are committed without outputs. `.gitignore` excludes media, model weights, Drive content, runtime caches and common credential files. Check `git diff` before publishing; keep checkpoints and transcripts out of Git.
+ভিডিও, transcript, model weight, credential ও চালানো notebook-এর output Git-এ commit করবেন না। `.gitignore` সাধারণ runtime ফাইলগুলো বাদ দেয়; প্রকাশের আগে `git diff` দেখুন।

@@ -1,53 +1,52 @@
-# Real-model Colab acceptance checklist
+# Colab-এ বাস্তব পরীক্ষার তালিকা
 
-This is a **manual validation procedure**, not a claim that it has already passed. Lightweight repository tests do not download or evaluate the real models.
+এটি পরীক্ষার পদ্ধতি—ইতিমধ্যে সব পরীক্ষা পাস করেছে এমন দাবি নয়। Repository-এর হালকা test আসল model/GPU দিয়ে অনুবাদের মান যাচাই করে না।
 
-## Prepare
+## প্রস্তুতি
 
-- [ ] Use a fresh current Colab runtime with a T4 GPU. Record Python, torch, CUDA and cuDNN versions plus GPU name.
-- [ ] Upload/open the committed standalone notebook; do not rely on an existing repo clone.
-- [ ] Have internet access to Hugging Face and enough local disk (10+ GB for a short trial).
-- [ ] Use a permitted 20–40 second English clip with clear speech, two sentences, a pause, a name and a number. Prepare an English reference and ask a fluent Bengali reviewer to check it.
-- [ ] Put it in `MyDrive/Video/input`. Start with just this one video; the batch processes every supported input file.
-- [ ] Set `keep_local=True` for inspection/recovery tests; leave the remaining defaults initially.
+- [ ] বর্তমান Colab-এ T4 GPU নিন; Python, torch, CUDA/cuDNN ও GPU সংস্করণ লিখে রাখুন।
+- [ ] Generated notebook সরাসরি খুলুন; repository clone-এর ওপর নির্ভর করবেন না।
+- [ ] Hugging Face-এ সংযোগ ও অন্তত 10 GB local খালি জায়গা নিশ্চিত করুন।
+- [ ] অনুমোদিত 20–40 সেকেন্ডের ইংরেজি clip নিন: দুটি বাক্য, একটি বিরতি, নাম ও সংখ্যা থাকবে। ইংরেজি reference এবং বাংলা জানা reviewer রাখুন।
+- [ ] `MyDrive/Video/input`-এ শুধু পরীক্ষার ভিডিও রাখুন। পরীক্ষার সময় `keep_local=True` দিন।
 
-## Fresh run
+## প্রথমবার
 
-- [ ] Run every cell in order; installation, torch version check, Drive mount and model downloads succeed without secrets in the notebook.
-- [ ] Verify the job and model caches are under `/content`, not `/content/drive`.
-- [ ] ASR timestamps match source speech; there are no hallucinated sentences in silence.
-- [ ] `translation.json` contains Bengali text with correct meaning. Review names/numbers rather than assuming they were pronounced correctly.
-- [ ] Bengali synthesis works with the checkpoint tokenizer/uroman and has no NaNs/silent failures.
-- [ ] Listen at the start, middle and end: complete phrases are audible, speech starts in its intended slot, pauses remain, and there is no accumulated drift.
-- [ ] Review every speed flag and ensure extreme time compression has not made speech unintelligible.
-- [ ] Confirm the source picture is intact and the original English/music track is intentionally absent.
-- [ ] Confirm the output duration is within 250 ms of the source. This container-level check is not sufficient on its own; listen as well.
-- [ ] Confirm output MP4 plays in Google Drive and both UTF-8 SRT files load in a subtitle-capable player.
-- [ ] Confirm a complete manifest exists only after all declared artifacts are present and their hashes match.
-- [ ] Source bytes are unchanged. No transcript, checkpoint, media or executed cell output is committed to Git.
+- [ ] Notebook-এ একটিই cell এবং স্বাভাবিক Colab ভিউতে processing code দেখা যায় না। একবার Run দিলে setup, Drive ও অনুবাদ পরপর চলে। Kernel-এ torch/transformers import হয় না; package install হয় `/content/proxmax-app/venv`-এ।
+- [ ] Model ও media cache `/content`-এ আছে, Drive mount-এ নয়।
+- [ ] ASR-এর কথা/সময় reference-এর সঙ্গে মেলে; silence-এ বানানো কথা নেই।
+- [ ] অনুবাদের অর্থ, নাম ও সংখ্যা ঠিক আছে; uroman/VITS বাংলা উচ্চারণ করতে পারে।
+- [ ] শুরু, মাঝ ও শেষ শুনে দেখুন: কথা সম্পূর্ণ, phrase যথাসময়ে শুরু হয়, জমতে থাকা timing drift নেই।
+- [ ] সব দ্রুত উচ্চারণের flag শুনে যাচাই করুন। Flag না থাকলেই অর্থ ঠিক—এমন নয়।
+- [ ] ছবি ঠিক আছে; মূল ইংরেজি/গান/পরিবেশের অডিও ইচ্ছাকৃতভাবে বাদ গেছে।
+- [ ] Output duration source-এর 250 ms-এর মধ্যে। পাশাপাশি শুনেও যাচাই করুন; এটি lip-sync পরীক্ষা নয়।
+- [ ] Drive-এ MP4 চলে, দুই SRT সঠিক UTF-8-এ খোলে, সব artifact-এর hash manifest-এর সঙ্গে মেলে।
+- [ ] মূল input অপরিবর্তিত; manifest সবশেষে এসেছে।
 
-## Recovery and quality controls
+## আবার চালানো ও থামানো — বিশেষভাবে যাচাই করুন
 
-- [ ] Rerun with identical settings while keeping local work: logs show ASR and translation checkpoint reuse, and completed TTS clip hashes are reused.
-- [ ] Edit one local `translation.json` Bengali phrase, preserving IDs/times. Rerun: that phrase is synthesized again, the other clip caches remain reusable, and the Drive output is updated.
-- [ ] Set a low comfort limit (at least 1.0) and `overflow_policy="error"` on a deliberately long translation. Ensure it fails clearly, retains checkpoints, and does not publish a new completed bundle.
-- [ ] Add a corrupt/no-audio input and a valid input. Confirm `batch_results.json` reports the former as failed while the latter completes.
-- [ ] Test a video with an audio stream but no speech. It should emit a no-speech warning and a silent audio track, not invented dialogue.
-- [ ] Test a second file with spaces, quotes and Bengali characters in its name.
-- [ ] Test a non-H.264 source to exercise the documented re-encoding fallback.
-- [ ] On a short clip, test `device="cpu"` and `asr_model="Systran/faster-whisper-small.en"`; expect lower speed/quality. CPU mode must not require CUDA.
-- [ ] Turn `keep_local=False` back on for normal use: successful local job files should be removed only after publication. Failed job files should remain.
+- [ ] Runtime delete/restart না করে একই **Setup ও App চালু করুন** cell দ্বিতীয়বার চালান। Setup আবার install করে না; সক্রিয় Drive-এ আবার mount prompt/message আসে না।
+- [ ] একই cell আবার চালান। নতুন worker চলে; একই input/settings-এ রাখা ASR/translation ও TTS checkpoint ব্যবহার হয়।
+- [ ] ASR বা TTS চলাকালে Stop দিন। Worker ও FFmpeg process আর চলছে না, GPU ব্যবহার কমেছে।
+- [ ] Stop-এর পরে একই cell আবার চালান; আগের run-এর অসম্পূর্ণ result-কে সফল দেখায় না।
+- [ ] ইচ্ছাকৃত একটি ব্যর্থ কাজের পরে settings/input ঠিক করে আবার দিন; notebook kernel মুছতে হয় না।
+- [ ] Drive connection সত্যিই নষ্ট হলে `REMOUNT_DRIVE=True` দিয়ে পুনঃসংযোগ হয়। কেবল “already mounted” দেখে force-remount করতে হয় না।
+- [ ] একটি local `translation.json`-এর শুধু `bangla` phrase বদলান। নতুন অডিও হয়; অপরিবর্তিত clip পুনর্ব্যবহার হয়।
 
-## Record results honestly
+## অন্য failure ও সীমা
 
-Record the source length, selected device, model revisions, package versions, cold/warm/cache state, elapsed time, peak host/GPU memory if measured, and fluent-review findings. Keep private media and transcripts out of a public report. The output manifest contains resolved model revisions and timing diagnostics.
+- [ ] দীর্ঘ অনুবাদে `overflow_policy="error"` দিন। অতিরিক্ত গতি প্রয়োজন হলে error, checkpoint এবং log থাকে; নতুন complete manifest আসে না।
+- [ ] একটি corrupt/no-audio input ও একটি valid input দিন। Batch প্রথমটির error জানিয়ে পরেরটি সম্পন্ন করতে পারে।
+- [ ] Audio track আছে কিন্তু কথা নেই—এমন ভিডিওতে নীরব output হয়, বানানো dialogue নয়।
+- [ ] Space, quote ও বাংলা নামের file এবং non-H.264 input পরীক্ষা করুন।
+- [ ] ছোট clip-এ `device="cpu"`, `asr_model="Systran/faster-whisper-small.en"` দিয়ে চালান। CUDA প্রয়োজন হবে না; গতি/মান কমতে পারে।
+- [ ] `keep_local=False` দিলে সফল job শুধু প্রকাশের পরে মুছে যায়; ব্যর্থ job থাকে।
+- [ ] `/content/proxmax-app/runs/*.log` ও `failure.json` থেকে error খুঁজে পাওয়া যায়। ব্যক্তিগত transcript প্রকাশ করবেন না।
 
-Useful metrics for a controlled evaluation:
+## কী লিখে রাখবেন
 
-- ASR word error rate against a manually corrected English reference.
-- Fluent-review scores for Bengali meaning, terminology and naturalness (with an explicit rubric).
-- Fraction of phrases above the speed comfort limit, plus manual assessment of their intelligibility.
-- Phrase-onset error against manually marked source intervals; container duration alone is not lip-sync quality.
-- Processing time / source duration, with download and publication times separately identified.
+ভিডিওর দৈর্ঘ্য, device, model commit, package version, cold/warm/cache অবস্থা, মোট সময় এবং reviewer-এর মতামত লিখুন। Memory মাপলে পদ্ধতি ও সর্বোচ্চ মান দিন। Download বা resume সময়কে পূর্ণ inference সময় বলে দেখাবেন না।
 
-Do not label a release “validated in Colab” until the fresh-run real-model checks actually pass. A dependency/model/runtime change should trigger another smoke test.
+ভালো মূল্যায়নের জন্য ইংরেজি reference-এর বিপরীতে ASR word error, বাংলা অর্থ/স্বাভাবিকতা, দ্রুত phrase-এর অনুপাত এবং হাতে চিহ্নিত speech onset-এর সঙ্গে timing তুলনা করুন।
+
+আসল model-সহ এই পরীক্ষা না চালিয়ে “Colab-এ সম্পূর্ণ যাচাই করা” লিখবেন না। Dependency, model বা Colab image বদলালে আবার পরীক্ষা করুন।

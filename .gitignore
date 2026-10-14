@@ -15,6 +15,7 @@ dist/
 /content/
 drive/
 Video/
+proxmax-app/
 proxmax-work/
 proxmax-model-cache/
 *.mp4
