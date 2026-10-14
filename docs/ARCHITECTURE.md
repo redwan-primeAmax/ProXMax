@@ -1,197 +1,172 @@
-# System architecture blueprint
+# সিস্টেমের স্থাপত্য
 
-## 1. Scope and design goals
+## ১. পরিধি
 
-**Input:** common video containers (`mp4`, `mkv`, `mov`, `webm`, `avi`, `m4v`) with English speech in their first audio track. **Output:** browser-oriented MP4 with a generic Bengali dub plus English/Bengali SRT and diagnostics.
+ইংরেজি কথাসহ ভিডিও থেকে বাংলা dubbing তৈরি হয়। Input: `mp4`, `mkv`, `mov`, `webm`, `avi`, `m4v`। Output: MP4, ইংরেজি/বাংলা SRT এবং পরীক্ষার জন্য JSON। প্রথম non-cover-art video stream ও প্রথম audio stream ব্যবহৃত হয়।
 
-The three competing goals are accurate recognition/translation, short processing time, and bounded Colab resource use. This design avoids claiming all can be maximized simultaneously. It chooses:
+নির্ভুলতা, গতি ও কম memory ব্যবহারের মধ্যে সমন্বয় করা হয়েছে। Speaker আলাদা করা, voice cloning, lip-sync, background music আলাদা করা বা subtitle ছবিতে বসানো এই সংস্করণে নেই।
 
-- Strong English ASR with a turbo Whisper checkpoint and quantized GPU inference.
-- A relatively small local multilingual translation model rather than a much larger LLM.
-- Lightweight, offline-capable Bengali TTS rather than a hosted voice API or voice-cloning system.
-- Sequential stages and videos rather than multiple competing GPU workers.
-- Fast video stream-copy when feasible rather than always re-encoding picture frames.
+## ২. Notebook ও worker আলাদা রাখা
 
-The initial scope deliberately excludes speaker diarization, background/music separation, lip-sync, subtitle burn-in, language detection/routing, and a web service. Multiple speakers share one voice.
+Notebook-এ একটি code cell: **Setup ও App চালু করুন**। Colab form view-তে processing code লুকানো থাকে; Run দিলেই setup, mount, settings ও worker পরপর চলে। আলাদা markdown/setup/processing cell নেই। **Show code** দিয়ে source দেখা সম্ভব—এটি গোপন code রাখার ব্যবস্থা নয়।
 
-## 2. Dataflow and storage boundaries
+```text
+Colab kernel: হালকা setup → Drive mount → settings → worker চালানো
+                                     │
+                      প্রতিবার নতুন Python process
+                                     ↓
+নিজস্ব venv: FFmpeg → ASR → অনুবাদ → TTS → timeline → mux → প্রকাশ
+                                     │
+                              process বন্ধ হয়
+```
+
+### পুনরায় চালানোর ব্যবস্থা
+
+পুরোনো বিন্যাসে প্রতিবার setup kernel-এর ব্যবহৃত package বদলাতে পারত। একই kernel-এ ML চালালে আগের import/CUDA state-ও থেকে যেতে পারত। নির্দিষ্ট ব্যবহারকারীর traceback ছাড়া এগুলোকেই তাঁর error-এর নিশ্চিত কারণ বলা যায় না; নতুন বিন্যাস এই দুই ঝুঁকি এড়ায়।
+
+- `/content/proxmax-app/venv`-এ `--system-site-packages --without-pip` দিয়ে environment তৈরি হয়। Colab-এর torch/CUDA ও pip দেখা যায়; নতুন inference package শুধু নিজস্ব venv-এ install হয়। Kernel-এ torch/transformers import করা হয় না।
+- সফল setup-এর fingerprint রাখা হয়। একই requirements/Python এবং উপযুক্ত installed version থাকলে `pip install` বাদ যায়। পরীক্ষা হয় আলাদা interpreter-এ, kernel-এর পুরোনো module cache থেকে নয়।
+- অসম্পূর্ণ install-এর completion marker থাকে না; পরের run আবার চেষ্টা করে। Requirements বদলালে setup পুনরায় যাচাই হয়।
+- প্রতিটি অনুবাদ run নতুন process পায়। শেষ/ব্যর্থ হওয়ার পর process বন্ধ হয়; পরের worker পুরোনো CUDA context পায় না। এটি ভাঙা driver, অপর্যাপ্ত GPU memory বা network সমস্যা নিজে ঠিক করে না।
+- প্রতিটি run-এর config, result ও log আলাদা ID-তে লেখা হয়। পুরোনো ফলাফল ভুল করে নতুন সফল run হিসেবে দেখানো হয় না।
+- Notebook interrupt করলে process group-এ SIGTERM দেওয়া হয়; প্রয়োজন হলে SIGKILL। Worker ও তার FFmpeg subprocess বন্ধ হয়। Checkpoint মুছে ফেলা হয় না।
+- Drive-এর mount ও `MyDrive` পড়া যায় কি না যাচাই হয়। সক্রিয় mount পুনর্ব্যবহার হয়; সাধারণ local folder-কে Drive ধরা হয় না। নষ্ট সংযোগে ব্যবহারকারী `REMOUNT_DRIVE=True` করতে পারেন; জোর করে mount ভাঙা হয় না।
+
+Notebook-এর setup helper, pipeline ও worker source notebook-এই থাকে। Repository clone বা দূরের executable code আনা লাগে না। নতুন notebook generate করলে তিনটি source-ই হালনাগাদ হয়।
+
+## ৩. ডেটার প্রবাহ ও অবস্থান
 
 ```mermaid
 flowchart TD
-    A[Mounted Drive: MyDrive/Video/input] -->|single sequential read + SHA-256| B[Local job folder]
-    B --> C[ffprobe validation]
-    C --> D[FFmpeg mono 16 kHz WAV]
-    D --> E[faster-whisper + VAD + word timestamps]
-    E --> F[Sentence / pause / length grouping]
-    F --> G[NLLB English to Bengali]
-    G --> H[MMS VITS Bengali + uroman]
-    H --> I[Per-phrase pitch-preserving atempo fit]
-    I --> J[Absolute-time disk-backed PCM]
-    J --> K[FFmpeg video copy or H.264 encode + AAC]
-    B --> K
-    K --> L[Validate output streams and duration]
-    L --> M[Copy output / subtitles / diagnostics to Drive]
-    M --> N[Verify copied SHA-256 hashes]
-    N --> O[Publish manifest last]
+    A[Drive: Video/input] -->|কপি ও SHA-256| B[Local ভিডিও]
+    B --> C[FFmpeg: 16 kHz mono audio]
+    C --> D[Whisper: ইংরেজি ও timestamp]
+    D --> E[NLLB: বাংলা অনুবাদ]
+    E --> F[MMS: বাংলা অডিও]
+    F --> G[গতি ঠিক করা ও absolute timeline]
+    B --> H[ভিডিও ও অডিও যুক্ত করা]
+    G --> H
+    H --> I[দৈর্ঘ্য ও stream যাচাই]
+    I --> J[Drive-এ কপি ও checksum]
+    J --> K[সবশেষে manifest]
 ```
 
-| Storage | Contents | Lifetime |
-|---|---|---|
-| `/content/drive/MyDrive/Video/input` | Original uploads, read-only to the pipeline | User-controlled |
-| `/content/proxmax-model-cache` | Hugging Face public weights/tokenizers | Colab runtime |
-| `/content/proxmax-work/<job>` | Local input, WAVs, checkpoints, temporary output | Failed jobs retained; successful jobs removed by default |
-| `/content/drive/MyDrive/Video/output/<job>` | Complete output bundle | User-controlled |
+| অবস্থান | কী থাকে |
+|---|---|
+| `/content/drive/MyDrive/Video/input` | ব্যবহারকারীর মূল ভিডিও |
+| `/content/proxmax-work/<job>` | local video, WAV, checkpoint, clip ও output |
+| `/content/proxmax-model-cache` | model/tokenizer cache |
+| `/content/proxmax-app` | venv, embedded source ও প্রতিটি run-এর log |
+| `/content/drive/MyDrive/Video/output/<job>` | সম্পন্ন ফলাফল |
 
-The requested logical `drive/Video/...` paths correspond to **My Drive**, not the mount root itself. A Drive mount exposes `MyDrive` and potentially Shared Drives. Shared Drives require explicit path overrides.
+ভারী কাজ local file নিয়েই হয়। Input কপি করার সময়েই hash হয়, আলাদা করে Drive থেকে আবার পুরো input পড়তে হয় না। Output checksum যাচাইয়ের জন্য Drive-এ লেখা temporary file পড়া হয়; নির্ভরযোগ্যতার জন্য এই অতিরিক্ত I/O রাখা হয়েছে।
 
-Every expensive operation consumes **local files**. Drive is used only to stage inputs and publish completed artifacts/summary. SHA-256 is computed while copying input, so there is no second whole-file read from Drive. Output publication intentionally reads back each temporary Drive file to verify its bytes; this adds bounded output I/O for reliability.
+## ৪. Pipeline-এর ধাপ
 
-## 3. Stage contracts
+### ক. ভিডিও আনা ও audio extraction
 
-### A. Discovery, staging, and preflight
+- সমর্থিত extension-এর ভিডিও সরাসরি input folder থেকে নেওয়া হয়; subfolder নয়।
+- input/output/work path আলাদা রাখা, খালি disk এবং পরিবর্তনশীল input যাচাই করা হয়। 6 GiB margin ও media-ভিত্তিক অনুমান ব্যবহৃত হয়; এটি সব আকারের ভিডিওর storage নিশ্চয়তা নয়।
+- Job ID-তে নিরাপদ filename, content hash, inference setting ও package version-এর hash থাকে।
+- local input-এ ffprobe চলে; finite duration ও ভিডিও stream প্রয়োজন। Audio stream না থাকলে স্পষ্ট error হয়।
+- FFmpeg mono PCM16, 16 kHz তৈরি করে। `aresample=async=1:first_pts=0` দিয়ে audio delay/ফাঁক সামলানো হয়। গুরুতর নষ্ট বা discontinuous timestamp আগে মেরামত করতে হতে পারে।
 
-- Non-recursive, sorted discovery of supported extensions; one video at a time.
-- Validate directory separation and ensure work is not under `/content/drive`.
-- Reserve disk for input/output plus a configurable 6 GiB margin; refine estimates after probing duration.
-- Copy input to a temporary local file, compute content hash, and reject source files changed during staging.
-- Rename into a job directory identified by safe filename, content hash and configuration/dependency recipe hash.
-- Probe the local media, choose the first non-cover-art video and first audio stream, and require finite duration.
-- Missing/unsupported media yields a clear failure; originals are never changed.
-- Extract mono PCM16 at 16 kHz. `aresample=async=1:first_pts=0` fills gaps/initial audio delay on the input media timeline. Common delayed-audio cases are covered by a synthetic-media test; badly damaged/discontinuous streams remain out of scope.
+### খ. ইংরেজি speech recognition
 
-### B. English speech recognition
+Model: `Systran/faster-whisper-large-v3-turbo`। `language="en"`, `task="transcribe"`; Whisper-এর translation mode নয়।
 
-**Default:** `Systran/faster-whisper-large-v3-turbo` using faster-whisper/CTranslate2.
+- CUDA-তে পছন্দ `int8_float16`, CPU-তে `int8`; প্রয়োজন হলে সমর্থিত floating-point type।
+- Word timestamp, beam size 5, VAD এবং 500 ms silence threshold।
+- আগের text-এর conditioning বন্ধ, যাতে repetition ছড়ানোর ঝুঁকি কমে; কিছু দীর্ঘ context হারায়।
+- বাক্যের শেষে, 0.65 সেকেন্ড বিরতিতে, 12 সেকেন্ড লক্ষ্যসীমা বা 40 word-এ phrase ভাগ হয়। একটি অস্বাভাবিক দীর্ঘ word/fallback segment-এর জন্য নতুন timestamp বানানো হয় না।
+- Word probability ও segment diagnostic `asr.json`-এ থাকে; এগুলো নিশ্চিত accuracy score নয়।
+- নীরব/অতি ক্ষীণ কথায় VAD ভুল করতে পারে। কোনো কথা না পেলে নীরব output ও warning হয়।
 
-- Force `language="en"` and `task="transcribe"`; Whisper's translation mode is not used.
-- GPU: prefer `int8_float16`, falling back to a supported floating-point type. CPU: prefer `int8`.
-- Word timestamps, beam size 5 and VAD with a 500 ms silence threshold.
-- Disable previous-text conditioning to reduce repetition propagation; this sacrifices some long-range context.
-- Consume the lazy generator before unloading the model.
-- Preserve word probabilities, segment average log probabilities and no-speech estimates in `asr.json` for human inspection. These are diagnostics, not calibrated quality guarantees.
-- Form phrases using sentence boundaries, gaps ≥ 0.65 seconds, a 12-second target limit and a 40-word limit. A single unusually long ASR word/fallback segment cannot be split without inventing timings; token overflow then fails explicitly downstream.
+### গ. বাংলা অনুবাদ
 
-No-speech detection is not proof that no speech exists: VAD can miss quiet/faint speech. Empty ASR produces silence and a manifest warning rather than fabricated Bengali content.
+Model: `facebook/nllb-200-distilled-600M`; `eng_Latn → ben_Beng`।
 
-### C. English-to-Bengali translation
+- Bengali target token বাধ্যতামূলক; default batch 4, beam 3। GPU FP16, CPU FP32।
+- অতিরিক্ত source token চুপচাপ কাটা হয় না। Generation limit ছুঁলে forced EOS থাকলেও সম্ভাব্য অসম্পূর্ণ অনুবাদ হিসেবে error হয়।
+- খালি বা Bengali-script বিহীন ফলাফল গ্রহণ করা হয় না। Script check মানেই সঠিক অর্থ নয়।
+- সম্পন্ন ধাপ `translation.json`-এ লেখা হয়; তারপর model unload হয়।
 
-**Default:** `facebook/nllb-200-distilled-600M`, `eng_Latn → ben_Beng`.
+ছোট phrase timeline ও memory-র সুবিধা দেয়, কিন্তু document context সীমিত হয়। নাম, সংখ্যা, বিষয়ভিত্তিক শব্দ ও বাগ্‌ধারা বাংলা জানা কাউকে দিয়ে যাচাই করতে হবে।
 
-- NLLB source language is set on the tokenizer; Bengali is forced as the target language token.
-- Batches of four phrases; three translation beams; CUDA FP16 or CPU FP32.
-- No silent source truncation: excessive token count raises an actionable error.
-- Reject generation at the token limit, including a forced end token at the limit.
-- Reject empty/non-Bengali outputs rather than silently speaking the English source.
-- Save completed translation stage atomically to `translation.json`, then unload the model.
+### ঘ. বাংলা speech synthesis
 
-Translating bounded phrases trades document-level context for precise timestamp slots and lower memory. Sentence grouping helps context but does not eliminate ambiguity. Proper names, numbers, code, abbreviations, idioms and domain terminology require review. A Bengali-script check detects an obvious language failure, not translation correctness.
+Model: `facebook/mms-tts-ben`, Transformers VITS।
 
-### D. Bengali speech synthesis
+- নিজস্ব একটি কণ্ঠ; hosted TTS service বা key লাগে না। Tokenizer চাইলে reusable `uroman` দিয়ে romanization হয়।
+- সর্বোচ্চ 220 character-এর word/sentence-ভিত্তিক chunk; কথা বাদ পড়ে না। খুব বড় একক token হলে error হয়।
+- VITS স্থিতিশীলতার জন্য FP32-তে চলে। Seed phrase-ভিত্তিক; অন্য hardware/version-এ একই byte-এর output নিশ্চিত নয়।
+- খালি, নীরব বা nonfinite waveform error দেয়। Peak বেশি হলে কমানো হয়; এটি পূর্ণ loudness normalization নয়।
+- প্রতিটি fitted clip-এর text/timing/recipe signature ও checksum থাকে। অনুবাদের একটি phrase বদলালে শুধু সেই clip পুনরায় তৈরি হয়।
 
-**Default:** `facebook/mms-tts-ben` with Transformers VITS.
-
-- Local, single-voice TTS. No API key and no remote speech endpoint.
-- Reuse one `uroman` Romanizer when required by the checkpoint tokenizer; Bengali romanization is applied before tokenization.
-- Split long synthesis text at words/sentence endings (maximum 220 Unicode characters) without dropping words.
-- Generate chunk audio at the checkpoint's native sample rate; concatenate only within one bounded phrase.
-- VITS remains FP32 for stability; seed by phrase for repeatability within a compatible environment. Hardware/library changes may still affect numerical output.
-- Peak attenuation prevents clipping; this is not broadcast loudness normalization.
-- Tokenless, empty, nonfinite or silent generated speech fails explicitly.
-- Cache each completed fitted clip and its checksum with a signature of text, timing and inference recipe. An edited local Bengali phrase invalidates only that phrase's TTS cache.
-
-A first-time voice download still requires internet. Once cached, the synthesis does not depend on an online voice service. The voice has limited expressiveness and cannot preserve speaker identity or emotion.
-
-### E. Timing and synchronization
-
-For source phrase `i`:
+### ঙ. সময় মেলানো
 
 ```text
-start_i      = original English phrase start
-slot_end_i   = min(video duration,
-                   next phrase start,
-                   English phrase end + 0.30 seconds)
-slot_samples = round(slot_end_i × sample_rate) - round(start_i × sample_rate)
-raw_duration = synthesized Bengali duration
-speed        = max(1, raw_duration / slot_duration)
+start       = ইংরেজি phrase-এর শুরুর সময়
+slot_end    = min(ভিডিওর শেষ, পরের phrase-এর শুরু, phrase-এর শেষ + 0.30 সেকেন্ড)
+slot_length = round(slot_end × sample_rate) − round(start × sample_rate)
+speed       = max(1, বাংলা অডিওর দৈর্ঘ্য / slot-এর দৈর্ঘ্য)
 ```
 
-- Borrow only limited unoccupied following silence; never overlap the next phrase.
-- Short speech keeps its natural rate and is padded with silence (not slowed to fill space).
-- Longer speech uses FFmpeg `atempo`, factored into 0.5–2.0 steps to avoid extreme single-filter factors.
-- The default `stretch` policy retains all speech, flags rates above 1.50× and may sound rushed.
-- Optional `error` policy refuses a fit exceeding that comfort threshold; human shortening/editing is required.
-- FFmpeg tempo fitting is not sample-exact. If an output is still too long, retry a slightly faster rate up to a bounded limit. **Never crop speech samples to hide overflow.** Pad the remaining difference to an exact sample count.
-- Place each clip directly at its absolute sample position in a disk-backed PCM timeline. Enforce non-overlap and video-length bounds before assignment.
-- Stream the timeline to WAV in 30-second blocks; no whole-video float waveform is held for final assembly.
-- Video duration and Bengali audio duration are validated within 250 ms after AAC muxing; normal packet/frame rounding is tolerated. This is not a lip-sync accuracy guarantee.
+- শুধু পরের অব্যবহৃত silence থেকে সর্বোচ্চ 0.30 সেকেন্ড নেওয়া হয়; পরের phrase-এর সঙ্গে overlap নয়।
+- ছোট speech স্বাভাবিক গতিতে থাকে; শেষে silence বসে। বড় speech-এর জন্য pitch-preserving `atempo`, 0.5–2.0 ধাপে ভাগ করা হয়।
+- Default `stretch` পূর্ণ speech রাখে; 1.50× ছাড়ালে review flag দেয়। `error` mode অতিরিক্ত গতি চাইলে থামে।
+- `atempo` sample-exact নয়। প্রয়োজন হলে অল্প বেশি গতিতে bounded retry হয়; **শব্দ কেটে fit করা হয় না**।
+- প্রতিটি clip নিজের absolute sample position-এ disk-backed int16 timeline-এ বসে। Overlap ও video boundary যাচাই হয়।
+- WAV 30 সেকেন্ডের block-এ লেখা হয়। এতে পুরো output audio RAM-এ রাখতে হয় না; Whisper-এর input audio কিন্তু RAM ব্যবহার করে।
 
-Phrase onset alignment avoids cumulative drift but does not reproduce phoneme-to-mouth timing. Word-level alignment within a translated sentence is linguistically different and is not attempted.
+এটি phrase-onset alignment, lip-sync নয়। অনুবাদে শব্দের ক্রম/দৈর্ঘ্য বদলায়; মুখের প্রতিটি নড়াচড়া মেলানো হয় না।
 
-### F. Render and publication
+### চ. ভিডিও তৈরি ও প্রকাশ
 
-- Copy H.264 video bitstream to MP4 when possible: no picture encode cost or generational loss.
-- Other codecs, or a failed stream-copy, fall back to CPU `libx264`, `veryfast`, CRF 20, even dimensions and YUV420p.
-- Map only the selected picture and the generated mono Bengali audio. The English soundtrack and other source audio/subtitle tracks are not mixed/copied.
-- Encode AAC at 96 kb/s, mark language `ben`, set MP4 fast-start, and retain total source duration.
-- Drop original metadata and chapters instead of carrying potentially incorrect English/audio metadata.
-- Validate video/audio presence and duration before writing the local final name.
-- Export source/Bengali SRT, segment JSON, ASR diagnostics and a manifest with source hash, settings, package versions, resolved model commits, per-stage timing and review flags.
-- Copy each artifact to a unique temporary sibling on Drive, compare SHA-256 with local content, then rename it to the final filename. Publish `manifest.json` last.
+- H.264 stream সম্ভব হলে copy; অন্য codec বা copy ব্যর্থ হলে `libx264`, `veryfast`, CRF 20, YUV420p।
+- বাংলা mono AAC, 96 kb/s, language `ben`; MP4 fast-start। মূল ইংরেজি/গান/পরিবেশের audio রাখা হয় না। পুরোনো subtitle, metadata ও chapter কপি হয় না।
+- video/audio stream ও মোট duration যাচাই করা হয়; packet/frame rounding-এর জন্য 250 ms tolerance। শুধু container duration দিয়ে বাস্তব speech sync যাচাই হয় না।
+- Output, subtitle ও JSON temporary sibling-এ কপি করে checksum মেলানো হয়, তারপর rename। **সবশেষে `manifest.json`** লেখা হয়।
 
-The completion marker is a protocol, not a multi-file atomic transaction. Readers must require it. A prior marker is removed before republishing a bundle. A failure during publication leaves no misleading completed marker and retains local results. Drive's FUSE semantics cannot guarantee immediate remote durability or protect against simultaneous independent writers; concurrent runs on the same directories are unsupported.
+Manifest-last একটি completion protocol, বহু ফাইলের atomic transaction নয়। পুনরায় প্রকাশের আগে পুরোনো completion marker সরানো হয়। Mount checksum server-side তাৎক্ষণিক durability বা একসঙ্গে একাধিক writer-এর নিরাপত্তা নিশ্চিত করে না।
 
-## 4. Memory, throughput and operational behavior
+## ৫. Resource ও recovery
 
-| Stage | Resource strategy | Main tradeoff |
-|---|---|---|
-| ASR | Turbo model, quantized CTranslate2, VAD, one worker | Full source audio/features still consume host RAM |
-| Translation | 600M checkpoint, FP16 on GPU, bounded batches | Phrase context and beam search affect quality/speed |
-| TTS | Small local VITS, short chunks, cached Romanizer | Single voice; FP32 consumes more memory than FP16 |
-| Assembly | int16 disk-backed timeline, block WAV writer | Requires temporary local disk proportional to duration |
-| Rendering | H.264 stream-copy; constrained-thread fallback | Unsupported codecs need expensive picture re-encoding |
-| Scheduling | One model/stage and one video at a time | Repeated model loading between videos adds latency |
+এক সময়ে এক model এবং এক ভিডিও চলে। Stage শেষে model মুছে garbage collection/PyTorch cache পরিষ্কার হয়; batch শেষে worker-ই বন্ধ হয়। বারবার model load-এর কিছু সময় লাগে, কিন্তু একসঙ্গে GPU-তে সব model থাকে না।
 
-Models are deleted in `finally` blocks; garbage collection and PyTorch cache clearing run at boundaries. There is no guarantee this fixes every CUDA/driver-level allocation failure. CUDA OOM does not silently change the model or CPU behavior; reduce batch/model size or explicitly choose CPU.
-
-The notebook keeps Colab's torch stack. Core inference packages are pinned, but this is **not a complete lockfile** for Colab's changing base image. CTranslate2 4.6 targets CUDA 12/cuDNN 9. The loader preloads compatible NVIDIA libraries when installed in Python package paths. If the runtime changes ABI, use a matching runtime/update the pin or explicitly use CPU. Test the current image before each release.
-
-No benchmark numbers are invented. The manifest records stage timings **for this execution**, including cache hits, so resumed runs must not be compared as if they were cold inference. The reported processing time includes staging/model load/download where applicable but ends before publication; `batch_results.json` also includes total elapsed time through publication. Use a controlled warm/cold benchmark and human quality review.
-
-## 5. Recovery and cache validity
+Checkpoint-এর ক্রম:
 
 ```text
-local staging → extraction → asr.json → translation.json → clips/*.wav + *.json
-                                                           ↓
-                                           timeline / mux / verified publication
+local input → asr.json → translation.json → clips/*.wav + metadata
+                                           → timeline → mux → Drive
 ```
 
-- JSON checkpoints use temporary files and rename. An incomplete ASR or translation stage is recomputed in full; TTS resumes at the individual phrase boundary.
-- Job IDs include source bytes, pipeline version, inference settings and relevant package versions. Changed content/settings cannot accidentally reuse another job's checkpoints.
-- Operational settings (directory paths, cleanup/continue policy and timeout) do not invalidate inference results.
-- Actual model commits are recorded. Default revision `main` can change upstream; pin all model revisions for reproducible runs. Offline cache reuse is not a guarantee that `main` has not moved.
-- Existing checkpoint JSON is schema/timestamp-validated; malformed JSON fails visibly rather than being quietly ignored. Delete/rebuild a damaged checkpoint if necessary.
-- For manual review, retain local work and change **only** the `bangla` fields in `translation.json`. Do not change times/IDs or edit the derived Drive bundle expecting it to become a checkpoint.
-- Exceptions write local `failure.json` with the stage/error. The batch records failures and normally continues.
-- Successful local work is deleted only after verified publication; model cache remains for the next video. Failed work is retained even if cleanup is enabled.
-- Colab resets discard local work. This design does not continually sync checkpoints to Drive because that would add latency and storage churn. Completed output bundles remain in Drive.
-- Identical completed videos are not automatically skipped from Drive on a later fresh runtime: they may be recomputed and deterministically republished. Input staging is repeated on any rerun to revalidate source bytes.
+- JSON-এ temporary write ও rename। অসম্পূর্ণ ASR/translation ধাপ পুরোটা আবার চলে; TTS clip ধরে resume করে।
+- Operational path/cleanup/timeout বদল inference recipe বদলায় না। Content বা inference setting বদলালে আলাদা job।
+- বাস্তবে ব্যবহৃত model commit manifest-এ থাকে। Default `main` ভবিষ্যতে বদলাতে পারে; reproducibility চাইলে `*_revision` pin করুন।
+- নষ্ট JSON/timestamp error দেয়; নীরবে উপেক্ষা করে না। প্রয়োজন হলে সংশ্লিষ্ট local checkpoint সরিয়ে আবার তৈরি করুন।
+- `keep_local=True` থাকলে local `translation.json`-এর শুধু `bangla` field সংশোধন করা যায়। ID/time বদলাবেন না।
+- ব্যর্থতায় local `failure.json` ও run log থাকে। পরের ভিডিও default-ভাবে চলতে পারে। সফল local job কেবল verified publication-এর পরে মুছে যায়।
+- সফল output থাকলেই পরের run সেটি বাদ দেয় না। Input hash আবার যাচাই হয়; checkpoint না থাকলে কাজ আবার হয়।
+- Runtime হারালে venv, model cache ও local checkpoint হারায়। Drive-এর সম্পন্ন ফলাফল থাকে। Checkpoint ক্রমাগত Drive-এ sync করা হয় না, যাতে latency না বাড়ে।
 
-## 6. Quality, security and licensing boundaries
+Core package pin আছে, সম্পূর্ণ Colab image lockfile নয়। বর্তমান stack CUDA 12/cuDNN 9 লক্ষ্য করে। Colab image বদলালে বাস্তব পরীক্ষা ও প্রয়োজনমতো pin বদল জরুরি। CPU mode স্পষ্টভাবে বেছে নেওয়া যায়; error ঢাকতে নীরবে model/device বদলানো হয় না।
 
-- Content-bearing paths/texts in manifests and transcripts are potentially sensitive; keep work/output directories private.
-- Mount authentication is handled by Colab, never by hard-coded credentials. Public Hub checkpoints normally need no token.
-- Hugging Face downloads are the model network boundary; speech/text is processed locally in the Colab VM after download. Colab itself is a cloud environment.
-- Transformers uses `trust_remote_code=False`; use a current torch >= 2.6 runtime for checkpoint loading and review dependency updates.
-- FFmpeg is called with argument lists, never interpolated shell commands; filenames may contain spaces, quotes and Bengali characters.
-- Content hashes avoid filename collisions; filenames are byte-limited and normalized for generated job directories.
-- NLLB and MMS checkpoint licenses include **CC-BY-NC-4.0 non-commercial restrictions**. Commercial deployment requires different models/permissions. Code licensing does not override model licenses. See the linked model cards in the README.
-- No accuracy/speed claims replace actual testing. Review ASR against a reference, Bengali meaning/naturalness with a fluent reviewer, visual timing, flagged pace and the licensing of your input media.
+Manifest-এর stage time কেবল বর্তমান run-এর সময়—cache hit-সহ। Download, warm inference ও resume-এর সময় আলাদা না করে benchmark তুলনা করবেন না। নির্দিষ্ট speed/accuracy দাবি করা হয়নি।
 
-## 7. Validation strategy
+## ৬. নিরাপত্তা, লাইসেন্স ও পরীক্ষা
 
-1. **Unit tests:** configuration, word grouping, timing math, subtitle encoding, bounded TTS splitting, content addressing, atomic copies, completion markers, checkpoint semantics, batch failures.
-2. **Synthetic-media integration:** real FFmpeg extraction including delayed audio, duration fitting, silence placement, H.264 stream-copy, other-codec re-encoding, no-audio rejection, end-to-end orchestration with stub inference, verified publication/resume/cleanup.
-3. **Notebook checks:** nbformat schema, all code cells parse, no execution outputs, embedded source is up to date.
-4. **Manual Colab acceptance:** actual downloads, GPU/CPU compatibility, ASR, NLLB Bengali language forcing, uroman/VITS pronunciation, real speech naturalness and upload behavior. See [COLAB_SMOKE_TEST.md](COLAB_SMOKE_TEST.md).
+- Drive authentication Colab পরিচালনা করে। Credential code-এ রাখা হয় না।
+- Model download ছাড়া inference-এর জন্য speech/text বাইরের API-তে পাঠানো হয় না; Colab নিজেই cloud VM।
+- `trust_remote_code=False`, torch 2.6+; FFmpeg argument-list দিয়ে চলে, filename shell-এ বসানো হয় না।
+- Transcript, local checkpoint, log ও output ব্যক্তিগত তথ্য বহন করতে পারে। প্রকাশ্য repository-তে রাখবেন না।
+- NLLB/MMS-এর CC-BY-NC-4.0 non-commercial সীমা প্রযোজ্য; code license সেটি বদলায় না। Model card-এর link README-তে আছে।
 
-Only steps 1–3 can run without downloading real checkpoints. Passing them does not imply a successful end-to-end real-model Colab run.
+পরীক্ষার স্তর:
+
+১. Unit: timing, grouping, hash, cache, file publication, পুনরায় setup, Drive mount reuse ও নতুন worker।
+২. Synthetic media: আসল FFmpeg extraction, delayed audio, fitting, timeline, mux/transcode; orchestration-এ inference stub।
+৩. Notebook: schema, code syntax, source freshness, খালি output, সংক্ষিপ্ত বাংলা নির্দেশনা।
+৪. [আসল Colab পরীক্ষা](COLAB_SMOKE_TEST.md): model download, GPU/CPU, বাস্তব বাংলা উচ্চারণ, অর্থ ও Drive output।
+
+প্রথম তিনটি পাস করলেই চতুর্থটি পাস হয়েছে বলা যায় না।

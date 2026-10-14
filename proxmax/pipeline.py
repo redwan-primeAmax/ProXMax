@@ -385,7 +385,7 @@ def transcribe(audio_path, duration, config):
     compute_type = "int8_float16" if device == "cuda" else "int8"
     if compute_type not in supported:
         compute_type = "float16" if device == "cuda" else "float32"
-    LOG.info("ASR: %s (%s / %s)", config.asr_model, device, compute_type)
+    LOG.info("ইংরেজি শনাক্তকরণ: %s (%s / %s)", config.asr_model, device, compute_type)
     model = None
     try:
         model_path = snapshot_download(config.asr_model, revision=config.asr_revision,
@@ -467,7 +467,7 @@ def translate(segments, config):
                 if not text or not re.search(r"[\u0980-\u09FF]", text):
                     raise ValueError(f"Empty/non-Bengali output at segment {segment['id']}; review source text")
                 output.append({**segment, "bangla": text})
-            LOG.info("Translated %s/%s phrases", len(output), len(segments))
+            LOG.info("অনুবাদ হয়েছে: %s/%s অংশ", len(output), len(segments))
         return {"segments": output, "model_commit": getattr(model.config, "_commit_hash", None)}
     finally:
         del inputs, generated, model, tokenizer
@@ -490,7 +490,7 @@ def fit_audio(raw_path, output_path, slot_seconds, config):
     if flagged and config.overflow_policy == "error":
         raise ValueError(f"Dub needs {rate:.2f}x speed; edit/shorten translation or use overflow_policy='stretch'")
     if flagged:
-        LOG.warning("Dub needs %.2fx speed (comfort limit %.2fx); flagged for review",
+        LOG.warning("উচ্চারণ %.2fx দ্রুত হচ্ছে (সীমা %.2fx); শুনে যাচাই করুন",
                     rate, config.comfortable_speed)
     temp = Path(output_path).with_suffix(".tempo.wav")
     try:
@@ -600,7 +600,7 @@ def synthesize(segments, duration, job, config):
             atomic_json(metadata, record)
             raw.unlink(missing_ok=True)
             records.append(record)
-            LOG.info("Synthesized %s/%s phrases", i + 1, len(segments))
+            LOG.info("বাংলা অডিও তৈরি: %s/%s অংশ", i + 1, len(segments))
         return records, tts_commit
     finally:
         del tokens, result, model, tokenizer, romanizer
@@ -661,7 +661,7 @@ def mux_video(local_video, audio, destination, info, config):
         try:
             run_command(base + ["-c:v", "copy"] + suffix, config.subprocess_timeout)
         except RuntimeError:
-            LOG.warning("Video stream-copy failed; retrying with H.264 encoding")
+            LOG.warning("ভিডিও stream-copy হয়নি; H.264-এ encode করা হচ্ছে")
             copied = False
     if not copied:
         run_command(base + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
@@ -684,7 +684,7 @@ def mux_video(local_video, audio, destination, info, config):
 def cached_stage(path, compute: Callable):
     path = Path(path)
     if path.exists():
-        LOG.info("Resuming checkpoint %s", path.name)
+        LOG.info("আগের checkpoint ব্যবহার হচ্ছে: %s", path.name)
         return read_json(path)
     result = compute()
     atomic_json(path, result)
@@ -738,7 +738,7 @@ def process_video(source, config):
             job / "translation.json", lambda: translate(asr["segments"], config)))
         validate_segments(translations["segments"], info["duration"], translated=True)
         if not translations["segments"]:
-            LOG.warning("No speech detected: output will contain a silent Bengali audio track")
+            LOG.warning("কথা শনাক্ত হয়নি; ফলাফলে নীরব audio track থাকবে")
         records, tts_commit = timed("tts", lambda: synthesize(
             translations["segments"], info["duration"], job, config))
         audio = timed("timeline", lambda: assemble_timeline(records, info["duration"], job, config))
@@ -770,7 +770,7 @@ def process_video(source, config):
         atomic_json(job / "failure.json", {"status": "failed", "stage": current_stage,
                     "error": f"{type(error).__name__}: {error}", "source": str(source),
                     "stages_seconds_this_run": stage_times})
-        LOG.error("Failed in %s. Local checkpoints retained at %s", current_stage, job)
+        LOG.error("%s ধাপে সমস্যা। Checkpoint রাখা হয়েছে: %s", current_stage, job)
         raise
     finally:
         release_memory()
@@ -791,11 +791,11 @@ def run_batch(config):
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
     results = []
     for source in sources:
-        LOG.info("Processing %s", source.name)
+        LOG.info("কাজ চলছে: %s", source.name)
         try:
             results.append(process_video(source, config))
         except Exception as error:
-            LOG.exception("Could not translate %s", source.name)
+            LOG.exception("অনুবাদ হয়নি: %s", source.name)
             results.append({"source": str(source), "status": "failed",
                             "error": f"{type(error).__name__}: {error}"})
             if not config.continue_on_error:
