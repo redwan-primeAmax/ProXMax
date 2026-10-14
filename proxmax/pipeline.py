@@ -158,7 +158,7 @@ def safe_stem(name):
 
 def package_versions():
     versions = {}
-    for name in ("torch", "transformers", "faster-whisper", "ctranslate2", "uroman",
+    for name in ("torch", "transformers", "faster-whisper", "av", "ctranslate2", "uroman",
                  "numpy", "soundfile", "sentencepiece"):
         try:
             versions[name] = importlib.metadata.version(name)
@@ -402,6 +402,24 @@ def download_asr_model(config):
         raise
 
 
+def load_asr_audio(audio_path):
+    """Read the FFmpeg-normalized WAV without faster-whisper's PyAV decoder."""
+    import numpy as np
+    import soundfile as sf
+
+    with sf.SoundFile(str(audio_path)) as source:
+        if source.samplerate != 16000 or source.channels != 1:
+            raise ValueError(
+                "ASR-এর জন্য 16 kHz mono WAV প্রয়োজন; "
+                f"পাওয়া গেছে {source.samplerate} Hz / {source.channels} channel। "
+                "FFmpeg audio extraction ধাপটি আবার চালান।"
+            )
+        audio = source.read(dtype="float32", always_2d=False)
+    if audio.size == 0 or not np.isfinite(audio).all():
+        raise ValueError("ASR audio খালি বা তাতে অবৈধ sample আছে; input ভিডিও যাচাই করুন।")
+    return np.ascontiguousarray(audio, dtype=np.float32)
+
+
 def transcribe(audio_path, duration, config):
     import ctranslate2
     from faster_whisper import WhisperModel
@@ -413,14 +431,16 @@ def transcribe(audio_path, duration, config):
     if compute_type not in supported:
         compute_type = "float16" if device == "cuda" else "float32"
     LOG.info("ইংরেজি শনাক্তকরণ: %s (%s / %s)", config.asr_model, device, compute_type)
-    model = None
+    model = audio = stream = None
     try:
+        audio = load_asr_audio(audio_path)
         model_path = download_asr_model(config)
         model = WhisperModel(model_path, device=device, compute_type=compute_type,
                              cpu_threads=config.cpu_threads, num_workers=1)
         # Non-batched decoding is deliberately conservative on free-tier RAM/VRAM.
+        # ndarray input skips decode_audio()/av.open(); FFmpeg already decoded it.
         stream, info = model.transcribe(
-            str(audio_path), language="en", task="transcribe",
+            audio, language="en", task="transcribe",
             beam_size=config.asr_beam_size, word_timestamps=True,
             vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
             condition_on_previous_text=False,
@@ -443,7 +463,7 @@ def transcribe(audio_path, duration, config):
                 "model_commit": Path(model_path).name,
                 "duration_after_vad": info.duration_after_vad}
     finally:
-        del model
+        del stream, audio, model
         release_memory()
 
 

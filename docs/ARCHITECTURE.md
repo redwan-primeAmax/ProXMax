@@ -76,6 +76,8 @@ flowchart TD
 Model: `mobiuslabsgmbh/faster-whisper-large-v3-turbo`—[faster-whisper v1.2.1-এর registry](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/utils.py) অনুযায়ী। পুরোনো ভুল `Systran/faster-whisper-large-v3-turbo` এবং `turbo`/`large-v3-turbo` alias সংশোধন করা হয়। `language="en"`, `task="transcribe"`; Whisper-এর translation mode নয়।
 
 - ASR, অনুবাদ ও TTS-এর public download-এ `token=False`; পুরোনো invalid cached token ব্যবহার হয় না। Worker implicit token-ও বন্ধ রাখে। Private/gated model-এর authentication এই সংস্করণের বাইরে। ASR-এ HTTP 401/403/404 হলে model ID/revision-সহ স্পষ্ট error ও original traceback দেখায়, নীরবে অন্য model ব্যবহার করে না।
+- FFmpeg-এর তৈরি 16 kHz mono WAV `soundfile` দিয়ে contiguous `float32` array হিসেবে পড়া হয়। Sample rate, channel, খালি audio ও NaN/Inf যাচাইয়ের পরে সেই array Whisper-এ যায়; PyAV দিয়ে একই file আবার decode হয় না। এতে `av.open(metadata_errors=...)` API mismatch-এর পথটি এড়ানো হয়।
+- Dependency সামঞ্জস্যের জন্য `av==16.0.1` pin করা হয়েছে; এই সংস্করণে `metadata_errors` আছে এবং Python 3.13 Linux wheel-ও পাওয়া যায়। PyAV-এর সংস্করণও output manifest-এর package তালিকায় থাকে।
 - CUDA-তে পছন্দ `int8_float16`, CPU-তে `int8`; প্রয়োজন হলে সমর্থিত floating-point type।
 - Word timestamp, beam size 5, VAD এবং 500 ms silence threshold।
 - আগের text-এর conditioning বন্ধ, যাতে repetition ছড়ানোর ঝুঁকি কমে; কিছু দীর্ঘ context হারায়।

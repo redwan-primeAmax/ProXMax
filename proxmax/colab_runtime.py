@@ -58,7 +58,7 @@ for line in open(sys.argv[1], encoding='utf-8'):
                                capture_output=True, text=True, env=env).returncode == 0
     if not ready:
         marker.unlink(missing_ok=True)
-        print("প্রথমবারের প্যাকেজ setup চলছে…", flush=True)
+        print("প্যাকেজ setup/হালনাগাদ চলছে…", flush=True)
         subprocess.run([str(python), "-m", "pip", "--isolated", "install", "--no-user", "--quiet",
                         "--disable-pip-version-check", "-r", str(requirement_file)], check=True, env=env)
         subprocess.run([str(python), "-c", check_code, str(requirement_file)], check=True, env=env)

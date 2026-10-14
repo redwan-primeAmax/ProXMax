@@ -28,7 +28,7 @@ Notebook-এ **একটিই cell**। Processing code স্বাভাব�
 ## আবার চালালে কী হবে?
 
 - **“Drive already mounted” কোনো error নয়।** এখন সক্রিয় mount থাকলে সেটিই ব্যবহার হয়; অকারণে আবার mount করা হয় না।
-- সফল Setup থাকলে আবার package install হয় না। প্যাকেজ notebook kernel-এ নয়, নিজস্ব `venv`-এ install হয়। Colab-এর torch/CUDA ব্যবহার করা হয়, বদলানো হয় না।
+- একই requirements-এ সফল Setup থাকলে আবার package install হয় না। নতুন notebook-এ requirements বদলালে নিজস্ব `venv`-এ প্রয়োজনীয় package হালনাগাদ হয়। Colab kernel-এর torch/CUDA বদলানো হয় না।
 - প্রতিবার অনুবাদ **নতুন Python worker process**-এ চলে। আগের run-এর import cache বা CUDA state নতুন worker-এ যায় না। শেষ হলে process-এর model/GPU memory ছেড়ে যায়।
 - Stop চাপলে worker এবং তার FFmpeg subprocess-ও বন্ধ হয়। একই cell আবার চালাতে পারেন।
 - অসম্পূর্ণ কাজের checkpoint থাকে। একই input/settings দিয়ে আবার চালালে সম্পন্ন ASR/translation ধাপ এবং তৈরি TTS clip পুনর্ব্যবহার হয়।
@@ -99,6 +99,7 @@ Config/result worker-এর সঙ্গে **memory pipe** দিয়ে আদ�
 | GPU OOM | batch size `1`, ছোট model বা ছোট ভিডিও ব্যবহার করুন; একই setting বারবার চালালে OOM ঠিক হবে না |
 | CUDA/cuDNN error | উপযুক্ত Colab GPU runtime বা `device="cpu"`; kernel-এর torch এলোমেলোভাবে বদলাবেন না |
 | Download error | ইন্টারনেট/Hugging Face সংযোগ ঠিক করে আবার চালান |
+| `open() got an unexpected keyword argument 'metadata_errors'` | পুরোনো faster-whisper/PyAV API mismatch। নতুন notebook চালান: setup `av==16.0.1` বসাবে, আর ASR-এ normalized WAV সরাসরি array হিসেবে যাবে—PyAV দিয়ে আবার decode হবে না। |
 | ভিডিও পাওয়া যাচ্ছে না | সঠিক input folder, সমর্থিত extension ও সম্পূর্ণ upload নিশ্চিত করুন |
 | অনুবাদ ভুল/খুব দ্রুত | `keep_local=True` রেখে local job-এর `translation.json`-এ শুধু `bangla` লেখা ঠিক করে আবার চালান |
 | অন্য error | cell/terminal-এ দেখানো error ও traceback কপি করুন; কোনো error ফাইল খুঁজতে হবে না |
