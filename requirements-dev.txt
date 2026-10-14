@@ -1,5 +1,0 @@
-# Lightweight tests do not download ML models or install torch.
-pytest==8.3.5
-nbformat==5.10.4
-numpy>=1.26,<3
-soundfile==0.13.1

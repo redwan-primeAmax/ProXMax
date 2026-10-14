@@ -38,7 +38,7 @@ class Config:
     output_dir: str = "/content/drive/MyDrive/Video/output"
     work_dir: str = "/content/proxmax-work"
     # These are public, downloadable checkpoints, not hosted inference APIs.
-    asr_model: str = "Systran/faster-whisper-large-v3-turbo"
+    asr_model: str = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
     translation_model: str = "facebook/nllb-200-distilled-600M"
     tts_model: str = "facebook/mms-tts-ben"
     # Replace 'main' with Hub commit IDs for reproducible model snapshots.
@@ -374,10 +374,37 @@ def preload_cuda_libraries():
                 break
 
 
+def download_asr_model(config):
+    """Use the public CT2 Turbo repository listed by faster-whisper v1.2.1."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import HfHubHTTPError
+
+    repo_id = config.asr_model
+    if repo_id in {"Systran/faster-whisper-large-v3-turbo", "large-v3-turbo", "turbo"}:
+        repo_id = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+        LOG.warning("ASR model ID সংশোধন করা হয়েছে: %s", repo_id)
+    try:
+        # token=False also ignores an invalid token inherited from a previous session.
+        return snapshot_download(
+            repo_id, revision=config.asr_revision, token=False,
+            allow_patterns=["config.json", "preprocessor_config.json", "model.bin",
+                            "tokenizer.json", "vocabulary.*"],
+        )
+    except HfHubHTTPError as error:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        if status in {401, 403, 404}:
+            raise RuntimeError(
+                f"ASR model পাওয়া যায়নি বা প্রবেশাধিকার নেই: {repo_id} "
+                f"(revision={config.asr_revision}, HTTP {status})। "
+                "Model ID/revision ও Hugging Face সংযোগ যাচাই করুন। "
+                "Default public model-এর জন্য login/token প্রয়োজন নেই।"
+            ) from error
+        raise
+
+
 def transcribe(audio_path, duration, config):
     import ctranslate2
     from faster_whisper import WhisperModel
-    from huggingface_hub import snapshot_download
     device = torch_device(config)
     if device == "cuda":
         preload_cuda_libraries()
@@ -388,8 +415,7 @@ def transcribe(audio_path, duration, config):
     LOG.info("ইংরেজি শনাক্তকরণ: %s (%s / %s)", config.asr_model, device, compute_type)
     model = None
     try:
-        model_path = snapshot_download(config.asr_model, revision=config.asr_revision,
-                                       allow_patterns=["*.json", "*.bin", "*.txt"])
+        model_path = download_asr_model(config)
         model = WhisperModel(model_path, device=device, compute_type=compute_type,
                              cpu_threads=config.cpu_threads, num_workers=1)
         # Non-batched decoding is deliberately conservative on free-tier RAM/VRAM.
@@ -432,11 +458,11 @@ def translate(segments, config):
     tokenizer = model = inputs = generated = None
     try:
         tokenizer = AutoTokenizer.from_pretrained(
-            config.translation_model, revision=config.translation_revision,
+            config.translation_model, revision=config.translation_revision, token=False,
             src_lang="eng_Latn", use_fast=True, trust_remote_code=False,
         )
         model = AutoModelForSeq2SeqLM.from_pretrained(
-            config.translation_model, revision=config.translation_revision,
+            config.translation_model, revision=config.translation_revision, token=False,
             torch_dtype=torch.float16 if device == "cuda" else torch.float32,
             trust_remote_code=False,
         ).to(device).eval()
@@ -560,9 +586,9 @@ def synthesize(segments, duration, job, config):
                     continue
             if model is None:
                 tokenizer = AutoTokenizer.from_pretrained(
-                    config.tts_model, revision=config.tts_revision, trust_remote_code=False)
+                    config.tts_model, revision=config.tts_revision, token=False, trust_remote_code=False)
                 model = VitsModel.from_pretrained(
-                    config.tts_model, revision=config.tts_revision,
+                    config.tts_model, revision=config.tts_revision, token=False,
                     trust_remote_code=False,
                 ).to(device).eval()  # FP32 is deliberate: VITS can be unstable in FP16.
                 tts_commit = getattr(model.config, "_commit_hash", None)
@@ -766,10 +792,8 @@ def process_video(source, config):
         if not config.keep_local:
             shutil.rmtree(job)  # job is always a generated child of the local work directory.
         return result
-    except Exception as error:
-        atomic_json(job / "failure.json", {"status": "failed", "stage": current_stage,
-                    "error": f"{type(error).__name__}: {error}", "source": str(source),
-                    "stages_seconds_this_run": stage_times})
+    except Exception:
+        # Errors go to the terminal only; media/checkpoints remain resumable.
         LOG.error("%s ধাপে সমস্যা। Checkpoint রাখা হয়েছে: %s", current_stage, job)
         raise
     finally:
@@ -799,7 +823,5 @@ def run_batch(config):
             results.append({"source": str(source), "status": "failed",
                             "error": f"{type(error).__name__}: {error}"})
             if not config.continue_on_error:
-                atomic_json(Path(config.output_dir) / "batch_results.json", results)
                 raise
-    atomic_json(Path(config.output_dir) / "batch_results.json", results)
     return results
