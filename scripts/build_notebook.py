@@ -75,7 +75,7 @@ CONFIG = {{
 print("ভিডিও অনুবাদ শুরু হচ্ছে…")
 try:
     RUN_RESULT = RUNTIME["run_isolated"](
-        WORKER_PYTHON, APP_DIR / "worker.py", CONFIG, APP_DIR / "runs"
+        WORKER_PYTHON, APP_DIR / "worker.py", CONFIG
     )
 except KeyboardInterrupt:
     print("কাজ বন্ধ করা হয়েছে। Worker-ও বন্ধ হয়েছে; আবার এই cell চালাতে পারেন।")
@@ -90,7 +90,7 @@ if RUN_RESULT is not None:
             print("অসম্পূর্ণ:", Path(result["source"]).name, "—", result.get("error", ""))
     if RUN_RESULT["status"] != "complete":
         print(RUN_RESULT.get("error", "কিছু ভিডিও সম্পন্ন হয়নি। উপরের error দেখুন।"))
-        print("বিস্তারিত log:", RUN_RESULT["log"])
+        print("Error উপরের cell output-এ আছে; কোনো error/log ফাইল সংরক্ষণ করা হয়নি।")
     else:
         print("সব ভিডিও Drive-এ সংরক্ষিত। প্রকাশের আগে বাংলা অডিও ও subtitle যাচাই করুন।")
 ''', hidden=True)

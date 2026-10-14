@@ -8,7 +8,6 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-import uuid
 
 
 def setup_environment(root, requirements):
@@ -115,45 +114,63 @@ def stop_worker(process, timeout=5):
         send(signal.SIGKILL)
 
 
-def run_isolated(python, worker, config, state_dir, echo=True):
-    """প্রতিবার নতুন Python/CUDA process; আগের run-এর GPU/import state ধরে রাখে না।"""
-    state_dir = Path(state_dir).resolve()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    run_id = uuid.uuid4().hex
-    config_path = state_dir / f"{run_id}.config.json"
-    results_path = state_dir / f"{run_id}.results.json"
-    log_path = state_dir / f"{run_id}.log"
-    config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+RESULT_PREFIX = "PROXMAX_RESULT\t"
+
+
+def run_isolated(python, worker, config, echo=True):
+    """Fresh worker; config/results travel through pipes, never diagnostic files."""
+    payload = json.dumps(config, ensure_ascii=False)
     env = os.environ.copy()
     env.update(PYTHONUNBUFFERED="1", TOKENIZERS_PARALLELISM="false",
-               HF_HOME="/content/proxmax-model-cache", HF_HUB_DISABLE_TELEMETRY="1")
-    # আগের notebook থেকে পাওয়া PYTHONPATH/PYTHONHOME যেন venv isolation নষ্ট না করে।
+               HF_HOME="/content/proxmax-model-cache", HF_HUB_DISABLE_TELEMETRY="1",
+               HF_HUB_DISABLE_IMPLICIT_TOKEN="1")
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
     process = subprocess.Popen(
-        [str(python), str(Path(worker).resolve()), "--config", str(config_path),
-         "--results", str(results_path)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [str(python), str(Path(worker).resolve())],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", env=env, start_new_session=True,
     )
+    outcome = None
     try:
-        with log_path.open("w", encoding="utf-8") as log:
-            for line in process.stdout:
-                log.write(line)
-                log.flush()
-                if echo:
-                    print(line, end="", flush=True)
+        try:
+            process.stdin.write(payload)
+            process.stdin.flush()
+        except BrokenPipeError:
+            pass  # An early startup error is still printed by the stdout loop.
+        finally:
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        for line in process.stdout:
+            if line.startswith(RESULT_PREFIX):
+                try:
+                    message = json.loads(line[len(RESULT_PREFIX):])
+                    if (not isinstance(message, dict)
+                            or message.get("status") not in {"complete", "failed"}
+                            or not isinstance(message.get("results"), list)):
+                        raise ValueError("Invalid worker result")
+                    outcome = message
+                except (ValueError, TypeError):
+                    if echo:
+                        print("Worker-এর ফলাফল পড়া যায়নি।", flush=True)
+                continue  # Do not dump the machine-readable JSON into the notebook.
+            if echo:
+                print(line, end="", flush=True)
         returncode = process.wait()
     except BaseException:
         stop_worker(process)
         raise
     finally:
         process.stdout.close()
-    try:
-        outcome = json.loads(results_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not process.stdin.closed:
+            process.stdin.close()
+    if outcome is None:
         outcome = {"status": "failed", "results": [],
-                   "error": f"Worker বন্ধ হয়েছে (code {returncode})। নিচের log দেখুন, তারপর আবার run করুন।"}
+                   "error": f"Worker ফলাফল দেয়নি (code {returncode})। উপরের terminal output দেখুন।"}
+        if echo:
+            print(outcome["error"], flush=True)
     if returncode:
         outcome["status"] = "failed"
-    return {**outcome, "returncode": returncode, "log": str(log_path)}
+    return {**outcome, "returncode": returncode}

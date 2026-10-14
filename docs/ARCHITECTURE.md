@@ -28,7 +28,7 @@ Colab kernel: হালকা setup → Drive mount → settings → worker চ�
 - সফল setup-এর fingerprint রাখা হয়। একই requirements/Python এবং উপযুক্ত installed version থাকলে `pip install` বাদ যায়। পরীক্ষা হয় আলাদা interpreter-এ, kernel-এর পুরোনো module cache থেকে নয়।
 - অসম্পূর্ণ install-এর completion marker থাকে না; পরের run আবার চেষ্টা করে। Requirements বদলালে setup পুনরায় যাচাই হয়।
 - প্রতিটি অনুবাদ run নতুন process পায়। শেষ/ব্যর্থ হওয়ার পর process বন্ধ হয়; পরের worker পুরোনো CUDA context পায় না। এটি ভাঙা driver, অপর্যাপ্ত GPU memory বা network সমস্যা নিজে ঠিক করে না।
-- প্রতিটি run-এর config, result ও log আলাদা ID-তে লেখা হয়। পুরোনো ফলাফল ভুল করে নতুন সফল run হিসেবে দেখানো হয় না।
+- Config stdin pipe দিয়ে worker-এ যায়; structured result stdout pipe দিয়ে memory-তে ফেরে। Parent protocol JSON লুকিয়ে শুধু মানুষের পড়ার মতো progress/error দেখায়। কোনো config/result/log ফাইল লেখা হয় না; প্রতি run-এর outcome নতুন করে শুরু হয়, তাই পুরোনো সফল ফলাফল পুনর্ব্যবহার হয় না।
 - Notebook interrupt করলে process group-এ SIGTERM দেওয়া হয়; প্রয়োজন হলে SIGKILL। Worker ও তার FFmpeg subprocess বন্ধ হয়। Checkpoint মুছে ফেলা হয় না।
 - Drive-এর mount ও `MyDrive` পড়া যায় কি না যাচাই হয়। সক্রিয় mount পুনর্ব্যবহার হয়; সাধারণ local folder-কে Drive ধরা হয় না। নষ্ট সংযোগে ব্যবহারকারী `REMOUNT_DRIVE=True` করতে পারেন; জোর করে mount ভাঙা হয় না।
 
@@ -56,7 +56,7 @@ flowchart TD
 | `/content/drive/MyDrive/Video/input` | ব্যবহারকারীর মূল ভিডিও |
 | `/content/proxmax-work/<job>` | local video, WAV, checkpoint, clip ও output |
 | `/content/proxmax-model-cache` | model/tokenizer cache |
-| `/content/proxmax-app` | venv, embedded source ও প্রতিটি run-এর log |
+| `/content/proxmax-app` | venv ও embedded source; error/log ফাইল নয় |
 | `/content/drive/MyDrive/Video/output/<job>` | সম্পন্ন ফলাফল |
 
 ভারী কাজ local file নিয়েই হয়। Input কপি করার সময়েই hash হয়, আলাদা করে Drive থেকে আবার পুরো input পড়তে হয় না। Output checksum যাচাইয়ের জন্য Drive-এ লেখা temporary file পড়া হয়; নির্ভরযোগ্যতার জন্য এই অতিরিক্ত I/O রাখা হয়েছে।
@@ -73,8 +73,9 @@ flowchart TD
 
 ### খ. ইংরেজি speech recognition
 
-Model: `Systran/faster-whisper-large-v3-turbo`। `language="en"`, `task="transcribe"`; Whisper-এর translation mode নয়।
+Model: `mobiuslabsgmbh/faster-whisper-large-v3-turbo`—[faster-whisper v1.2.1-এর registry](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/utils.py) অনুযায়ী। পুরোনো ভুল `Systran/faster-whisper-large-v3-turbo` এবং `turbo`/`large-v3-turbo` alias সংশোধন করা হয়। `language="en"`, `task="transcribe"`; Whisper-এর translation mode নয়।
 
+- ASR, অনুবাদ ও TTS-এর public download-এ `token=False`; পুরোনো invalid cached token ব্যবহার হয় না। Worker implicit token-ও বন্ধ রাখে। Private/gated model-এর authentication এই সংস্করণের বাইরে। ASR-এ HTTP 401/403/404 হলে model ID/revision-সহ স্পষ্ট error ও original traceback দেখায়, নীরবে অন্য model ব্যবহার করে না।
 - CUDA-তে পছন্দ `int8_float16`, CPU-তে `int8`; প্রয়োজন হলে সমর্থিত floating-point type।
 - Word timestamp, beam size 5, VAD এবং 500 ms silence threshold।
 - আগের text-এর conditioning বন্ধ, যাতে repetition ছড়ানোর ঝুঁকি কমে; কিছু দীর্ঘ context হারায়।
@@ -146,7 +147,7 @@ local input → asr.json → translation.json → clips/*.wav + metadata
 - বাস্তবে ব্যবহৃত model commit manifest-এ থাকে। Default `main` ভবিষ্যতে বদলাতে পারে; reproducibility চাইলে `*_revision` pin করুন।
 - নষ্ট JSON/timestamp error দেয়; নীরবে উপেক্ষা করে না। প্রয়োজন হলে সংশ্লিষ্ট local checkpoint সরিয়ে আবার তৈরি করুন।
 - `keep_local=True` থাকলে local `translation.json`-এর শুধু `bangla` field সংশোধন করা যায়। ID/time বদলাবেন না।
-- ব্যর্থতায় local `failure.json` ও run log থাকে। পরের ভিডিও default-ভাবে চলতে পারে। সফল local job কেবল verified publication-এর পরে মুছে যায়।
+- ব্যর্থতার stage/error ও traceback terminal-এ আসে; `failure.json`, `batch_results.json` বা run log লেখা হয় না। Checkpoint থাকে, error report নয়। পরের ভিডিও default-ভাবে চলতে পারে। সফল local job কেবল verified publication-এর পরে মুছে যায়।
 - সফল output থাকলেই পরের run সেটি বাদ দেয় না। Input hash আবার যাচাই হয়; checkpoint না থাকলে কাজ আবার হয়।
 - Runtime হারালে venv, model cache ও local checkpoint হারায়। Drive-এর সম্পন্ন ফলাফল থাকে। Checkpoint ক্রমাগত Drive-এ sync করা হয় না, যাতে latency না বাড়ে।
 
@@ -159,14 +160,7 @@ Manifest-এর stage time কেবল বর্তমান run-এর সম�
 - Drive authentication Colab পরিচালনা করে। Credential code-এ রাখা হয় না।
 - Model download ছাড়া inference-এর জন্য speech/text বাইরের API-তে পাঠানো হয় না; Colab নিজেই cloud VM।
 - `trust_remote_code=False`, torch 2.6+; FFmpeg argument-list দিয়ে চলে, filename shell-এ বসানো হয় না।
-- Transcript, local checkpoint, log ও output ব্যক্তিগত তথ্য বহন করতে পারে। প্রকাশ্য repository-তে রাখবেন না।
+- Transcript, local checkpoint, terminal output ও ভিডিও ব্যক্তিগত তথ্য বহন করতে পারে। প্রকাশ্য repository-তে রাখবেন না।
 - NLLB/MMS-এর CC-BY-NC-4.0 non-commercial সীমা প্রযোজ্য; code license সেটি বদলায় না। Model card-এর link README-তে আছে।
 
-পরীক্ষার স্তর:
-
-১. Unit: timing, grouping, hash, cache, file publication, পুনরায় setup, Drive mount reuse ও নতুন worker।
-২. Synthetic media: আসল FFmpeg extraction, delayed audio, fitting, timeline, mux/transcode; orchestration-এ inference stub।
-৩. Notebook: schema, code syntax, source freshness, খালি output, সংক্ষিপ্ত বাংলা নির্দেশনা।
-৪. [আসল Colab পরীক্ষা](COLAB_SMOKE_TEST.md): model download, GPU/CPU, বাস্তব বাংলা উচ্চারণ, অর্থ ও Drive output।
-
-প্রথম তিনটি পাস করলেই চতুর্থটি পাস হয়েছে বলা যায় না।
+Test suite ও test-only CI repository থেকে সরানো হয়েছে। Source বদলানোর পরে `python scripts/build_notebook.py --check` দিয়ে notebook হালনাগাদ আছে কি না দেখুন। বাস্তব ব্যবহার যাচাই করতে Colab-এ ছোট ভিডিও দিয়ে model download, GPU/CPU, বাংলা উচ্চারণ, timing ও Drive output পরীক্ষা করুন; source validation দিয়ে এগুলো নিশ্চিত হয় না।

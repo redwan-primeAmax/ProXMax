@@ -19,7 +19,7 @@ Google Colab-এ ইংরেজি ভিডিওর কথা শনাক্
 | অনুবাদ করা ভিডিও | `/content/drive/MyDrive/Video/output` |
 | কাজের ফাইল ও checkpoint | `/content/proxmax-work` |
 | model cache | `/content/proxmax-model-cache` |
-| আলাদা environment, worker ও log | `/content/proxmax-app` |
+| আলাদা environment ও worker | `/content/proxmax-app` |
 
 Notebook-এ **একটিই cell**। Processing code স্বাভাবিক Colab ভিউতে লুকানো থাকে; শুধু Run, প্রয়োজনীয় status ও ফলাফল দেখা যায়। এটি code-এর নিরাপত্তা-সীমা নয়—প্রয়োজনে **Show code** দিয়ে source দেখা যায়।
 
@@ -47,7 +47,7 @@ Notebook-এ **একটিই cell**। Processing code স্বাভাব�
 - `asr.json` — ইংরেজি শনাক্তকরণের তথ্য।
 - `manifest.json` — সম্পন্ন হওয়ার চিহ্ন, checksum, সংস্করণ ও সময়ের তথ্য।
 
-ফাইল কপি ও checksum যাচাইয়ের **সবশেষে** manifest লেখা হয়। এটি ছাড়া folder-টিকে সম্পন্ন ধরবেন না। `Video/output/batch_results.json`-এ সর্বশেষ batch-এর ফলাফল থাকে। Drive mount থেকে checksum পড়া যাচাই করা হয়; Google server-এ তাৎক্ষণিক স্থায়ী সংরক্ষণের নিশ্চয়তা নয়।
+ফাইল কপি ও checksum যাচাইয়ের **সবশেষে** manifest লেখা হয়। এটি ছাড়া folder-টিকে সম্পন্ন ধরবেন না। Batch-এর ফলাফল ও error সরাসরি cell/terminal output-এ দেখায়; `batch_results.json`, `failure.json` বা `.log` ফাইল লেখা হয় না। Drive mount থেকে checksum পড়া যাচাই করা হয়; Google server-এ তাৎক্ষণিক স্থায়ী সংরক্ষণের নিশ্চয়তা নয়।
 
 ## কাজের ধারা
 
@@ -61,7 +61,7 @@ Drive → local copy → FFmpeg → ইংরেজি ASR → বাংলা �
 - **MMS Bengali + uroman:** স্থানীয়ভাবে একটি বাংলা কণ্ঠ তৈরি।
 - Model-গুলো একটির পর একটি চলে। অডিও timeline disk-backed; সম্ভব হলে H.264 picture re-encode না করে কপি করা হয়।
 
-[স্থাপত্যের বিস্তারিত](docs/ARCHITECTURE.md) · [Colab-এ পরীক্ষার তালিকা](docs/COLAB_SMOKE_TEST.md)
+[স্থাপত্যের বিস্তারিত](docs/ARCHITECTURE.md)
 
 ## প্রয়োজন ও সীমাবদ্ধতা
 
@@ -89,6 +89,10 @@ Drive → local copy → FFmpeg → ইংরেজি ASR → বাংলা �
 
 ## সমস্যা হলে
 
+`input_dir`, `device` ইত্যাদি থাকা JSON হলো settings, error নয়। আগের সংস্করণের `Systran/faster-whisper-large-v3-turbo` ID ভুল ছিল। এখন [faster-whisper-এর model তালিকা](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/utils.py) অনুযায়ী `mobiuslabsgmbh/faster-whisper-large-v3-turbo` ব্যবহৃত হয়; পুরোনো ID override করলেও সংশোধন হয়। Public model download-এ `token=False` ব্যবহৃত হয়, তাই আগের invalid cached token পাঠানো হয় না। এই সংস্করণ private/gated model authentication সমর্থন করে না।
+
+Config/result worker-এর সঙ্গে **memory pipe** দিয়ে আদান-প্রদান হয়; আলাদা config/result/error/log ফাইল হয় না। Error ও traceback সরাসরি terminal-এ আসে। ভিডিও, subtitle, সফল output manifest এবং resume checkpoint আগের মতোই থাকবে। পুরোনো সংস্করণের লেখা diagnostic ফাইল স্বয়ংক্রিয়ভাবে মুছে ফেলা হয় না।
+
 | সমস্যা | করণীয় |
 |---|---|
 | Drive সংযোগ নষ্ট | একই cell-এর `REMOUNT_DRIVE` ঘরটি নির্বাচন করে চালান; ঠিক হলে আবার `False` করুন |
@@ -97,25 +101,20 @@ Drive → local copy → FFmpeg → ইংরেজি ASR → বাংলা �
 | Download error | ইন্টারনেট/Hugging Face সংযোগ ঠিক করে আবার চালান |
 | ভিডিও পাওয়া যাচ্ছে না | সঠিক input folder, সমর্থিত extension ও সম্পূর্ণ upload নিশ্চিত করুন |
 | অনুবাদ ভুল/খুব দ্রুত | `keep_local=True` রেখে local job-এর `translation.json`-এ শুধু `bangla` লেখা ঠিক করে আবার চালান |
-| অন্য error | শেষে দেখানো `/content/proxmax-app/runs/*.log` এবং local `failure.json`-এর তথ্য দিন |
+| অন্য error | cell/terminal-এ দেখানো error ও traceback কপি করুন; কোনো error ফাইল খুঁজতে হবে না |
 
-সংশোধনের সময় phrase-এর ID/timestamp বদলাবেন না। Drive-এর `segments.json` বদলালে তা input checkpoint হিসেবে নেওয়া হয় না। Log-এ transcript/path থাকতে পারে—শেয়ার করার আগে ব্যক্তিগত তথ্য সরান। তৃতীয় পক্ষের error/traceback ও কারিগরি field name মূল ভাষাতেই থাকে।
+সংশোধনের সময় phrase-এর ID/timestamp বদলাবেন না। Drive-এর `segments.json` বদলালে তা input checkpoint হিসেবে নেওয়া হয় না। Terminal output-এ transcript/path থাকতে পারে—শেয়ার করার আগে ব্যক্তিগত তথ্য সরান। তৃতীয় পক্ষের error/traceback ও কারিগরি field name মূল ভাষাতেই থাকে।
 
-## উন্নয়ন ও পরীক্ষা
+## Notebook হালনাগাদ
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-# OS package manager দিয়ে ffmpeg ও ffprobe install করুন।
 python scripts/build_notebook.py
 python scripts/build_notebook.py --check
-python -m pytest -q
 ```
 
-`proxmax/pipeline.py`, `colab_runtime.py`, `worker.py` বা dependency বদলালে notebook আবার generate করুন। Notebook source সঙ্গে নিয়েই চলে; GitHub থেকে code download করে না। একমাত্র cell-টি Colab form view-তে থাকে; processing source সাধারণ ভিউতে দেখা যায় না।
+`proxmax/pipeline.py`, `colab_runtime.py`, `worker.py` বা dependency বদলালে notebook আবার generate করুন। Generator চালাতে শুধু Python লাগে; test dependency লাগে না। Notebook source সঙ্গে নিয়েই চলে; GitHub থেকে code download করে না। একমাত্র cell-টি Colab form view-তে থাকে; processing source সাধারণ ভিউতে দেখা যায় না।
 
-পরীক্ষায় timing, cache, FFmpeg, প্রকাশের checksum, পুনরায় setup, worker isolation ও notebook যাচাই হয়। **আসল model download/GPU inference/বাংলা উচ্চারণ এই lightweight test-এ যাচাই হয় না।** Release-এর আগে [Colab checklist](docs/COLAB_SMOKE_TEST.md) অনুসরণ করুন।
+ব্যবহারের আগে Colab-এ একটি ছোট ভিডিও দিয়ে model download, বাংলা উচ্চারণ, timing ও Drive output যাচাই করুন।
 
 চাইলে repository থেকে আলাদা CLI-ও চালানো যায়; compatible torch, FFmpeg ও `requirements-colab.txt` আগে install করতে হবে:
 
@@ -133,7 +132,7 @@ python -m proxmax \
 
 নিজের অনুমোদিত ভিডিও ব্যবহার করুন। Model download Hugging Face থেকে হয়; speech/text কোনো hosted inference API-তে পাঠানো হয় না। তবে Colab ও Drive নিজেরাই cloud service।
 
-- [Whisper conversion](https://huggingface.co/Systran/faster-whisper-large-v3-turbo)
+- [Whisper conversion](https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo)
 - [NLLB](https://huggingface.co/facebook/nllb-200-distilled-600M) — **CC-BY-NC-4.0**
 - [MMS Bengali](https://huggingface.co/facebook/mms-tts-ben) — **CC-BY-NC-4.0**
 
