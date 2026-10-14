@@ -1,6 +1,8 @@
 # মূল inference প্যাকেজ নির্দিষ্ট সংস্করণে; Colab-এর torch/CUDA অপরিবর্তিত থাকে।
 # নিজস্ব venv-এ install হয়। Python >= 3.10 এবং torch >= 2.6 প্রয়োজন।
 faster-whisper==1.2.1
+# faster-whisper 1.2.1-এর metadata_errors API-এর সঙ্গে সামঞ্জস্যপূর্ণ PyAV।
+av==16.0.1
 ctranslate2==4.6.0
 transformers==4.57.6
 sentencepiece==0.2.1
