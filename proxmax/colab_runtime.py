@@ -117,20 +117,30 @@ def stop_worker(process, timeout=5):
 RESULT_PREFIX = "PROXMAX_RESULT\t"
 
 
-def run_isolated(python, worker, config, echo=True):
+def run_isolated(python, worker, config, echo=True, *, api_key=None):
     """Fresh worker; config/results travel through pipes, never diagnostic files."""
     payload = json.dumps(config, ensure_ascii=False)
     env = os.environ.copy()
+    if api_key is not None:
+        env["GEMINI_API_KEY"] = api_key.strip()
+    redaction_key = env.get("GEMINI_API_KEY", "")
     env.update(PYTHONUNBUFFERED="1", TOKENIZERS_PARALLELISM="false",
                HF_HOME="/content/proxmax-model-cache", HF_HUB_DISABLE_TELEMETRY="1",
-               HF_HUB_DISABLE_IMPLICIT_TOKEN="1")
+               HF_HUB_DISABLE_IMPLICIT_TOKEN="1", USE_TF="0", USE_FLAX="0")
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
-    process = subprocess.Popen(
-        [str(python), str(Path(worker).resolve())],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", env=env, start_new_session=True,
-    )
+    try:
+        process = subprocess.Popen(
+            [str(python), str(Path(worker).resolve())],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", env=env, start_new_session=True,
+        )
+    except (OSError, ValueError):
+        redaction_key = ""
+        raise RuntimeError("Worker চালু হয়নি; setup/interpreter path যাচাই করুন।") from None
+    finally:
+        env.pop("GEMINI_API_KEY", None)
+        api_key = None
     outcome = None
     try:
         try:
@@ -144,6 +154,8 @@ def run_isolated(python, worker, config, echo=True):
             except BrokenPipeError:
                 pass
         for line in process.stdout:
+            if redaction_key:
+                line = line.replace(redaction_key, "[REDACTED]")
             if line.startswith(RESULT_PREFIX):
                 try:
                     message = json.loads(line[len(RESULT_PREFIX):])
@@ -163,6 +175,7 @@ def run_isolated(python, worker, config, echo=True):
         stop_worker(process)
         raise
     finally:
+        redaction_key = ""
         process.stdout.close()
         if not process.stdin.closed:
             process.stdin.close()

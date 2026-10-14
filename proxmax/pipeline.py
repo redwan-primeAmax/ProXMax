@@ -24,10 +24,19 @@ import tempfile
 import time
 import uuid
 import wave
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-PIPELINE_VERSION = "1.0.0"
+if __package__:
+    from .gemini import GeminiClient
+    from .language import (group_timed_words, prepare_segments, relevant_glossary,
+                           quality_issues, parse_translations, translation_messages, spoken_bengali)
+else:
+    from gemini import GeminiClient
+    from language import (group_timed_words, prepare_segments, relevant_glossary,
+                          quality_issues, parse_translations, translation_messages, spoken_bengali)
+
+PIPELINE_VERSION = "2.1.0"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 LOG = logging.getLogger("proxmax")
 
@@ -37,9 +46,15 @@ class Config:
     input_dir: str = "/content/drive/MyDrive/Video/input"
     output_dir: str = "/content/drive/MyDrive/Video/output"
     work_dir: str = "/content/proxmax-work"
-    # These are public, downloadable checkpoints, not hosted inference APIs.
+    # ASR/TTS are local public checkpoints; translation defaults to the Gemini API.
     asr_model: str = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-    translation_model: str = "facebook/nllb-200-distilled-600M"
+    translation_model: str = "gemini-3.5-flash-lite"
+    translation_backend: str = "gemini"  # nllb is an explicit offline alternative
+    gemini_timeout_seconds: float = 120.0
+    gemini_http_retries: int = 2
+    domain: str = "general"  # football is an opt-in notebook control
+    glossary: dict = field(default_factory=dict)
+    translation_retries: int = 1
     tts_model: str = "facebook/mms-tts-ben"
     # Replace 'main' with Hub commit IDs for reproducible model snapshots.
     asr_revision: str = "main"
@@ -52,12 +67,18 @@ class Config:
     cpu_threads: int = 2
     max_utterance_seconds: float = 12.0
     max_utterance_words: int = 40
+    min_utterance_seconds: float = 2.0
+    segment_hard_seconds: float = 24.0
+    segment_hard_words: int = 80
+    merge_gap_seconds: float = 0.35
     split_gap_seconds: float = 0.65
     borrow_silence_seconds: float = 0.30
-    comfortable_speed: float = 1.50
-    overflow_policy: str = "stretch"  # stretch and flag, or error (never cut words)
-    max_source_tokens: int = 480
-    max_target_tokens: int = 512
+    min_speed: float = 0.90
+    max_speed: float = 1.25  # hard cap, including every fit retry
+    comfortable_speed: float = 1.25
+    overflow_policy: str = "error"  # legacy 'stretch' is also bounded by max_speed
+    max_source_tokens: int = 8192
+    max_target_tokens: int = 8192
     max_tts_chars: int = 220
     sample_rate: int = 16000
     seed: int = 42
@@ -68,20 +89,42 @@ class Config:
     subprocess_timeout: int = 7200
 
     def validate(self):
+        if self.translation_backend not in {"gemini", "nllb"}:
+            raise ValueError("translation_backend must be gemini or nllb")
+        if type(self.gemini_http_retries) is not int or not 0 <= self.gemini_http_retries <= 3:
+            raise ValueError("gemini_http_retries must be an integer from 0 to 3")
+        if type(self.translation_batch_size) is not int or not 1 <= self.translation_batch_size <= 16:
+            raise ValueError("translation_batch_size must be an integer from 1 to 16")
+        if self.domain not in {"general", "football"}:
+            raise ValueError("domain must be general or football")
+        if not isinstance(self.glossary, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip()
+            for k, v in self.glossary.items()
+        ):
+            raise ValueError("glossary must map nonempty English strings to Bengali strings")
+        if type(self.translation_retries) is not int or not 0 <= self.translation_retries <= 3:
+            raise ValueError("translation_retries must be an integer from 0 to 3")
+        if not (0.90 <= self.min_speed <= 1.0 <= self.max_speed <= 1.25):
+            raise ValueError("Speech speed must stay within 0.90–1.25x")
+        if not (1 <= self.comfortable_speed <= self.max_speed):
+            raise ValueError("comfortable_speed must be between 1 and max_speed")
+        if self.segment_hard_seconds < self.max_utterance_seconds or self.segment_hard_words < self.max_utterance_words:
+            raise ValueError("Hard segmentation limits must not be smaller than soft targets")
         if self.device not in {"auto", "cpu", "cuda"}:
             raise ValueError("device must be auto, cpu, or cuda")
         if self.overflow_policy not in {"stretch", "error"}:
             raise ValueError("overflow_policy must be stretch or error")
         for name in ("asr_beam_size", "translation_beams", "translation_batch_size",
                      "cpu_threads", "max_utterance_seconds", "max_utterance_words",
-                     "comfortable_speed", "max_source_tokens", "max_target_tokens",
-                     "max_tts_chars", "sample_rate", "subprocess_timeout"):
+                     "comfortable_speed", "min_utterance_seconds", "segment_hard_seconds", "segment_hard_words",
+                     "max_source_tokens", "max_target_tokens",
+                     "max_tts_chars", "sample_rate", "subprocess_timeout", "gemini_timeout_seconds"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if self.comfortable_speed < 1:
             raise ValueError("comfortable_speed must be at least 1")
-        for name in ("borrow_silence_seconds", "split_gap_seconds", "min_free_gb"):
+        for name in ("borrow_silence_seconds", "split_gap_seconds", "merge_gap_seconds", "min_free_gb"):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")
         source, destination, work = map(
@@ -170,7 +213,7 @@ def package_versions():
 def recipe_id(config):
     recipe = asdict(config)
     for key in ("input_dir", "output_dir", "work_dir", "keep_local", "continue_on_error",
-                "min_free_gb", "subprocess_timeout"):
+                "min_free_gb", "subprocess_timeout", "gemini_timeout_seconds", "gemini_http_retries"):
         recipe.pop(key)
     encoded = json.dumps({"pipeline": PIPELINE_VERSION, "config": recipe,
                           "packages": package_versions()}, sort_keys=True).encode()
@@ -246,36 +289,7 @@ def extract_audio(local_video, destination, info, config):
 # %% Timestamp grouping and subtitle generation (no ML dependencies)
 
 def group_words(words, duration, config):
-    """Keep absolute ASR times; split at sentences, pauses and bounded phrase lengths."""
-    output, group = [], []
-    previous_end = 0.0
-
-    def flush():
-        if group:
-            output.append({"id": len(output), "start": group[0]["start"],
-                           "end": group[-1]["end"],
-                           "english": " ".join(w["text"] for w in group).strip()})
-            group.clear()
-
-    for word in words:
-        text = str(word.get("text", "")).strip()
-        start, end = float(word["start"]), float(word["end"])
-        if not math.isfinite(start) or not math.isfinite(end):
-            raise ValueError("Nonfinite ASR timestamp")
-        start, end = max(0.0, previous_end, start), min(duration, end)
-        if not text or end <= start:
-            continue
-        if group and (
-            start - group[-1]["end"] >= config.split_gap_seconds
-            or end - group[0]["start"] > config.max_utterance_seconds
-            or len(group) >= config.max_utterance_words
-            or re.search(r"[.!?][\"')\]]*$", group[-1]["text"])
-        ):
-            flush()
-        group.append({"start": start, "end": end, "text": text})
-        previous_end = end
-    flush()
-    return output
+    return group_timed_words(words, duration, config)
 
 
 def validate_segments(segments, duration, translated=False):
@@ -444,6 +458,10 @@ def transcribe(audio_path, duration, config):
             beam_size=config.asr_beam_size, word_timestamps=True,
             vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
             condition_on_previous_text=False,
+            initial_prompt=("FC Mobile football commentary. Ballon d'Or, OVR, CAM, center back, "
+                            "Star Pass, Gerd Müller, Lev Yashin, Kaká, Beckenbauer, Cannavaro, "
+                            "Gullit, Matthäus, Messi, Ronaldo, Dembélé."
+                            if config.domain == "football" else None),
         )
         words, raw_segments = [], []
         for segment in stream:  # Consume the lazy generator while the model is alive.
@@ -469,7 +487,7 @@ def transcribe(audio_path, duration, config):
 
 # %% Batched English-to-Bangla translation
 
-def translate(segments, config):
+def translate_nllb(segments, config):
     if not segments:
         return {"segments": [], "model_commit": None}
     import torch
@@ -483,36 +501,37 @@ def translate(segments, config):
         )
         model = AutoModelForSeq2SeqLM.from_pretrained(
             config.translation_model, revision=config.translation_revision, token=False,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            dtype=torch.float16 if device == "cuda" else torch.float32,
             trust_remote_code=False,
         ).to(device).eval()
         bangla_id = tokenizer.convert_tokens_to_ids("ben_Beng")
         if bangla_id is None or bangla_id == tokenizer.unk_token_id:
             raise ValueError("Translation tokenizer does not support ben_Beng")
         output = []
+        target_limit = min(config.max_target_tokens, 512)
         for offset in range(0, len(segments), config.translation_batch_size):
             batch = segments[offset:offset + config.translation_batch_size]
-            texts = [s["english"] for s in batch]
+            texts = [s["english_normalized"] for s in batch]
             lengths = [len(tokenizer.encode(t)) for t in texts]
-            if max(lengths) > config.max_source_tokens:
+            if max(lengths) > min(config.max_source_tokens, 480):
                 raise ValueError("ASR phrase exceeds translation token limit; reduce max_utterance_words")
             inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=False).to(device)
             with torch.inference_mode():
                 generated = model.generate(
                     **inputs, forced_bos_token_id=bangla_id,
-                    num_beams=config.translation_beams, max_new_tokens=config.max_target_tokens,
+                    num_beams=config.translation_beams, max_new_tokens=target_limit,
                 )
             for segment, ids in zip(batch, generated):
                 # NLLB's decoder start token can itself be EOS: ignore the first token.
                 nonpadding = [t for t in ids.tolist() if t != tokenizer.pad_token_id]
                 if (tokenizer.eos_token_id not in ids[1:].tolist()
-                        or len(nonpadding) >= config.max_target_tokens + 1):
+                        or len(nonpadding) >= target_limit + 1):
                     # A forced EOS at max_length is still potentially truncated text.
                     raise ValueError(f"Translation hit the generation limit at segment {segment['id']}")
                 text = tokenizer.decode(ids, skip_special_tokens=True).strip()
                 if not text or not re.search(r"[\u0980-\u09FF]", text):
                     raise ValueError(f"Empty/non-Bengali output at segment {segment['id']}; review source text")
-                output.append({**segment, "bangla": text})
+                output.append({**segment, "bangla": text, "bangla_concise": text})
             LOG.info("অনুবাদ হয়েছে: %s/%s অংশ", len(output), len(segments))
         return {"segments": output, "model_commit": getattr(model.config, "_commit_hash", None)}
     finally:
@@ -520,28 +539,131 @@ def translate(segments, config):
         release_memory()
 
 
+def candidate_issues(segment, text, config):
+    source = segment.get("english_normalized", segment["english"])
+    glossary = relevant_glossary(source, config.domain, config.glossary)
+    return quality_issues(source, text, glossary, config.domain)
+
+
+def translate_gemini(segments, config, job=None):
+    client = GeminiClient(config)
+    progress = Path(job) / "translation_progress.json" if job is not None else None
+    signature = hashlib.sha256(json.dumps(
+        {"segments": segments, "recipe": recipe_id(config)},
+        sort_keys=True, ensure_ascii=False,
+    ).encode()).hexdigest()
+    output, receipts = [], []
+    if progress is not None and progress.exists():
+        saved = read_json(progress)
+        if saved.get("signature") != signature:
+            raise ValueError("Gemini progress checkpoint settings/source বদলেছে; checkpoint যাচাই করুন")
+        cached = saved["segments"]
+        if not isinstance(cached, list) or len(cached) > len(segments):
+            raise ValueError("Invalid Gemini progress checkpoint")
+        parsed = parse_translations(json.dumps([
+            {"id": item["id"], "bangla": item["bangla"], "concise": item["bangla_concise"]}
+            for item in cached], ensure_ascii=False), segments[:len(cached)])
+        output = [{**source, "bangla": item["bangla"], "bangla_concise": item["concise"]}
+                  for source, item in zip(segments, parsed)]
+        receipts = saved["receipts"]
+        LOG.info("Gemini checkpoint থেকে %s অংশ পুনর্ব্যবহার", len(output))
+    for offset in range(len(output), len(segments), config.translation_batch_size):
+        batch = segments[offset:offset + config.translation_batch_size]
+        before = segments[offset - 1]["english_normalized"] if offset else ""
+        after_index = offset + len(batch)
+        after = segments[after_index]["english_normalized"] if after_index < len(segments) else ""
+        glossary = relevant_glossary(" ".join(s["english_normalized"] for s in batch), config.domain, config.glossary)
+        feedback, best, best_issues = "", None, float("inf")
+        for attempt in range(config.translation_retries + 1):
+            messages = translation_messages(batch, before, after, glossary, feedback, config.domain)
+            response, receipt = client.generate(messages, config)
+            receipts.append({"cue_ids": [s["id"] for s in batch], "attempt": attempt + 1, **receipt})
+            try:
+                parsed = parse_translations(response, batch)
+            except (ValueError, TypeError):
+                feedback = "Invalid JSON/schema. Return a complete array, with exactly the requested IDs and both Bengali versions."
+                continue
+            errors = []
+            for source, item in zip(batch, parsed):
+                full = candidate_issues(source, item["bangla"], config)
+                concise = candidate_issues(source, item["concise"], config)
+                if full or concise:
+                    errors.append({"id": source["id"], "full": full, "concise": concise})
+            issue_count = sum(len(e["full"]) + len(e["concise"]) for e in errors)
+            if issue_count < best_issues:
+                best, best_issues = parsed, issue_count
+            if not errors:
+                break
+            feedback = json.dumps(errors, ensure_ascii=False)
+        if best is None:
+            raise ValueError(f"Gemini JSON/IDs সঠিক নয়, IDs={[s['id'] for s in batch]}; অসম্পূর্ণ অনুবাদ গ্রহণ করা হয়নি")
+        for source, item in zip(batch, best):
+            output.append({**source, "bangla": item["bangla"], "bangla_concise": item["concise"]})
+        if progress is not None:
+            atomic_json(progress, {"signature": signature, "segments": output, "receipts": receipts})
+        LOG.info("Gemini অনুবাদ হয়েছে: %s/%s অংশ", len(output), len(segments))
+    return {"segments": output, "model_commit": None,
+            "api": {"provider": "Google Gemini", "requested_model": config.translation_model,
+                    "model_versions": sorted({r["model_version"] for r in receipts if r.get("model_version")}),
+                    "requests": receipts}}
+
+
+def translate(segments, config, job=None):
+    if not segments:
+        return {"segments": [], "model_commit": None}
+    prepared = prepare_segments(segments, config)
+    result = (translate_gemini(prepared, config, job) if config.translation_backend == "gemini"
+              else translate_nllb(prepared, config))
+    for segment in result["segments"]:
+        segment["translation_checks"] = {
+            "full": candidate_issues(segment, segment["bangla"], config),
+            "concise": candidate_issues(segment, segment["bangla_concise"], config),
+        }
+    return result
+
+
 # %% Local Bengali speech synthesis and duration fitting
 
+class TimingOverflow(ValueError):
+    """A complete utterance cannot fit without exceeding the hard speed limit."""
+
+
+def trim_edge_silence(audio, sample_rate):
+    """Only trim low-level outer silence, retaining 50 ms around audible content."""
+    import numpy as np
+    if not len(audio) or not np.isfinite(audio).all():
+        raise ValueError("Invalid TTS waveform")
+    peak = float(np.max(np.abs(audio)))
+    active = np.flatnonzero(np.abs(audio) > max(1e-5, peak * 0.001))
+    if not len(active):
+        raise ValueError("TTS produced silent audio")
+    margin = round(0.05 * sample_rate)
+    return audio[max(0, active[0] - margin):min(len(audio), active[-1] + margin + 1)]
+
+
 def fit_audio(raw_path, output_path, slot_seconds, config):
-    """Speed up only when needed; never truncate spoken samples to force a fit."""
+    """Hard 0.90–1.25x bounds; never crop speech or exceed the cap on retries."""
     import numpy as np
     import soundfile as sf
+    if not (0.90 <= config.min_speed <= 1 <= config.max_speed <= 1.25):
+        raise ValueError("Speech speed must stay within 0.90–1.25x")
+    cap = min(config.max_speed, config.comfortable_speed) if config.overflow_policy == "error" else config.max_speed
+    if not config.min_speed <= cap <= config.max_speed:
+        raise ValueError("The effective speed cap is outside the configured bounds")
     native = sf.info(raw_path)
     raw_seconds = native.frames / native.samplerate
     target_samples = round(slot_seconds * config.sample_rate)
     if target_samples <= 0 or raw_seconds <= 0:
         raise ValueError("Audio and timestamp slot must have positive duration")
-    rate = max(1.0, raw_seconds / slot_seconds)
-    flagged = rate > config.comfortable_speed
-    if flagged and config.overflow_policy == "error":
-        raise ValueError(f"Dub needs {rate:.2f}x speed; edit/shorten translation or use overflow_policy='stretch'")
-    if flagged:
-        LOG.warning("উচ্চারণ %.2fx দ্রুত হচ্ছে (সীমা %.2fx); শুনে যাচাই করুন",
-                    rate, config.comfortable_speed)
+    # Small atempo window/rounding differences are measured, not solved by truncation.
+    if raw_seconds / cap > slot_seconds + 0.08:
+        raise TimingOverflow(f"{raw_seconds:.3f}s speech / {slot_seconds:.3f}s slot needs "
+                             f"{raw_seconds / slot_seconds:.2f}x; hard limit {cap:.2f}x")
+    rate = min(cap, max(config.min_speed, raw_seconds / slot_seconds))
     temp = Path(output_path).with_suffix(".tempo.wav")
+    partial = Path(output_path).with_suffix(".partial.wav")
     try:
         for attempt in range(4):
-            # Resample before tempo so target counts refer to the timeline sample rate.
             run_command([
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                 "-i", raw_path, "-af", f"aresample={config.sample_rate}," + atempo_filter(rate),
@@ -550,24 +672,39 @@ def fit_audio(raw_path, output_path, slot_seconds, config):
             samples, sr = sf.read(temp, dtype="float32")
             if len(samples) <= target_samples:
                 break
-            # atempo is not sample-exact. Retry faster instead of cropping phonemes.
-            rate *= (len(samples) / target_samples) * 1.015
-            if config.overflow_policy == "error" and rate > config.comfortable_speed:
-                raise ValueError("Sample-exact fit would exceed comfortable_speed; edit the translation")
+            proposed = min(cap, rate * len(samples) / target_samples * 1.015)
+            if proposed <= rate + 1e-9:
+                raise TimingOverflow(f"অডিও {cap:.2f}x গতিতেও slot-এ ধরছে না; অনুবাদ সংক্ষিপ্ত করুন")
+            rate = proposed
         else:
-            raise RuntimeError("Could not fit speech without truncation; edit this translation")
+            raise TimingOverflow("সীমার মধ্যে sample-exact fit হয়নি; speech কাটা হয়নি")
         if not len(samples) or not np.isfinite(samples).all() or np.max(np.abs(samples)) < 1e-5:
             raise ValueError("Synthesis produced empty, silent or nonfinite audio")
-        # Pad silence, never speech-crop. This also gives exact per-slot length.
+        speech_seconds = len(samples) / sr
         samples = np.pad(samples, (0, target_samples - len(samples)))
-        partial = Path(output_path).with_suffix(".partial.wav")
         sf.write(partial, samples, sr, subtype="PCM_16")
         os.replace(partial, output_path)
         return {"raw_seconds": raw_seconds, "speed_factor": rate,
+                "speech_seconds": speech_seconds,
                 "review_required": rate > config.comfortable_speed,
                 "slot_seconds": target_samples / config.sample_rate}
     finally:
         temp.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+
+
+def usable_translations(segment, config):
+    choices = []
+    for variant, text in (("full", segment["bangla"]),
+                          ("concise", segment.get("bangla_concise", ""))):
+        if not text or any(text == old[1] for old in choices):
+            continue
+        issues = candidate_issues(segment, text, config)
+        if issues:
+            LOG.warning("অনুবাদ যাচাই, id=%s %s: %s", segment["id"], variant, "; ".join(issues))
+        else:
+            choices.append((variant, text))
+    return choices
 
 
 def synthesize(segments, duration, job, config):
@@ -576,15 +713,20 @@ def synthesize(segments, duration, job, config):
     import torch
     from transformers import AutoTokenizer, VitsModel, set_seed
     from uroman import Uroman
+    choices = [usable_translations(segment, config) for segment in segments]
+    invalid = [s["id"] for s, variants in zip(segments, choices) if not variants]
+    if invalid:
+        raise ValueError(f"অনুবাদ যাচাই ব্যর্থ, IDs={invalid}। {Path(job) / 'translation.json'}-এ "
+                         "bangla লেখা ঠিক করুন; শুধু speed কমালে অর্থের ভুল ঠিক হবে না।")
     device = torch_device(config)
     clips_dir = Path(job) / "clips"
     clips_dir.mkdir(exist_ok=True)
     tokenizer = model = romanizer = tokens = result = None
-    records = []
+    records, overflows = [], []
     recipe = recipe_id(config)
     tts_commit = None
     try:
-        for i, segment in enumerate(segments):
+        for i, (segment, variants) in enumerate(zip(segments, choices)):
             next_start = segments[i + 1]["start"] if i + 1 < len(segments) else duration
             slot_end = min(duration, next_start, segment["end"] + config.borrow_silence_seconds)
             start_sample = round(segment["start"] * config.sample_rate)
@@ -600,7 +742,9 @@ def synthesize(segments, duration, job, config):
             metadata = clip.with_suffix(".json")
             if clip.exists() and metadata.exists():
                 record = read_json(metadata)
-                if record.get("sha256") == sha256_file(clip):
+                if (record.get("sha256") == sha256_file(clip)
+                        and config.min_speed <= record.get("speed_factor", 0) <= config.max_speed
+                        and record.get("bangla") in [text for _, text in variants]):
                     records.append(record)
                     tts_commit = record.get("tts_model_commit", tts_commit)
                     continue
@@ -610,43 +754,69 @@ def synthesize(segments, duration, job, config):
                 model = VitsModel.from_pretrained(
                     config.tts_model, revision=config.tts_revision, token=False,
                     trust_remote_code=False,
-                ).to(device).eval()  # FP32 is deliberate: VITS can be unstable in FP16.
+                ).to(device).eval()
                 tts_commit = getattr(model.config, "_commit_hash", None)
                 if getattr(tokenizer, "is_uroman", False):
                     romanizer = Uroman()
-                    # Reuse one Romanizer, rather than construct one for every tokenization.
                     tokenizer.is_uroman = False
-            set_seed(config.seed + i)
-            parts = []
             native_rate = model.config.sampling_rate
-            for text in split_tts_text(segment["bangla"], config.max_tts_chars):
-                if romanizer is not None:
-                    text = romanizer.romanize_string(text, lcode="ben")
-                tokens = tokenizer(text, return_tensors="pt").to(device)
-                if tokens.input_ids.shape[-1] <= 1:
-                    raise ValueError(f"TTS tokenizer has no pronounceable text in segment {i}")
-                with torch.inference_mode():
-                    result = model(**tokens).waveform
-                part = result[0].float().cpu().numpy()
-                if not len(part) or not np.isfinite(part).all():
-                    raise ValueError(f"Invalid TTS waveform in segment {i}")
-                if parts:
-                    parts.append(np.zeros(round(0.08 * native_rate), dtype=np.float32))
-                parts.append(part)
-            audio = np.concatenate(parts)
-            peak = float(np.max(np.abs(audio)))
-            if peak > 0:
-                audio *= min(1.0, 0.95 / peak)  # Prevent clipping without boosting noise.
             raw = clips_dir / f"{i:05d}-raw.wav"
-            sf.write(raw, audio, native_rate, subtype="PCM_16")
-            timing = fit_audio(raw, clip, slot_seconds, config)
-            record = {**segment, **timing, "slot_end": end_sample / config.sample_rate,
-                      "start_sample": start_sample, "clip": clip.name,
-                      "sha256": sha256_file(clip), "tts_model_commit": tts_commit}
-            atomic_json(metadata, record)
+            fitted = False
+            for variant, spoken_text in variants:
+                set_seed(config.seed + i)
+                parts = []
+                tts_text = spoken_bengali(spoken_text)
+                for text in split_tts_text(tts_text, config.max_tts_chars):
+                    if romanizer is not None:
+                        text = romanizer.romanize_string(text, lcode="ben")
+                    tokens = tokenizer(text, return_tensors="pt").to(device)
+                    if tokens.input_ids.shape[-1] <= 1:
+                        raise ValueError(f"TTS tokenizer has no pronounceable text in segment {i}")
+                    with torch.inference_mode():
+                        result = model(**tokens).waveform
+                    part = result[0].float().cpu().numpy()
+                    if not len(part) or not np.isfinite(part).all():
+                        raise ValueError(f"Invalid TTS waveform in segment {i}")
+                    if parts:
+                        parts.append(np.zeros(round(0.06 * native_rate), dtype=np.float32))
+                    parts.append(part)
+                audio = np.concatenate(parts)
+                tts_seconds = len(audio) / native_rate
+                audio = trim_edge_silence(audio, native_rate)
+                audio *= min(1.0, 0.95 / float(np.max(np.abs(audio))))
+                sf.write(raw, audio, native_rate, subtype="PCM_16")
+                try:
+                    timing = fit_audio(raw, clip, slot_seconds, config)
+                except TimingOverflow as error:
+                    LOG.warning("সময় মিলছে না, id=%s (%s): %s", i, variant, error)
+                    continue
+                record = {**segment, **timing, "bangla": spoken_text,
+                          "bangla_full": segment["bangla"], "spoken_variant": variant,
+                          "tts_text": tts_text,
+                          "tts_seconds": tts_seconds,
+                          "edge_silence_removed": tts_seconds - len(audio) / native_rate,
+                          "slot_end": end_sample / config.sample_rate,
+                          "start_sample": start_sample, "clip": clip.name,
+                          "sha256": sha256_file(clip), "tts_model_commit": tts_commit}
+                record["translation_checks"] = {
+                    "full": candidate_issues(segment, segment["bangla"], config),
+                    "concise": candidate_issues(segment, segment.get("bangla_concise", ""), config),
+                }
+                record["review_required"] = bool(record["review_required"] or segment.get("boundary_review")
+                                                   or segment.get("source_review") or segment.get("source_corrections")
+                                                   or variant == "concise")
+                atomic_json(metadata, record)
+                records.append(record)
+                fitted = True
+                LOG.info("বাংলা অডিও: %s/%s, %s, %.3fx", i + 1, len(segments), variant, timing["speed_factor"])
+                break
             raw.unlink(missing_ok=True)
-            records.append(record)
-            LOG.info("বাংলা অডিও তৈরি: %s/%s অংশ", i + 1, len(segments))
+            if not fitted:
+                overflows.append(i)
+        if overflows:
+            raise TimingOverflow(f"IDs={overflows}: বৈধ অনুবাদ বিকল্পগুলোর speech নির্ধারিত speed সীমায় ধরেনি। "
+                                 f"{Path(job) / 'translation.json'}-এ অর্থ রেখে bangla সংক্ষিপ্ত করুন। "
+                                 "সফল clip রাখা হয়েছে; speech কাটা/overlap বা বেশি speed-এ প্রকাশ করা হয়নি।")
         return records, tts_commit
     finally:
         del tokens, result, model, tokenizer, romanizer
@@ -668,6 +838,8 @@ def assemble_timeline(records, duration, job, config):
     previous_end = 0
     try:
         for record in records:
+            if not config.min_speed <= record["speed_factor"] <= config.max_speed:
+                raise ValueError("Cached speech exceeds the hard speed bounds")
             samples, rate = sf.read(job / "clips" / record["clip"], dtype="int16")
             if rate != config.sample_rate or samples.ndim != 1:
                 raise ValueError("Clip does not match mono timeline format")
@@ -781,7 +953,7 @@ def process_video(source, config):
             job / "asr.json", lambda: transcribe(wav, info["duration"], config)))
         validate_segments(asr["segments"], info["duration"])
         translations = timed("translation", lambda: cached_stage(
-            job / "translation.json", lambda: translate(asr["segments"], config)))
+            job / "translation.json", lambda: translate(asr["segments"], config, job)))
         validate_segments(translations["segments"], info["duration"], translated=True)
         if not translations["segments"]:
             LOG.warning("কথা শনাক্ত হয়নি; ফলাফলে নীরব audio track থাকবে")
@@ -797,6 +969,10 @@ def process_video(source, config):
                     "packages": package_versions(), "source_duration": info["duration"],
                     "language_pair": "eng_Latn -> ben_Beng", "segment_count": len(records),
                     "no_speech_detected": not bool(records),
+                    "quality_status": "human_review_required",
+                    "speed_limits": {"min": config.min_speed, "max": config.max_speed},
+                    "translation_backend": config.translation_backend,
+                    "translation_api": translations.get("api"),
                     "review_required_segments": [r["id"] for r in records if r["review_required"]],
                     "model_commits": {"asr": asr["model_commit"],
                                       "translation": translations["model_commit"], "tts": tts_commit},
@@ -832,6 +1008,9 @@ def run_batch(config):
                      if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
     if not sources:
         raise FileNotFoundError(f"No supported videos in {input_dir} (scan is non-recursive)")
+    if config.translation_backend == "gemini":
+        # Fail before expensive ASR if the exact requested model/key is unavailable.
+        GeminiClient(config).check_model(config)
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
     results = []
     for source in sources:

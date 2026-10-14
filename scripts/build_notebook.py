@@ -21,14 +21,13 @@ def make_notebook():
         cells.append(entry)
 
     sources = {name: (ROOT / "proxmax" / name).read_text(encoding="utf-8")
-               for name in ("colab_runtime.py", "pipeline.py", "worker.py")}
+               for name in ("colab_runtime.py", "colab_ui.py", "gemini.py", "language.py", "pipeline.py", "worker.py")}
     requirements = (ROOT / "requirements-colab.txt").read_text(encoding="utf-8")
     cell("code", f'''
-# @title ▶ Setup ও App চালু করুন · ইংরেজি ভিডিও → বাংলা
-# @markdown **T4 GPU** বেছে ▶ চাপুন। ইনপুট: **My Drive / Video / input** → ফলাফল: **Video / output**।
-# @markdown প্রথমবার Drive-এর অনুমতি ও model download লাগবে। আবার চালাতেও এই একটি cell যথেষ্ট।
+# @title ▶ ProXMax · Setup ও App
+# @markdown **T4 GPU** বেছে ▶ চাপুন। নিচে **Domain**, **Gemini API key** ও **চালু করুন** ফর্ম আসবে; code খুলতে হবে না।
+# @markdown ইনপুট: **My Drive / Video / input** → ফলাফল: **Video / output**।
 RUN_RESULT = None
-REMOUNT_DRIVE = False # @param {{type:"boolean"}}
 import sys
 import shutil
 import subprocess
@@ -47,45 +46,69 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 SOURCES = {sources!r}
 for name, source in SOURCES.items():
     (APP_DIR / name).write_text(source, encoding="utf-8")
-# run_path প্রতি run-এ সর্বশেষ helper পড়ে; kernel-এ torch/transformers import হয় না।
+# প্রতি run-এ নতুন helper; kernel-এ torch/transformers import হয় না।
 RUNTIME = runpy.run_path(str(APP_DIR / "colab_runtime.py"))
-WORKER_PYTHON = RUNTIME["setup_environment"](APP_DIR, {requirements!r})
-if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-    subprocess.run(["apt-get", "-qq", "update"], check=True)
-    subprocess.run(["apt-get", "-qq", "install", "-y", "ffmpeg"], check=True)
-print("Setup প্রস্তুত।")
-# শুধু Drive সংযোগ নষ্ট হলে REMOUNT_DRIVE=True করুন।
-DRIVE_ROOT = RUNTIME["ensure_drive_mounted"](force_remount=REMOUNT_DRIVE)
-INPUT_DIR = DRIVE_ROOT / "Video" / "input"
-OUTPUT_DIR = DRIVE_ROOT / "Video" / "output"
-INPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-print("Drive প্রস্তুত। ফলাফল পাবেন: My Drive / Video / output")
-CONFIG = {{
-    "input_dir": str(INPUT_DIR),
-    "output_dir": str(OUTPUT_DIR),
-    "work_dir": "/content/proxmax-work",
-    "device": "auto",                 # প্রয়োজনে "cpu"
-    "translation_batch_size": 4,
-    "overflow_policy": "stretch",     # বেশি দ্রুত কণ্ঠ হলে ফলাফলে চিহ্ন থাকবে
-    "comfortable_speed": 1.50,
-    "keep_local": False,               # সফল কাজের checkpoint রাখতে True
-    "continue_on_error": True,
-}}
-print("ভিডিও অনুবাদ শুরু হচ্ছে…")
+UI = runpy.run_path(str(APP_DIR / "colab_ui.py"))
+
+def _run_app():
+    form = None
+    try:
+        CONFIG = {{
+            "work_dir": "/content/proxmax-work",
+            "device": "auto",                 # ASR/TTS-এর জন্য; Gemini-তে GPU লাগে না
+            "translation_backend": "gemini",
+            "translation_model": "gemini-3.5-flash-lite",
+            "translation_batch_size": 4,
+            "max_source_tokens": 8192,
+            "max_target_tokens": 8192,
+            "min_speed": 0.90,
+            "max_speed": 1.25,
+            "overflow_policy": "error",       # সীমা ছাড়িয়ে speech প্রকাশ করা হবে না
+            "comfortable_speed": 1.25,
+            "keep_local": True,
+            "continue_on_error": True,
+        }}
+        form = UI["read_form"](
+            require_api_key=CONFIG["translation_backend"] == "gemini", model=CONFIG["translation_model"]
+        )
+        WORKER_PYTHON = RUNTIME["setup_environment"](APP_DIR, {requirements!r})
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            subprocess.run(["apt-get", "-qq", "update"], check=True)
+            subprocess.run(["apt-get", "-qq", "install", "-y", "ffmpeg"], check=True)
+        print("Setup প্রস্তুত।")
+        DRIVE_ROOT = RUNTIME["ensure_drive_mounted"](force_remount=form["remount"])
+        INPUT_DIR = DRIVE_ROOT / "Video" / "input"
+        OUTPUT_DIR = DRIVE_ROOT / "Video" / "output"
+        INPUT_DIR.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        print("Drive প্রস্তুত। ফলাফল পাবেন: My Drive / Video / output")
+        CONFIG.update(input_dir=str(INPUT_DIR), output_dir=str(OUTPUT_DIR), domain=form["domain"])
+        print("ভিডিও অনুবাদ শুরু হচ্ছে…")
+        return RUNTIME["run_isolated"](
+            WORKER_PYTHON, APP_DIR / "worker.py", CONFIG, api_key=form.pop("api_key")
+        )
+    finally:
+        if form is not None:
+            form.clear()  # error/interrupt হলেও credential reference রাখা হবে না
+
 try:
-    RUN_RESULT = RUNTIME["run_isolated"](
-        WORKER_PYTHON, APP_DIR / "worker.py", CONFIG
-    )
+    RUN_RESULT = _run_app()
 except KeyboardInterrupt:
-    print("কাজ বন্ধ করা হয়েছে। Worker-ও বন্ধ হয়েছে; আবার এই cell চালাতে পারেন।")
+    UI["finish_form"]("cancelled")
+    print("কাজ বন্ধ হয়েছে; আবার এই cell চালাতে পারেন।")
+except Exception:
+    UI["finish_form"]("failed")
+    raise
+finally:
+    del _run_app
 
 if RUN_RESULT is not None:
+    UI["finish_form"](RUN_RESULT["status"])
     for result in RUN_RESULT["results"]:
         if result["status"] == "complete":
             print("সম্পন্ন:", result["output"])
             if result.get("review_required_segments"):
-                print("দ্রুত উচ্চারণের অংশগুলো শুনে দেখুন:", result["review_required_segments"])
+                print("এই অংশগুলোর ASR/অনুবাদ যাচাই করুন:", result["review_required_segments"])
         else:
             print("অসম্পূর্ণ:", Path(result["source"]).name, "—", result.get("error", ""))
     if RUN_RESULT["status"] != "complete":
