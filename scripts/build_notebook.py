@@ -25,9 +25,11 @@ def make_notebook():
     requirements = (ROOT / "requirements-colab.txt").read_text(encoding="utf-8")
     cell("code", f'''
 # @title ▶ ProXMax · Setup ও App
-# @markdown **T4 GPU** বেছে ▶ চাপুন। নিচে **Domain**, **Gemini API key** ও **চালু করুন** ফর্ম আসবে; code খুলতে হবে না।
+# @markdown **Domain: FC Mobile** · **Model: gemini-3.5-flash-lite**
+# @markdown **T4 GPU** বেছে ▶ চাপুন। API-key box-এ key paste করে **Enter** দিন; code খুলতে হবে না।
 # @markdown ইনপুট: **My Drive / Video / input** → ফলাফল: **Video / output**।
 RUN_RESULT = None
+print("ProXMax চালু হচ্ছে…", flush=True)
 import sys
 import shutil
 import subprocess
@@ -51,11 +53,12 @@ RUNTIME = runpy.run_path(str(APP_DIR / "colab_runtime.py"))
 UI = runpy.run_path(str(APP_DIR / "colab_ui.py"))
 
 def _run_app():
-    form = None
+    api_key = None
     try:
         CONFIG = {{
             "work_dir": "/content/proxmax-work",
             "device": "auto",                 # ASR/TTS-এর জন্য; Gemini-তে GPU লাগে না
+            "domain": "football",            # এই notebook-এ সবসময় FC Mobile
             "translation_backend": "gemini",
             "translation_model": "gemini-3.5-flash-lite",
             "translation_batch_size": 4,
@@ -68,42 +71,40 @@ def _run_app():
             "keep_local": True,
             "continue_on_error": True,
         }}
-        form = UI["read_form"](
-            require_api_key=CONFIG["translation_backend"] == "gemini", model=CONFIG["translation_model"]
-        )
+        REMOUNT_DRIVE = False  # শুধু Drive সংযোগ নষ্ট হলে True করুন
+        print("Domain: FC Mobile (football)", flush=True)
+        print("Model:", CONFIG["translation_model"], flush=True)
+        if CONFIG["translation_backend"] == "gemini":
+            api_key = UI["read_api_key"]()
+        print("Environment setup শুরু হচ্ছে…", flush=True)
         WORKER_PYTHON = RUNTIME["setup_environment"](APP_DIR, {requirements!r})
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
             subprocess.run(["apt-get", "-qq", "update"], check=True)
             subprocess.run(["apt-get", "-qq", "install", "-y", "ffmpeg"], check=True)
         print("Setup প্রস্তুত।")
-        DRIVE_ROOT = RUNTIME["ensure_drive_mounted"](force_remount=form["remount"])
+        print("Drive সংযোগ যাচাই হচ্ছে…", flush=True)
+        DRIVE_ROOT = RUNTIME["ensure_drive_mounted"](force_remount=REMOUNT_DRIVE)
         INPUT_DIR = DRIVE_ROOT / "Video" / "input"
         OUTPUT_DIR = DRIVE_ROOT / "Video" / "output"
         INPUT_DIR.mkdir(parents=True, exist_ok=True)
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         print("Drive প্রস্তুত। ফলাফল পাবেন: My Drive / Video / output")
-        CONFIG.update(input_dir=str(INPUT_DIR), output_dir=str(OUTPUT_DIR), domain=form["domain"])
+        CONFIG.update(input_dir=str(INPUT_DIR), output_dir=str(OUTPUT_DIR))
         print("ভিডিও অনুবাদ শুরু হচ্ছে…")
         return RUNTIME["run_isolated"](
-            WORKER_PYTHON, APP_DIR / "worker.py", CONFIG, api_key=form.pop("api_key")
+            WORKER_PYTHON, APP_DIR / "worker.py", CONFIG, api_key=api_key
         )
     finally:
-        if form is not None:
-            form.clear()  # error/interrupt হলেও credential reference রাখা হবে না
+        api_key = None  # error/interrupt হলেও credential reference রাখা হবে না
 
 try:
     RUN_RESULT = _run_app()
 except KeyboardInterrupt:
-    UI["finish_form"]("cancelled")
     print("কাজ বন্ধ হয়েছে; আবার এই cell চালাতে পারেন।")
-except Exception:
-    UI["finish_form"]("failed")
-    raise
 finally:
     del _run_app
 
 if RUN_RESULT is not None:
-    UI["finish_form"](RUN_RESULT["status"])
     for result in RUN_RESULT["results"]:
         if result["status"] == "complete":
             print("সম্পন্ন:", result["output"])

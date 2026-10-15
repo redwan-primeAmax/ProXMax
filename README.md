@@ -10,8 +10,8 @@ Google Colab-এ ইংরেজি ভিডিওর কথা শনাক্
 
 ১. **Runtime → Change runtime type → T4 GPU** নির্বাচন করুন।
 ২. ইংরেজি ভিডিও রাখুন **My Drive → Video → input** folder-এ। ভেতরের subfolder খোঁজা হয় না।
-৩. একমাত্র **▶ ProXMax · Setup ও App** cell চালান। নিচে দৃশ্যমান form আসবে; processing code hidden থাকবে।
-৪. **Domain dropdown** থেকে সাধারণ ভিডিওতে `general`, FC Mobile ভিডিওতে `football` বেছে নিন। **Gemini API key**-এর masked ঘরে AI Studio key paste করে **সেটআপ ও অনুবাদ চালু করুন** চাপুন। এরপর setup, Drive সংযোগ ও অনুবাদ হবে। প্রথমবার Drive-এর অনুমতি ও model download লাগবে। প্রতি run-এ key দিতে হবে।
+৩. একমাত্র **▶ ProXMax · Setup ও App** cell চালান। Processing code hidden থাকবে; cell-এর output-এ **Gemini API key** দেওয়ার masked box আসবে।
+৪. AI Studio key paste করে **Enter** চাপুন। **Domain সবসময় FC Mobile (`football`)**—dropdown বা আলাদা Start button নেই। এরপর setup, Drive সংযোগ ও অনুবাদ হবে। প্রথমবার Drive-এর অনুমতি ও model download লাগবে। প্রতি run-এ key দিতে হবে; code/`CONFIG`-এ key লিখবেন না।
 ৫. ফলাফল পাবেন **My Drive → Video → output → `<job>`** folder-এ।
 
 | কী থাকে | Colab-এর অবস্থান |
@@ -22,7 +22,7 @@ Google Colab-এ ইংরেজি ভিডিওর কথা শনাক্
 | model cache | `/content/proxmax-model-cache` |
 | আলাদা environment ও worker | `/content/proxmax-app` |
 
-Notebook-এ **একটিই cell**। Processing code স্বাভাবিক Colab ভিউতে লুকানো থাকে; শুধু Run, Domain/API-key form, প্রয়োজনীয় status ও ফলাফল দেখা যায়। এটি code-এর নিরাপত্তা-সীমা নয়—প্রয়োজনে **Show code** দিয়ে source দেখা যায়।
+Notebook-এ **একটিই cell**। Processing code স্বাভাবিক Colab ভিউতে লুকানো থাকে; শুধু Run, স্থির FC Mobile label, API-key box, প্রয়োজনীয় status ও ফলাফল দেখা যায়। এটি code-এর নিরাপত্তা-সীমা নয়—প্রয়োজনে **Show code** দিয়ে source দেখা যায়।
 
 মূল ভিডিও বদলানো বা মুছে ফেলা হয় না। একবারে একটি ভিডিও চলে। Shared Drive হলে সেটিংসে input/output path বদলান।
 
@@ -99,7 +99,7 @@ Drive → local copy → FFmpeg → ইংরেজি ASR → বাংলা �
 - আগে পূর্ণ অনুবাদের TTS মাপা হয়। সেটি না ধরলে checks-পাস করা সংক্ষিপ্ত বিকল্পের TTS মাপা হয়; শেষে দরকার হলে silence যোগ হয়। বলা সংস্করণটিই `bangla.srt`-এ যায়।
 - দুটিই না ধরলে **cue ID ও local checkpoint path দেখিয়ে থামে**; 2–3× গতি, speech কেটে দেওয়া, overlap বা video লম্বা করে “সফল” output প্রকাশ করে না। আগে তৈরি সফল clip পরের run-এ থাকে।
 - ছোট reaction-phrase কাছে থাকলে যুক্ত হয়। নাম/negation-এর মাঝখানে cut এড়ায়; বাধ্যতামূলক সীমায় cut হলে review flag থাকে।
-- `football` mode-এ ASR hint ও audit-সহ glossary corrections; `general` mode-এ এসব football substitution নেই। অস্পষ্ট নাম বা million/billion-এর source-বিরোধ নিজে অনুমান করে ঠিক করা হয় না।
+- এই notebook-এ `football` স্থির; generic CLI/core-এ `general` mode-ও আছে। `football` mode-এ ASR hint ও audit-সহ glossary corrections; `general` mode-এ এসব football substitution নেই। অস্পষ্ট নাম বা million/billion-এর source-বিরোধ নিজে অনুমান করে ঠিক করা হয় না।
 
 **সীমা:** checks সম্পূর্ণ semantic verifier নয়—missing clause, ভুল নাম/ASR বা দৃশ্যের সঙ্গে timing সব ধরতে পারে না; বৈধ বিকল্প বানানও আটকে যেতে পারে। `status=complete` মানে rendering/publication শেষ, অনুবাদ নির্ভুল নয়; manifest-এর `quality_status=human_review_required` সেটিই জানায়। `review_required=false`-ও accuracy certificate নয়। Forced boundary, source correction/সন্দেহ ও concise speech নির্বাচন review flag দিতে পারে।
 
@@ -111,9 +111,10 @@ Config/result worker-এর সঙ্গে **memory pipe** দিয়ে আদ�
 
 | সমস্যা | করণীয় |
 |---|---|
-| Drive সংযোগ নষ্ট | একই cell-এর form-এর **Drive-এর অতিরিক্ত সেটিংস** খুলে পুনরায় mount নির্বাচন করুন; ঠিক হলে পরের run-এ অনির্বাচিত রাখুন |
+| Drive সংযোগ নষ্ট | শুধু এই ক্ষেত্রে **Show code** থেকে `REMOUNT_DRIVE=True` করে চালান; ঠিক হলে আবার `False` করুন |
 | GPU OOM | batch size `1`, ছোট model বা ছোট ভিডিও ব্যবহার করুন; একই setting বারবার চালালে OOM ঠিক হবে না |
 | CUDA/cuDNN error | উপযুক্ত Colab GPU runtime বা `device="cpu"`; kernel-এর torch এলোমেলোভাবে বদলাবেন না |
+| Run-এর পরে অপেক্ষা করছে | পুরোনো JavaScript form বাদ দেওয়া হয়েছে। নতুন notebook-এ native masked API-key box-এ key দিয়ে Enter চাপুন। Box না এলে Stop করে page reload ও নতুন notebook খুলুন; runtime delete নয়। |
 | Gemini 401/403 | AI Studio key, project permission ও API restrictions যাচাই করুন; key চ্যাটে/লগে দেবেন না |
 | Gemini 404 | `gemini-3.5-flash-lite` ID ও আপনার project-এর model access যাচাই করুন; নিজে থেকে model বদলানো হবে না |
 | Gemini 429 | quota/rate limit/billing যাচাই করে পরে চালান; সীমিত backoff-এর পর থামে |
@@ -155,7 +156,7 @@ CLI-তে Gemini key `GEMINI_API_KEY` environment variable দিয়ে দি�
 
 নিজের অনুমোদিত ভিডিও ব্যবহার করুন। **Gemini mode-এ ইংরেজি transcript, আশপাশের context, সময়ের budget, glossary এবং corrective feedback Google-এ পাঠানো হয়।** Raw ভিডিও/audio Gemini-তে upload করা হয় না; ASR/TTS local থাকে। Google AI Studio/Gemini-এর আপনার account-এ প্রযোজ্য data-use, retention ও billing terms দেখে নিন। Colab ও Drive-ও cloud service।
 
-API key দৃশ্যমান form-এর native `password` input থেকে শুধু worker-এর environment/memory-তে যায়; `CONFIG`, source, checkpoint, manifest বা Drive output-এ লেখা হয় না। Worker key environment থেকে সরিয়ে নেয়, যাতে FFmpeg subprocess সেটি না পায়। API URL-এ key নয়, HTTPS header ব্যবহৃত হয়; redirect অনুসরণ করা হয় না। Error body/headers প্রকাশ করা হয় না, terminal-এ sanitized error আসে। Key কোনো Colab `@param` বা saved ipywidget state নয়; field-এর value HTML/source-এ বসানো হয় না। Start/বাতিল করলে ঘরটি খালি ও disabled হয়। Form-এ অপেক্ষার সময় কোনো API call/setup শুরু হয় না। Key হারালে AI Studio থেকে revoke/rotate করুন।
+API key Colab-এর native `getpass` masked box থেকে শুধু worker-এর environment/memory-তে যায়; `CONFIG`, source, checkpoint, manifest বা Drive output-এ লেখা হয় না। Key Colab `@param` বা saved widget state নয়। Custom JavaScript, `eval_js`, browser-polling বা আলাদা Start/Cancel form নেই। Masked input না পাওয়া গেলে plain-text echo-তে fallback না করে error দেয়। Enter-এর পরে setup শুরু হয়; Stop চাপলে run বন্ধ করা যায়। Worker key environment থেকে সরিয়ে নেয়, যাতে FFmpeg subprocess সেটি না পায়। API URL-এ key নয়, HTTPS header ব্যবহৃত হয়; redirect অনুসরণ করা হয় না। Error body/headers প্রকাশ করা হয় না। Key হারালে AI Studio থেকে revoke/rotate করুন।
 
 কাজের শুরুতে exact model/key preflight হয়। Gemini-র সফল batch স্থানীয় `translation_progress.json` checkpoint-এ থাকে, যাতে মাঝপথে network/quota failure হলে আগের batch-এর API call পুনরায় না লাগে। `manifest.translation_api`-তে পাওয়া model version ও successful response-এর token usage থাকে—এটি চূড়ান্ত bill হিসাব নয়। Model alias ভবিষ্যতে বদলাতে পারে; Hub revision দিয়ে Gemini pin হয় না।
 
