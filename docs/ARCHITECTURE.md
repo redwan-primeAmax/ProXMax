@@ -8,7 +8,7 @@
 
 ## ২. Notebook ও worker আলাদা রাখা
 
-Notebook-এ একটি code cell: **ProXMax · Setup ও App**। Colab form view-তে processing code লুকানো থাকে। ▶ চাপলে native HTML form-এ Domain dropdown, masked Gemini API key ও start/cancel button আসে। Start দিলেই setup, mount, settings ও worker পরপর চলে। আলাদা markdown/setup/processing cell নেই। **Show code** দিয়ে source দেখা সম্ভব—এটি গোপন code রাখার ব্যবস্থা নয়।
+Notebook-এ একটি code cell: **ProXMax · Setup ও App**। Colab form view-তে processing code hidden থাকে। **Domain স্থির FC Mobile (`football`)**; dropdown বা আলাদা Start/Cancel button নেই। ▶ চাপলে native `getpass` masked API-key box আসে; key দিয়ে Enter দিলে setup, mount ও worker শুরু হয়। Custom HTML/JavaScript form বা `eval_js` handshake/polling নেই। **Show code** দিয়ে source দেখা সম্ভব—এটি গোপন code রাখার ব্যবস্থা নয়।
 
 ```text
 Colab kernel: হালকা setup → Drive mount → settings → worker চালানো
@@ -30,7 +30,7 @@ Colab kernel: হালকা setup → Drive mount → settings → worker চ�
 - প্রতিটি অনুবাদ run নতুন process পায়। শেষ/ব্যর্থ হওয়ার পর process বন্ধ হয়; পরের worker পুরোনো CUDA context পায় না। এটি ভাঙা driver, অপর্যাপ্ত GPU memory বা network সমস্যা নিজে ঠিক করে না।
 - Config stdin pipe দিয়ে worker-এ যায়; structured result stdout pipe দিয়ে memory-তে ফেরে। Parent protocol JSON লুকিয়ে শুধু মানুষের পড়ার মতো progress/error দেখায়। কোনো config/result/log ফাইল লেখা হয় না; প্রতি run-এর outcome নতুন করে শুরু হয়, তাই পুরোনো সফল ফলাফল পুনর্ব্যবহার হয় না।
 - Notebook interrupt করলে process group-এ SIGTERM দেওয়া হয়; প্রয়োজন হলে SIGKILL। Worker ও তার FFmpeg subprocess বন্ধ হয়। Checkpoint মুছে ফেলা হয় না।
-- Drive-এর mount ও `MyDrive` পড়া যায় কি না যাচাই হয়। সক্রিয় mount পুনর্ব্যবহার হয়; সাধারণ local folder-কে Drive ধরা হয় না। নষ্ট সংযোগে ব্যবহারকারী form-এর Drive remount checkbox নির্বাচন করতে পারেন; জোর করে mount ভাঙা হয় না।
+- Drive-এর mount ও `MyDrive` পড়া যায় কি না যাচাই হয়। সক্রিয় mount পুনর্ব্যবহার হয়; সাধারণ local folder-কে Drive ধরা হয় না। নষ্ট সংযোগে ব্যবহারকারী `Show code` থেকে `REMOUNT_DRIVE=True` করতে পারেন; জোর করে mount ভাঙা হয় না।
 
 Notebook-এর setup ও UI helper (`colab_ui.py`), ভাষা helper (`language.py`), API client (`gemini.py`), pipeline ও worker source notebook-এই থাকে। Repository clone বা দূরের executable code আনা লাগে না। Generator ছয়টি source-ই হালনাগাদ করে। Worker-এ অপ্রয়োজনীয় TensorFlow/Flax backend import বন্ধ রাখা হয়; torch/CUDA বদলায় না।
 
@@ -181,7 +181,7 @@ Manifest-এর stage time কেবল বর্তমান run-এর সম�
 
 - Drive authentication Colab পরিচালনা করে। Credential code-এ রাখা হয় না।
 - Gemini mode-এ transcript/context/time budget/glossary/corrective feedback Google-এ যায়; raw video/audio যায় না। Google-এর প্রযোজ্য data retention/use ও billing terms ব্যবহারকারীকে যাচাই করতে হবে। Local model download Hugging Face থেকে; Colab নিজেও cloud VM।
-- Notebook native HTML `password` input নেয়; Colab `@param`/synced ipywidget ব্যবহার করে না, তাই key source বা saved widget state-এ বসে না। `eval_js` form submit পর্যন্ত অপেক্ষা করে; user gesture-এর পরে setup/API শুরু হয়। Submit/cancel-এ field খালি হয়; Python-এ success/error/interrupt-এর পর form reference পরিষ্কার হয়। Key Config বা file-এ নয়, child environment দিয়ে worker memory-তে যায়। Worker environment থেকে key সরায়; FFmpeg সেটি পায় না। Parent terminal output-এ key redaction-ও থাকে। প্রতি run-এ নতুন hidden input; source/output/checkpoint-এ credential সংরক্ষণ হয় না।
+- Notebook native `getpass` masked API-key box নেয়; key Colab `@param`, HTML source বা saved widget state নয়। Echo-safe input না পেলে plain-text fallback বন্ধ করে error দেয়। Domain notebook Config-এ `football` হিসেবে স্থির; generic CLI/core-এ `general` বিকল্প অপরিবর্তিত। Enter দেওয়ার পরেই setup/API শুরু হয়; custom browser form/Promise/polling নেই। Python-এ success/error/interrupt-এর পর key reference পরিষ্কার হয়। Key Config বা file-এ নয়, child environment দিয়ে worker memory-তে যায়। Worker environment থেকে key সরায়; FFmpeg সেটি পায় না। Parent terminal output-এ key redaction-ও থাকে। প্রতি run-এ নতুন input; source/output/checkpoint-এ credential সংরক্ষণ হয় না।
 - `trust_remote_code=False`, torch 2.6+; FFmpeg argument-list দিয়ে চলে, filename shell-এ বসানো হয় না।
 - Transcript, local checkpoint, terminal output ও ভিডিও ব্যক্তিগত তথ্য বহন করতে পারে। প্রকাশ্য repository-তে রাখবেন না।
 - NLLB/MMS-এর CC-BY-NC-4.0 non-commercial সীমা প্রযোজ্য; code license সেটি বদলায় না। Model card-এর link README-তে আছে।

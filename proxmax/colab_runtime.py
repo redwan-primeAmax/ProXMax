@@ -23,6 +23,7 @@ def setup_environment(root, requirements):
     # Colab-এর pip ও torch দেখা যাবে; নতুন প্যাকেজ কেবল এই venv-এ লেখা হবে।
     # --without-pip ব্যবহার করায় Debian/Colab-এর ensurepip দরকার হয় না।
     if not python.exists():
+        print("আলাদা Python environment তৈরি হচ্ছে…", flush=True)
         subprocess.run([sys.executable, "-m", "venv", "--system-site-packages",
                         "--without-pip", str(environment)], check=True, env=env)
     requirement_file = root / "requirements.txt"
@@ -54,6 +55,7 @@ for line in open(sys.argv[1], encoding='utf-8'):
         except (ValueError, KeyError):
             pass
     if ready:
+        print("আগের environment-এর package যাচাই হচ্ছে…", flush=True)
         ready = subprocess.run([str(python), "-c", check_code, str(requirement_file)],
                                capture_output=True, text=True, env=env).returncode == 0
     if not ready:

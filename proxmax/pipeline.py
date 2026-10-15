@@ -1010,7 +1010,9 @@ def run_batch(config):
         raise FileNotFoundError(f"No supported videos in {input_dir} (scan is non-recursive)")
     if config.translation_backend == "gemini":
         # Fail before expensive ASR if the exact requested model/key is unavailable.
+        LOG.info("Gemini model/key access যাচাই হচ্ছে: %s", config.translation_model)
         GeminiClient(config).check_model(config)
+        LOG.info("Gemini access প্রস্তুত।")
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
     results = []
     for source in sources:
