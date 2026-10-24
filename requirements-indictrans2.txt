@@ -2,7 +2,7 @@
 # ঐচ্ছিক (OPTIONAL): IndicTrans2 translation backend-এর অতিরিক্ত dependencies
 #
 # শুধুমাত্র config.yaml-এ  translator: backend: "indictrans2"  দিলে এটি লাগবে।
-# ডিফল্ট Google Translate backend-এর জন্য এটি ইনস্টল করার দরকার নেই।
+# ডিফল্ট Gemini API backend-এর জন্য এটি ইনস্টল করার দরকার নেই।
 #
 # ইনস্টল:  pip install -r requirements.txt -r requirements-indictrans2.txt
 # =============================================================================

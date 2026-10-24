@@ -212,7 +212,9 @@ class SyncEngine:
                 clip = clip[:remaining_ms]
             canvas = canvas.overlay(clip, position=position_ms)
 
-        canvas.export(str(output_wav), format="wav")
+        # export()-এর রিটার্ন করা ফাইল হ্যান্ডলও নিজে বন্ধ করা হয়
+        with open(output_wav, "wb") as out_handle:
+            canvas.export(out_handle, format="wav")
         logger.info(
             "চূড়ান্ত Bangla অডিও ট্র্যাক তৈরি: %s (%.1fs, %d ক্লিপ)",
             output_wav.name, total_duration, len(stretched),

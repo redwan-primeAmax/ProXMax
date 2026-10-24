@@ -6,7 +6,12 @@
     python main.py                      # config.yaml-এর সেটিংস দিয়ে পুরো ব্যাচ
     python main.py --model medium       # বেশি speed-এর জন্য ছোট মডেল
     python main.py --voice bn-BD-PradeepNeural   # পুরুষ কণ্ঠ
+    python main.py --gemini-model gemini-3.5-flash-light   # অনুবাদ মডেল
     python main.py --force              # আউটপুট থাকলেও আবার প্রসেস করা
+
+অনুবাদে **Google Gemini API** ব্যবহৃত হয়। API key ধরা হয় এই ক্রমে:
+``--gemini-api-key`` → ``config.yaml``-এর ``gemini.api_key`` →
+``GEMINI_API_KEY`` / ``GOOGLE_API_KEY`` environment variable।
 
 Input ভিডিও নেওয়া হয় ``/content/drive/MyDrive/Video/input/`` থেকে
 এবং ডাবিং করা ভিডিও রাখা হয় ``/content/drive/MyDrive/Video/output/``
@@ -50,8 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None, help="STT device: auto | cuda | cpu")
     parser.add_argument("--batch-size", type=int, default=None, help="Whisper batch size (VRAM অনুযায়ী)")
     parser.add_argument(
-        "--translator", default=None, choices=["google", "indictrans2"],
-        help="অনুবাদ backend: google (ডিফল্ট) অথবা indictrans2",
+        "--translator", default=None, choices=["gemini", "indictrans2"],
+        help="অনুবাদ backend: gemini (ডিফল্ট) অথবা indictrans2",
+    )
+    parser.add_argument(
+        "--gemini-model", default=None,
+        help="Gemini অনুবাদ মডেল (ডিফল্ট: gemini-3.5-flash-light)",
+    )
+    parser.add_argument(
+        "--gemini-api-key", default=None,
+        help="Gemini API key (না দিলে GEMINI_API_KEY environment variable পড়া হবে; "
+             "CLI-তে key দেওয়া নিরাপদ নয়)",
     )
     parser.add_argument(
         "--voice", default=None,
@@ -81,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
             "whisper_device": args.device,
             "whisper_batch_size": args.batch_size,
             "translator_backend": args.translator,
+            "gemini_model": args.gemini_model,
+            "gemini_api_key": args.gemini_api_key,
             "tts_voice": args.voice,
             "log_level": args.log_level,
             "skip_existing": False if args.force else None,
@@ -96,9 +112,14 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Input   : %s", config.input_dir)
     logger.info("Output  : %s", config.output_dir)
     logger.info("Work dir: %s (সাময়িক ফাইল)", config.resolved_work_dir)
+    translator_label = (
+        f"gemini:{config.gemini_model}"
+        if config.translator_backend == "gemini"
+        else f"indictrans2:{config.indictrans2_model}"
+    )
     logger.info(
         "STT=%s | Translator=%s | Voice=%s",
-        config.whisper_model, config.translator_backend, config.tts_voice,
+        config.whisper_model, translator_label, config.tts_voice,
     )
 
     # ffmpeg ছাড়া এক ধাপও এগোনো যাবে না — শুরুতেই পরিষ্কার error দেওয়া ভালো
@@ -117,7 +138,15 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("সেটআপে সমস্যা: %s", exc)
         return 2
 
-    summary = pipeline.run_batch()
+    try:
+        summary = pipeline.run_batch()
+    except KeyboardInterrupt:
+        logger.warning("ব্যবহারকারী কাজ থামিয়ে দিয়েছেন (Ctrl+C)।")
+        return 130
+    finally:
+        # যেকোনো অবস্থাতেই GPU/VRAM ও API client ছেড়ে দেওয়া হয়
+        if config.release_gpu_when_done:
+            pipeline.close()
 
     if not summary.results:
         # Input খালি / ফোল্ডার নেই — উপরে বিস্তারিত বার্তা দেওয়া হয়েছে

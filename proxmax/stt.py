@@ -23,7 +23,7 @@ from typing import List, Optional, Tuple
 
 from .config import SOURCE_LANGUAGE
 from .models import Segment, Word
-from .utils import format_duration, get_logger
+from .utils import format_duration, get_logger, release_cuda_memory
 
 logger = get_logger(__name__)
 
@@ -163,6 +163,25 @@ class SpeechToText:
         if self.batch_size > 1:
             self._batched = BatchedInferencePipeline(model=self._model)
         logger.info("Whisper মডেল প্রস্তুত (লোড: %.1fs)।", time.perf_counter() - started)
+
+    # ------------------------------------------------------------------
+    def release(self) -> None:
+        """Unload the Whisper model and free the GPU (VRAM).
+
+        এক ব্যাচের কাজ শেষ হলে ডাকা হয়, যাতে Colab-এ GPU মেমরি আটকে না
+        থাকে। পরে আবার ``transcribe()`` ডাকলে মডেলটি নিজে থেকেই
+        পুনরায় লোড হয়।
+        """
+        had_model = self._model is not None
+        self._batched = None
+        self._model = None
+        self.device = None
+        self.compute_type = None
+        if had_model:
+            release_cuda_memory()
+            logger.info("Whisper মডেল আনলোড হয়েছে — GPU মেমরি (VRAM) খালি করা হলো।")
+        else:
+            release_cuda_memory()
 
     # ------------------------------------------------------------------
     def transcribe(self, audio_path: Path | str) -> List[Segment]:

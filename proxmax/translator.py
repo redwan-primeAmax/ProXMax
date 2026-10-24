@@ -1,70 +1,261 @@
-"""Translation: English → Bangla.
+"""Translation: English → Bangla with the Google Gemini API.
 
-দুটি backend আছে, ``config.yaml`` থেকে বেছে নেওয়া যায়:
+ডিফল্ট (এবং প্রজেক্টের মূল) backend হলো **Gemini API** — ``google-genai``
+SDK দিয়ে। পুরনো Google Translate (``deep-translator``) সম্পূর্ণ সরিয়ে
+দেওয়া হয়েছে।
 
-* ``google`` (ডিফল্ট) — ``deep-translator`` দিয়ে Google Translate।
-  দ্রুত, ফ্রি, কোনো মডেল ডাউনলোড লাগে না। একাধিক segment সমান্তরালে
-  (thread pool) translate হয় এবং পুনরাবৃত্ত লাইন cache থেকে আসে।
-* ``indictrans2`` — AI4Bharat-এর IndicTrans2 লোকাল মডেল। English→Bangla-তে
-  বিশেষভাবে প্রশিক্ষিত, সম্পূর্ণ offline চলতে পারে; তবে আগে
+Backend দুটি:
+
+* ``gemini`` (ডিফল্ট) — Google Gemini API। একাধিক segment একসঙ্গে
+  (batch) পাঠানো হয়, ফলে API call ও rate-limit খরচ কমে। প্রতিটি
+  ব্যর্থ call-এ terminal-এ পূর্ণ error log ছাপিয়ে exponential backoff
+  (jitter ও server-এর ``retryDelay`` সহ) দিয়ে সর্বোচ্চ
+  ``gemini_max_retries`` (ডিফল্ট ৭) বার চেষ্টা করা হয়। সব চেষ্টা
+  ব্যর্থ হলে পরিষ্কার বাংলা error log দিয়ে কাজটি নিয়ন্ত্রিতভাবে
+  বন্ধ হয় — প্রোগ্রাম হঠাৎ crash করে না।
+* ``indictrans2`` (ঐচ্ছিক) — AI4Bharat-এর IndicTrans2 লোকাল মডেল।
+  সম্পূর্ণ offline চলতে পারে; তবে আগে
   ``pip install -r requirements-indictrans2.txt`` চালাতে হয়।
 
-Segment-by-segment translate করা হয়, ফলে প্রতিটি segment-এর
-timestamp হুবহু বজায় থাকে।
+Segment-by-segment অনুবাদ হয়, তাই প্রতিটি segment-এর timestamp
+হুবহু বজায় থাকে।
 """
 
 from __future__ import annotations
 
+import json
+import os
 import random
 import re
 import threading
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
-from .config import SOURCE_LANGUAGE, TARGET_LANGUAGE
+from .config import DEFAULT_GEMINI_MODEL
 from .models import Segment
 from .utils import get_logger, iter_progress
 
 logger = get_logger(__name__)
 
-# Google Translate একবারে ~5000 অক্ষরের বেশি নেয় না; নিরাপদ সীমা ধরে ভাঙা হয়
-_MAX_CHARS_PER_REQUEST = 4500
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+#: এক request-এ সর্বোচ্চ কতটি segment (config দিয়ে বদলানো যায়)
+DEFAULT_GEMINI_BATCH_SIZE = 25
+#: এক request-এ মোট English অক্ষরের নিরাপদ সীমা
+DEFAULT_MAX_CHARS_PER_REQUEST = 12_000
+#: ডিফল্ট retry সংখ্যা (ব্যবহারকারীর নির্দেশ অনুযায়ী ৬–৭)
+DEFAULT_MAX_RETRIES = 7
+
+#: Gemini-কে দেওয়া নির্দেশনা — শুধু অনুবাদের কাজ, বাড়তি কিছু নয়
+SYSTEM_INSTRUCTION = (
+    "You are a professional English to Bengali (Bangla) translator for video dubbing. "
+    "Translate every input line faithfully into natural, spoken Bangla that fits the "
+    "same short time slot. Preserve the meaning, tone and speaker intent; keep names, "
+    "numbers, units, code and technical terms accurate. Do not add, remove, summarize "
+    "or merge content. If a line is already Bangla or already empty, return it as is."
+)
+
+#: Gemini থেকে সবসময় বৈধ JSON পাওয়ার জন্য response schema
+_RESPONSE_SCHEMA: Dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "translations": {
+            "type": "ARRAY",
+            "items": {"type": "STRING"},
+        }
+    },
+    "required": ["translations"],
+}
+
+#: HTTP status যেগুলো আবার চেষ্টা করলে সফল হতে পারে
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+#: API key / permission সংক্রান্ত সংকেত (এগুলো retry করলে লাভ নেই)
+_AUTH_HINTS = ("api key", "api_key", "permission", "unauthenticated", "credential", "forbidden")
+#: সাময়িক নেটওয়ার্ক সমস্যার সংকেত — এগুলো retry করলে কাজ হতে পারে
+_NETWORK_HINTS = (
+    "timeout", "timed out", "connection", "connect", "temporarily",
+    "unavailable", "deadline", "network", "ssl", "reset", "eof", "broken pipe",
+)
+#: এই module-গুলোর exception মানেই সাধারণত নেটওয়ার্ক সমস্যা
+_NETWORK_MODULES = frozenset({"httpx", "httpcore", "requests", "urllib3", "aiohttp", "socket"})
+
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+_RETRY_DELAY_RE = re.compile(r"retryDelay\"?\s*[:=]\s*\"?(?P<seconds>\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 
 class TranslationError(RuntimeError):
     """Raised when translation fails beyond recovery."""
 
 
-def split_long_text(text: str, max_chars: int = _MAX_CHARS_PER_REQUEST) -> List[str]:
-    """Split long text into <= ``max_chars`` chunks on sentence boundaries."""
-    text = " ".join((text or "").split())
-    if len(text) <= max_chars:
-        return [text] if text else []
-    chunks: List[str] = []
-    current = ""
-    for sentence in _SENTENCE_SPLIT_RE.split(text):
-        if len(sentence) > max_chars:  # অত্যন্ত লম্বা একক বাক্য — মাঝপথে ভাঙতে হবে
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.extend(
-                sentence[i : i + max_chars] for i in range(0, len(sentence), max_chars)
-            )
-            continue
-        candidate = f"{current} {sentence}".strip() if current else sentence
-        if len(candidate) > max_chars:
-            chunks.append(current)
-            current = sentence
+class GeminiAuthError(TranslationError):
+    """API key না থাকলে বা অনুমতি না থাকলে — retry করে লাভ নেই।"""
+
+
+class _ResponseFormatError(TranslationError):
+    """Gemini-র উত্তর প্রত্যাশিত JSON ফরম্যাটে না এলে (retry যোগ্য)।"""
+
+
+class _ContentBlockedError(TranslationError):
+    """Gemini নিরাপত্তার কারণে কোনো অংশ অনুবাদ করতে না চাইলে (retry করে লাভ নেই)।"""
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+def normalise_text(text: Optional[str]) -> str:
+    """Whitespace ঠিক করে এক লাইনের টেক্সট বানায় (``None`` → ``""``)."""
+    return " ".join((text or "").split())
+
+
+def parse_translations(raw: str, expected: int) -> List[str]:
+    """Gemini-র JSON উত্তর থেকে ঠিক ``expected`` সংখ্যক অনুবাদ বের করে।
+
+    মডেল মাঝে মাঝে কোড-ফেন্স বা অতিরিক্ত কী দেয়; সেগুলো সহনশীলভাবে
+    সামলে নেওয়া হয়। সংখ্যা না মিললে :class:`_ResponseFormatError`
+    ওঠে, যাতে caller ব্যাচ ভেঙে আবার চেষ্টা করতে পারে।
+
+    Args:
+        raw: মডেলের ফেরত দেওয়া টেক্সট (JSON)।
+        expected: ইনপুটে কতটি লাইন ছিল।
+
+    Raises:
+        _ResponseFormatError: অবৈধ JSON বা লাইন-সংখ্যা না মিললে।
+    """
+    cleaned = _FENCE_RE.sub("", raw or "").strip()
+    try:
+        data = json.loads(cleaned)
+    except (TypeError, ValueError) as exc:
+        raise _ResponseFormatError(
+            f"Gemini বৈধ JSON দেয়নি (প্রথম ২০০ অক্ষর: {cleaned[:200]!r})"
+        ) from exc
+
+    values: Any = data
+    if isinstance(data, dict):
+        for key in ("translations", "lines", "output", "results"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                values = candidate
+                break
         else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+            # অজানা কী-তে একটা মাত্র list থাকলে সেটাই ব্যবহার করা হয়
+            lists = [v for v in data.values() if isinstance(v, list)]
+            values = lists[0] if len(lists) == 1 else data
+
+    if not isinstance(values, list):
+        raise _ResponseFormatError(
+            f"Gemini-র উত্তরে অনুবাদের list পাওয়া যায়নি (পাওয়া গেছে: {type(values).__name__})"
+        )
+
+    translations: List[str] = []
+    for item in values:
+        if isinstance(item, str):
+            translations.append(item.strip())
+        elif isinstance(item, dict):
+            text = next(
+                (item[k] for k in ("bn", "translation", "text", "bangla") if isinstance(item.get(k), str)),
+                None,
+            )
+            if text is None:
+                raise _ResponseFormatError("Gemini-র উত্তরের একটি item-এ টেক্সট নেই")
+            translations.append(text.strip())
+        else:
+            raise _ResponseFormatError(
+                f"Gemini-র উত্তরের item অবৈধ টাইপের: {type(item).__name__}"
+            )
+
+    if len(translations) != expected:
+        raise _ResponseFormatError(
+            f"অনুবাদের সংখ্যা মেলেনি: দরকার {expected}, পাওয়া গেছে {len(translations)}"
+        )
+    return translations
 
 
+def _status_code(exc: BaseException) -> Optional[int]:
+    """কোনো exception থেকে HTTP status code বের করার সর্বাত্মক চেষ্টা।"""
+    for attr in ("code", "status_code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    return value if isinstance(value, int) else None
+
+
+def _error_message(exc: BaseException, limit: int = 800) -> str:
+    """Exception-এর পূর্ণ (কিন্তু সীমিত) বার্তা — terminal log-এর জন্য।"""
+    text = str(exc).strip() or repr(exc)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Server-এর বলা অপেক্ষার সময় (``RetryInfo`` / ``Retry-After``) বের করে।"""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            header = headers.get("retry-after")
+            if header:
+                return max(0.0, float(header))
+        except (TypeError, ValueError):
+            pass
+
+    details = getattr(exc, "details", None)
+    if details is not None:
+        try:
+            haystack = details if isinstance(details, str) else json.dumps(details, default=str)
+        except (TypeError, ValueError):
+            haystack = str(details)
+        match = _RETRY_DELAY_RE.search(haystack)
+        if match:
+            try:
+                return max(0.0, float(match.group("seconds")))
+            except ValueError:
+                return None
+    return None
+
+
+def _is_retryable(exc: BaseException, status: Optional[int]) -> bool:
+    """এই error-এ আবার চেষ্টা করা অর্থবহ কি না।"""
+    if status is not None:
+        if status in _RETRYABLE_STATUS:
+            return True
+        if 400 <= status < 500:
+            # 400 হলেও API key সংক্রান্ত হলে retry করলে লাভ নেই
+            return False
+    lowered = _error_message(exc).lower()
+    if any(hint in lowered for hint in _AUTH_HINTS):
+        return False
+    if any(hint in lowered for hint in _NETWORK_HINTS):
+        return True
+    module = (type(exc).__module__ or "").split(".")[0]
+    if module in _NETWORK_MODULES:
+        return True
+    # নেটওয়ার্ক / timeout জাতীয় সমস্যা — retry যোগ্য
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+
+
+class _RateLimiter:
+    """Simple, thread-safe requests-per-minute limiter (একটানা call-এর মাঝে বিরতি)।"""
+
+    def __init__(self, requests_per_minute: int) -> None:
+        rpm = max(1, int(requests_per_minute))
+        self._interval = 60.0 / rpm
+        self._next_allowed = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        """পরবর্তী request-এর জন্য প্রয়োজনীয় সময় অপেক্ষা করে।"""
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_allowed - now
+            if delay > 0:
+                time.sleep(delay)
+                now = time.monotonic()
+            self._next_allowed = max(now, self._next_allowed) + self._interval
+
+
+# =============================================================================
+# Translator interface
+# =============================================================================
 class BaseTranslator(ABC):
     """Common interface for all translation backends."""
 
@@ -78,103 +269,346 @@ class BaseTranslator(ABC):
             seg.text_bn = self.translate_text(seg.text_en)
         return segments
 
+    def describe(self) -> str:
+        """Human-readable backend description (log-এর জন্য)।"""
+        return type(self).__name__
+
+    def close(self) -> None:
+        """Release backend resources (client, model ইত্যাদি)। ডিফল্ট: কিছুই নয়।"""
+
 
 # =============================================================================
-# Backend 1 (default): Google Translate via deep-translator
+# Backend 1 (default): Google Gemini API
 # =============================================================================
-class GoogleBanglaTranslator(BaseTranslator):
-    """Google Translate (``deep-translator``) with retries + concurrency."""
+class GeminiTranslator(BaseTranslator):
+    """Gemini API translator with batching, rate limiting and retries.
 
-    def __init__(self, max_workers: int = 5, max_retries: int = 3) -> None:
-        self.max_workers = max(1, max_workers)
-        self.max_retries = max(1, max_retries)
-        self._thread_local = threading.local()
+    Args:
+        api_key: Gemini API key। না দিলে ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY``
+            environment variable থেকে নেওয়া হয়।
+        model: মডেলের নাম (ডিফল্ট ``gemini-3.5-flash-light``)।
+        batch_size: এক request-এ সর্বোচ্চ কতটি segment পাঠানো হবে।
+        max_chars_per_request: এক request-এ সর্বোচ্চ অক্ষর সংখ্যা।
+        max_retries: সর্বোচ্চ কতবার চেষ্টা করা হবে (ডিফল্ট ৭)।
+        retry_base_delay: প্রথম retry-এর আগে অপেক্ষা (সেকেন্ড)।
+        retry_max_delay: এক retry-তে সর্বোচ্চ অপেক্ষা (সেকেন্ড)।
+        requests_per_minute: rate limit (ডিফল্ট ১৫ RPM)।
+        temperature: অনুবাদের সৃজনশীলতা (কম = বেশি নির্ভুল)।
+        timeout: এক request-এর timeout (সেকেন্ড)।
+        max_output_tokens: উত্তরে সর্বোচ্চ কতটি টোকেন থাকবে।
+        client: টেস্টের জন্য প্রস্তুত client inject করার সুযোগ।
+
+    Raises:
+        GeminiAuthError: API key কোথাও পাওয়া না গেলে।
+        ValueError: বাকি প্যারামিটার অবৈধ হলে।
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = DEFAULT_GEMINI_MODEL,
+        batch_size: int = DEFAULT_GEMINI_BATCH_SIZE,
+        max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_base_delay: float = 4.0,
+        retry_max_delay: float = 90.0,
+        requests_per_minute: int = 15,
+        temperature: float = 0.2,
+        timeout: int = 120,
+        max_output_tokens: int = 8192,
+        client: Any = None,
+    ) -> None:
+        resolved_key = normalise_text(
+            api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        )
+        if not resolved_key and client is None:
+            raise GeminiAuthError(
+                "Gemini API key পাওয়া যায়নি। নোটবুকের 'Gemini কনফিগারেশন' সেলে "
+                "GEMINI_API_KEY বসান, অথবা environment variable সেট করুন:\n"
+                "    export GEMINI_API_KEY='your-key'\n"
+                "API key নিন: https://aistudio.google.com/app/apikey"
+            )
+        model = normalise_text(model)
+        if not model:
+            raise ValueError("Gemini মডেলের নাম খালি হতে পারে না।")
+
+        self.model = model
+        self.batch_size = max(1, int(batch_size))
+        self.max_chars_per_request = max(500, int(max_chars_per_request))
+        self.max_retries = min(10, max(1, int(max_retries)))
+        self.retry_base_delay = max(0.5, float(retry_base_delay))
+        self.retry_max_delay = max(self.retry_base_delay, float(retry_max_delay))
+        self.requests_per_minute = max(1, int(requests_per_minute))
+        self.temperature = min(2.0, max(0.0, float(temperature)))
+        self.timeout = max(10, int(timeout))
+        self.max_output_tokens = max(256, int(max_output_tokens))
+
+        self._api_key = resolved_key
+        self._client = client
+        self._client_lock = threading.Lock()
+        self._rate_limiter = _RateLimiter(self.requests_per_minute)
         self._cache: Dict[str, str] = {}
         self._cache_lock = threading.Lock()
+        self._fatal_error: Optional[str] = None
+        self._api_calls = 0
 
-    def _translator(self):
-        """One ``GoogleTranslator`` instance per thread (thread-safety)।"""
-        instance = getattr(self._thread_local, "instance", None)
-        if instance is None:
-            from deep_translator import GoogleTranslator
+    # ------------------------------------------------------------------
+    # SDK / client
+    # ------------------------------------------------------------------
+    def _ensure_client(self) -> Any:
+        """Create (once) the ``google-genai`` client; fail with a clear message."""
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            try:
+                from google import genai
+                from google.genai import types
+            except ImportError as exc:  # pragma: no cover - dependency is pinned
+                raise TranslationError(
+                    "google-genai প্যাকেজ নেই। ইনস্টল করুন:\n"
+                    "    pip install -r requirements.txt"
+                ) from exc
 
-            instance = GoogleTranslator(source=SOURCE_LANGUAGE, target=TARGET_LANGUAGE)
-            self._thread_local.instance = instance
-        return instance
+            # SDK-এর নিজস্ব retry বন্ধ রাখা হয় — আমাদের নিজের স্পষ্ট,
+            # log-সহ retry নীতিই ব্যবহারকারী দেখতে পান।
+            http_options = types.HttpOptions(
+                timeout=self.timeout * 1000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            )
+            self._client = genai.Client(api_key=self._api_key, http_options=http_options)
+            logger.info(
+                "Gemini client প্রস্তুত | model=%s | timeout=%ds | RPM=%d | "
+                "batch=%d | সর্বোচ্চ retry=%d",
+                self.model, self.timeout, self.requests_per_minute,
+                self.batch_size, self.max_retries,
+            )
+        return self._client
 
+    def _generate(self, texts: Sequence[str]) -> List[str]:
+        """এক request-এ একাধিক লাইন অনুবাদ করে (retry ছাড়া)।"""
+        from google.genai import types
+
+        client = self._ensure_client()
+        payload = json.dumps({"lines": list(texts)}, ensure_ascii=False)
+        contents = f"Translate each line of this JSON into Bangla.\n{payload}"
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
+            response_mime_type="application/json",
+            response_schema=_RESPONSE_SCHEMA,
+        )
+
+        response = client.models.generate_content(
+            model=self.model, contents=contents, config=config
+        )
+        try:
+            raw = response.text
+        except Exception as exc:  # blocked / empty candidate
+            raise _ResponseFormatError(f"Gemini-র উত্তর পড়া যায়নি: {exc}") from exc
+        if not isinstance(raw, str) or not raw.strip():
+            feedback = getattr(response, "prompt_feedback", None)
+            block_reason = getattr(feedback, "block_reason", None)
+            if block_reason:
+                raise _ContentBlockedError(
+                    f"Gemini নিরাপত্তার কারণে উত্তর ব্লক করেছে (block_reason: {block_reason})।"
+                )
+            detail = f" (prompt_feedback: {feedback})" if feedback else ""
+            raise _ResponseFormatError(f"Gemini খালি উত্তর দিয়েছে{detail}")
+        return parse_translations(raw, len(texts))
+
+    # ------------------------------------------------------------------
+    # Retry logic
+    # ------------------------------------------------------------------
+    def _retry_delay(self, attempt: int, exc: BaseException, status: Optional[int]) -> float:
+        """Exponential backoff + jitter; server-এর বলা সময়কে প্রাধান্য দেয়।"""
+        hinted = _retry_after_seconds(exc)
+        if hinted is not None:
+            delay = hinted + 1.0
+        else:
+            delay = self.retry_base_delay * (2 ** (attempt - 1))
+            if status == 429:
+                delay *= 1.5
+            delay += random.uniform(0.0, min(3.0, delay * 0.1))
+        return min(max(delay, 0.5), self.retry_max_delay)
+
+    def _call_with_retry(self, texts: Sequence[str]) -> List[str]:
+        """ব্যর্থ হলে অপেক্ষা করে আবার চেষ্টা; শেষে পরিষ্কার error দেয়।"""
+        if self._fatal_error:
+            raise TranslationError(self._fatal_error)
+
+        last_error: Optional[BaseException] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                self._rate_limiter.wait()
+                self._api_calls += 1
+                return self._generate(texts)
+            except _ContentBlockedError as exc:
+                # কনটেন্ট ব্লক — retry করলে একই ফল; শুধু এই ভিডিওর কাজ বন্ধ হয়
+                logger.error("🛑 %s — এই অংশের অনুবাদ বাদ দেওয়া হলো।", exc)
+                raise TranslationError(str(exc)) from exc
+            except _ResponseFormatError as exc:
+                last_error = exc
+                logger.error(
+                    "⚠️ Gemini উত্তর সঠিক ফরম্যাটে আসেনি (চেষ্টা %d/%d) — %s",
+                    attempt, self.max_retries, _error_message(exc),
+                )
+                if attempt < self.max_retries:
+                    delay = self._retry_delay(attempt, exc, None)
+                    logger.warning(
+                        "⏳ %.1fs অপেক্ষা করে আবার চেষ্টা করা হবে (%d/%d)…",
+                        delay, attempt + 1, self.max_retries,
+                    )
+                    time.sleep(delay)
+            except Exception as exc:  # noqa: BLE001 - সব API/নেটওয়ার্ক ত্রুটি এক জায়গায়
+                last_error = exc
+                status = _status_code(exc)
+                retryable = _is_retryable(exc, status)
+                logger.error(
+                    "❌ Gemini API error (চেষ্টা %d/%d) | %s | status=%s | %s",
+                    attempt, self.max_retries, type(exc).__name__,
+                    status if status is not None else "-",
+                    _error_message(exc),
+                )
+                if not retryable:
+                    message = (
+                        f"Gemini API-তে অপুনরুদ্ধারযোগ্য ত্রুটি ({type(exc).__name__}, "
+                        f"status={status if status is not None else '-'}): {_error_message(exc)}\n"
+                        f"মডেল: {self.model} | API key ঠিক আছে কিনা এবং মডেলের নাম "
+                        f"বৈধ কিনা যাচাই করুন।"
+                    )
+                    self._fatal_error = message
+                    logger.error("🛑 %s", message)
+                    raise TranslationError(message) from exc
+                if attempt < self.max_retries:
+                    delay = self._retry_delay(attempt, exc, status)
+                    logger.warning(
+                        "⏳ %.1fs অপেক্ষা করে আবার চেষ্টা করা হবে (%d/%d)…",
+                        delay, attempt + 1, self.max_retries,
+                    )
+                    time.sleep(delay)
+
+        final = (
+            f"Gemini অনুবাদ {self.max_retries} বার চেষ্টা করেও ব্যর্থ হয়েছে "
+            f"(model={self.model}): {_error_message(last_error) if last_error else 'অজানা ত্রুটি'}"
+        )
+        logger.error("🛑 %s — এই অংশের অনুবাদ ব্যর্থ হলো।", final)
+        if isinstance(last_error, _ResponseFormatError):
+            raise _ResponseFormatError(final) from last_error
+        raise TranslationError(final) from last_error
+
+    def _translate_batch_texts(self, texts: Sequence[str], depth: int = 0) -> List[str]:
+        """ব্যাচ অনুবাদ; ফরম্যাট ভুল হলে ছোট ব্যাচে ভেঙে আবার চেষ্টা করে।"""
+        try:
+            return self._call_with_retry(texts)
+        except _ResponseFormatError as exc:
+            if len(texts) <= 1 or depth >= 4:
+                raise
+            middle = len(texts) // 2
+            logger.warning(
+                "🔀 %d লাইনের ব্যাচ দুই ভাগে ভেঙে আবার চেষ্টা করা হচ্ছে…", len(texts)
+            )
+            return self._translate_batch_texts(texts[:middle], depth + 1) + \
+                self._translate_batch_texts(texts[middle:], depth + 1)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def translate_text(self, text: str) -> str:
-        text = " ".join((text or "").split())
+        """Translate a single English string into Bangla."""
+        text = normalise_text(text)
         if not text:
             return ""
         with self._cache_lock:
             cached = self._cache.get(text)
         if cached is not None:
             return cached
-
-        translated_parts: List[str] = []
-        for chunk in split_long_text(text):
-            translated_parts.append(self._translate_chunk_with_retry(chunk))
-        result = " ".join(p.strip() for p in translated_parts if p and p.strip())
-
+        result = self._translate_batch_texts([text])[0]
         with self._cache_lock:
             self._cache[text] = result
         return result
 
-    def _translate_chunk_with_retry(self, chunk: str) -> str:
-        last_error: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                result = self._translator().translate(chunk)
-                if result and result.strip():
-                    return result.strip()
-                raise TranslationError("খালি অনুবাদ ফিরেছে (empty response)")
-            except Exception as exc:  # নেটওয়ার্ক ঝামেলা / rate-limit — retry যোগ্য
-                last_error = exc
-                if attempt < self.max_retries:
-                    delay = (2 ** (attempt - 1)) + random.uniform(0.0, 0.5)
-                    logger.debug("অনুবাদে সমস্যা (%s) — %.1fs পরে retry…", exc, delay)
-                    time.sleep(delay)
-        raise TranslationError(f"অনুবাদ ব্যর্থ হয়েছে: {last_error}")
+    def _make_batches(self, texts: Sequence[str]) -> List[List[str]]:
+        """টেক্সটগুলোকে সংখ্যা ও অক্ষর-সীমা অনুযায়ী batch-এ ভাগ করে।"""
+        batches: List[List[str]] = []
+        current: List[str] = []
+        chars = 0
+        for text in texts:
+            if current and (
+                len(current) >= self.batch_size
+                or chars + len(text) > self.max_chars_per_request
+            ):
+                batches.append(current)
+                current, chars = [], 0
+            current.append(text)
+            chars += len(text)
+        if current:
+            batches.append(current)
+        return batches
 
     def translate_segments(self, segments: List[Segment]) -> List[Segment]:
-        """Translate all segments concurrently, preserving their order.
+        """সব segment অনুবাদ করে; timestamp অপরিবর্তিত থাকে।
 
-        কোনো একটি segment শেষ পর্যন্ত ব্যর্থ হলে সেটির ``text_bn`` খালি
-        থাকে (পরে বাদ যাবে) — বাকি ভিডিওর কাজ থামে না। তবে অর্ধেকের বেশি
-        ব্যর্থ হলে ধরে নেওয়া হয় নেটওয়ার্ক/সার্ভিস ডাউন এবং error ওঠে।
+        একই টেক্সট একাধিকবার থাকলে একবারই API-তে যায় (cache ও dedupe)।
+
+        Raises:
+            TranslationError: কোনো ব্যাচ সর্বোচ্চ retry-এর পরেও ব্যর্থ হলে
+                (অথবা API key/মডেল সংক্রান্ত অনিবার্য সমস্যা হলে)।
         """
         if not segments:
             return segments
+
         started = time.perf_counter()
-        failures = 0
+        calls_before = self._api_calls
+        groups: Dict[str, List[Segment]] = {}
+        unique_texts: List[str] = []
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            futures = {pool.submit(self.translate_text, seg.text_en): seg for seg in segments}
-            for future in iter_progress(
-                as_completed(futures), desc="  Translate", total=len(segments)
-            ):
-                seg = futures[future]
-                try:
-                    seg.text_bn = future.result()
-                except Exception as exc:
-                    failures += 1
-                    seg.text_bn = ""
-                    logger.warning(
-                        "Segment %d-এর অনুবাদ হয়নি: %s | EN: %.60s…",
-                        seg.index, exc, seg.text_en,
-                    )
+        for seg in segments:
+            text = normalise_text(seg.text_en)
+            if not text:
+                seg.text_bn = ""
+                continue
+            with self._cache_lock:
+                cached = self._cache.get(text)
+            if cached is not None:
+                seg.text_bn = cached
+                continue
+            if text not in groups:
+                groups[text] = []
+                unique_texts.append(text)
+            groups[text].append(seg)
 
-        if failures > len(segments) / 2:
-            raise TranslationError(
-                f"{len(segments)}টি segment-এর মধ্যে {failures}টির অনুবাদ ব্যর্থ। "
-                f"ইন্টারনেট সংযোগ / Google Translate-এর উপলব্ধতা যাচাই করুন।"
-            )
+        batches = self._make_batches(unique_texts)
+        for batch in iter_progress(
+            batches, desc="  Translate (Gemini)", total=len(batches), unit="batch"
+        ):
+            translations = self._translate_batch_texts(batch)
+            with self._cache_lock:
+                for text, translated in zip(batch, translations):
+                    self._cache[text] = translated
+                    for seg in groups[text]:
+                        seg.text_bn = translated
+
         logger.info(
-            "অনুবাদ শেষ: %d/%d segment সফল (%.1fs, cache-এ %dটি লাইন)।",
-            len(segments) - failures, len(segments),
-            time.perf_counter() - started, len(self._cache),
+            "Gemini অনুবাদ শেষ: %d segment | নতুন API call: %d | cache: %d | সময় %.1fs",
+            len(segments), self._api_calls - calls_before,
+            len(self._cache), time.perf_counter() - started,
         )
         return segments
+
+    def describe(self) -> str:
+        return f"gemini:{self.model}"
+
+    def close(self) -> None:
+        """Close the HTTP client and drop the reference (GPU-র সাথে সম্পর্ক নেই)।"""
+        client, self._client = self._client, None
+        if client is not None and hasattr(client, "close"):
+            try:
+                client.close()
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.debug("Gemini client বন্ধ করতে সমস্যা: %s", exc)
 
 
 # =============================================================================
@@ -249,7 +683,7 @@ class IndicTrans2Translator(BaseTranslator):
         logger.info("IndicTrans2 প্রস্তুত।")
 
     def translate_text(self, text: str) -> str:
-        text = " ".join((text or "").split())
+        text = normalise_text(text)
         return self._translate_batch([text])[0] if text else ""
 
     def translate_segments(self, segments: List[Segment]) -> List[Segment]:
@@ -261,6 +695,7 @@ class IndicTrans2Translator(BaseTranslator):
             range(0, len(texts), self.batch_size),
             desc="  Translate(IndicTrans2)",
             total=(len(texts) + self.batch_size - 1) // self.batch_size,
+            unit="batch",
         ):
             batch = texts[i : i + self.batch_size]
             for seg, translated in zip(segments[i : i + self.batch_size], self._translate_batch(batch)):
@@ -298,18 +733,61 @@ class IndicTrans2Translator(BaseTranslator):
             )
         return self._processor.postprocess_batch(decoded, lang=self._TGT_TAG)
 
+    def describe(self) -> str:
+        return f"indictrans2:{self.model_name}"
+
+    def close(self) -> None:
+        """Unload the local model and free GPU/CPU memory."""
+        from .utils import release_cuda_memory
+
+        self._model = None
+        self._tokenizer = None
+        self._processor = None
+        release_cuda_memory()
+
 
 # =============================================================================
-def create_translator(backend: str, **kwargs) -> BaseTranslator:
-    """Factory: config-এর backend নাম থেকে translator তৈরি করে।"""
-    backend = (backend or "google").lower()
-    if backend == "google":
-        return GoogleBanglaTranslator(
-            max_workers=kwargs.get("translation_max_workers", 5),
-            max_retries=kwargs.get("translation_max_retries", 3),
+# Factory
+# =============================================================================
+def create_translator(
+    backend: str = "gemini",
+    *,
+    gemini_api_key: str = "",
+    gemini_model: str = DEFAULT_GEMINI_MODEL,
+    gemini_batch_size: int = DEFAULT_GEMINI_BATCH_SIZE,
+    gemini_max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
+    gemini_max_retries: int = DEFAULT_MAX_RETRIES,
+    gemini_retry_base_delay: float = 4.0,
+    gemini_retry_max_delay: float = 90.0,
+    gemini_requests_per_minute: int = 15,
+    gemini_temperature: float = 0.2,
+    gemini_timeout: int = 120,
+    gemini_max_output_tokens: int = 8192,
+    indictrans2_model: str = "ai4bharat/indictrans2-en-indic-1B",
+) -> BaseTranslator:
+    """Factory: config-এর backend নাম থেকে translator তৈরি করে।
+
+    Raises:
+        ValueError: অজানা backend নাম দিলে।
+        GeminiAuthError: Gemini backend-এ API key না থাকলে।
+    """
+    name = normalise_text(backend).lower() or "gemini"
+    if name == "gemini":
+        return GeminiTranslator(
+            api_key=gemini_api_key,
+            model=gemini_model,
+            batch_size=gemini_batch_size,
+            max_chars_per_request=gemini_max_chars_per_request,
+            max_retries=gemini_max_retries,
+            retry_base_delay=gemini_retry_base_delay,
+            retry_max_delay=gemini_retry_max_delay,
+            requests_per_minute=gemini_requests_per_minute,
+            temperature=gemini_temperature,
+            timeout=gemini_timeout,
+            max_output_tokens=gemini_max_output_tokens,
         )
-    if backend == "indictrans2":
-        return IndicTrans2Translator(
-            model_name=kwargs.get("indictrans2_model", "ai4bharat/indictrans2-en-indic-1B"),
-        )
-    raise ValueError(f"অজানা translator backend: '{backend}' (সমর্থিত: google, indictrans2)")
+    if name == "indictrans2":
+        return IndicTrans2Translator(model_name=indictrans2_model)
+    raise ValueError(
+        f"অজানা translator backend: '{backend}' (সমর্থিত: gemini, indictrans2)"
+    )

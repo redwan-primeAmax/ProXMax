@@ -64,8 +64,17 @@ class DubbingPipeline:
         )
         self.translator = create_translator(
             cfg.translator_backend,
-            translation_max_workers=cfg.translation_max_workers,
-            translation_max_retries=cfg.translation_max_retries,
+            gemini_api_key=cfg.resolved_gemini_api_key(),
+            gemini_model=cfg.gemini_model,
+            gemini_batch_size=cfg.gemini_batch_size,
+            gemini_max_chars_per_request=cfg.gemini_max_chars_per_request,
+            gemini_max_retries=cfg.gemini_max_retries,
+            gemini_retry_base_delay=cfg.gemini_retry_base_delay,
+            gemini_retry_max_delay=cfg.gemini_retry_max_delay,
+            gemini_requests_per_minute=cfg.gemini_requests_per_minute,
+            gemini_temperature=cfg.gemini_temperature,
+            gemini_timeout=cfg.gemini_timeout,
+            gemini_max_output_tokens=cfg.gemini_max_output_tokens,
             indictrans2_model=cfg.indictrans2_model,
         )
         self.tts = BanglaTTS(
@@ -84,6 +93,26 @@ class DubbingPipeline:
             max_workers=cfg.sync_workers,
         )
         self.muxer = VideoMuxer(audio_bitrate=cfg.audio_bitrate, use_hwaccel=cfg.use_hwaccel)
+
+    # ------------------------------------------------------------------
+    def release_gpu(self) -> None:
+        """Whisper মডেল আনলোড ও API client বন্ধ করে GPU (VRAM) খালি করে।
+
+        কাজ শেষে (বা Colab-এ notebook থেকে) ডাকলে GPU ব্যবহার কমে যায়।
+        বারবার ডাকা নিরাপদ (idempotent)।
+        """
+        try:
+            self.stt.release()
+        except Exception as exc:  # pragma: no cover - best effort cleanup
+            logger.debug("Whisper release-এ সমস্যা: %s", exc)
+        try:
+            self.translator.close()
+        except Exception as exc:  # pragma: no cover - best effort cleanup
+            logger.debug("Translator বন্ধ করতে সমস্যা: %s", exc)
+
+    def close(self) -> None:
+        """Alias of :meth:`release_gpu` — pipeline-এর সব resource ছেড়ে দেয়।"""
+        self.release_gpu()
 
     # ------------------------------------------------------------------
     @contextmanager
@@ -237,7 +266,7 @@ class DubbingPipeline:
         logger.info(
             "ব্যাচ শুরু: %dটি ভিডিও | মডেল=%s | translator=%s | voice=%s",
             len(videos), self.config.whisper_model,
-            self.config.translator_backend, self.config.tts_voice,
+            self.translator.describe(), self.config.tts_voice,
         )
         logger.info("=" * 70)
 
@@ -249,6 +278,12 @@ class DubbingPipeline:
 
         summary.total_elapsed_seconds = time.perf_counter() - batch_started
         self._log_summary(summary, output_folder)
+
+        # কাজ শেষ — Whisper মডেল আনলোড করে GPU (VRAM) ছেড়ে দেওয়া হয়
+        if self.config.release_gpu_when_done:
+            logger.info("GPU মেমরি ছেড়ে দেওয়া হচ্ছে (Whisper আনলোড)…")
+            self.release_gpu()
+            logger.info("✅ GPU মুক্ত — এখন অন্য কাজে ব্যবহার করা যাবে।")
         return summary
 
     # Short alias, handy from notebooks: ``pipeline.run()``
