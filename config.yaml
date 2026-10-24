@@ -1,0 +1,63 @@
+# =============================================================================
+# ProXMax — কনফিগারেশন ফাইল
+# English → Bangla ভিডিও ডাবিং (Google Colab, T4 GPU)
+# দরকার অনুযায়ী শুধু এই ফাইলের মান বদলালেই হবে, কোড ছোঁয়ার দরকার নেই।
+# =============================================================================
+
+# --- Google Drive-এর পাথ -------------------------------------------------
+# লক্ষ্য করুন: "Video" এর V বড় হাতের, "input"/"output" সম্পূর্ণ ছোট হাতের।
+paths:
+  input_dir: "/content/drive/MyDrive/Video/input"
+  output_dir: "/content/drive/MyDrive/Video/output"
+  # সাময়িক (temporary) ফাইলের জায়গা। "auto" = Colab-এর দ্রুত লোকাল SSD
+  # (/content/proxmax_work)। Drive-এ রাখবেন না — অনেক ধীর হয়ে যাবে।
+  work_dir: "auto"
+
+# --- Speech-to-Text (faster-whisper) --------------------------------------
+stt:
+  # "large-v3" = সর্বোচ্চ accuracy (ডিফল্ট)।
+  # বেশি speed দরকার হলে "medium" ব্যবহার করুন।
+  model: "large-v3"
+  device: "auto"            # auto = CUDA GPU থাকলে GPU, না থাকলে CPU fallback
+  compute_type: "float16"   # GPU (T4)-এর জন্য দ্রুততম; CPU হলে নিজে থেকেই int8 হবে
+  batch_size: 8             # T4 (16GB VRAM) + large-v3 এর জন্য নিরাপদ; VRAM বেশি থাকলে 16
+  beam_size: 5              # বেশি = বেশি accuracy, একটু ধীর
+  vad_filter: true          # নীরব অংশ বাদ দিয়ে speed বাড়ায়
+  vad_min_silence_duration_ms: 500
+
+# --- Translation (English → Bangla) -----------------------------------------
+translation:
+  # "google"      = deep-translator দিয়ে Google Translate (ডিফল্ট, দ্রুত ও ফ্রি)
+  # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (offline, En→Bn-তে বিশেষ ভালো;
+  #                 আগে: pip install -r requirements-indictrans2.txt)
+  backend: "google"
+  max_workers: 5            # একসঙ্গে কয়টি segment translate হবে (Google backend)
+  max_retries: 3
+  indictrans2_model: "ai4bharat/indictrans2-en-indic-1B"
+
+# --- Text-to-Speech (edge-tts, Bangla ভয়েস) ----------------------------------
+tts:
+  # নারী কণ্ঠ: bn-BD-NabanitaNeural | পুরুষ কণ্ঠ: bn-BD-PradeepNeural
+  voice: "bn-BD-NabanitaNeural"
+  rate: "+0%"               # গতি: যেমন "+10%" দ্রুত, "-10%" ধীরে
+  volume: "+0%"
+  pitch: "+0Hz"
+  concurrency: 5            # একসঙ্গে কয়টি segment-এর অডিও তৈরি হবে (async)
+  max_retries: 3
+
+# --- Audio-Video Sync (time-stretch) -------------------------------------------
+sync:
+  min_tempo: 0.65           # বাংলা অডিওকে এর চেয়ে বেশি ধীর করা হবে না
+  max_tempo: 1.90           # বাংলা অডিওকে এর চেয়ে বেশি দ্রুত করা হবে না
+  slow_down_short_clips: true   # ছোট ক্লিপকে হালকা ধীর করে আসল slot-এর সাথে মেলানো
+  sync_workers: 4           # সমান্তরাল ffmpeg প্রসেসের সংখ্যা
+  sync_sample_rate: 24000   # edge-tts-এর native sample rate (মেমরি ও সময় বাঁচায়)
+
+# --- Output ---------------------------------------------------------------------
+output:
+  audio_bitrate: "160k"     # চূড়ান্ত MP4-এর AAC অডিও বিটরেট
+  use_hwaccel: true         # ffmpeg hardware acceleration (NVENC ইত্যাদি) চেষ্টা করা
+  skip_existing: true       # output-এ ফাইল থাকলে সেটি আবার প্রসেস না করা (resume সুবিধা)
+  save_srt: true            # output ফোল্ডারে _en.srt ও _bn.srt সাবটাইটেলও সেভ করা
+  keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, segment mp3) থেকে যাবে
+  log_level: "INFO"         # DEBUG দিলে আরও বিস্তারিত লগ

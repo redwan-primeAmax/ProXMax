@@ -1,0 +1,37 @@
+# =============================================================================
+# ProXMax — Python dependencies (সব version pin করা, যাতে conflict না হয়)
+# Google Colab (T4 GPU) পরিবেশের জন্য যাচাই করা সংমিশ্রণ।
+# ইনস্টল:  pip install -r requirements.txt
+# =============================================================================
+
+# --- Speech-to-Text: faster-whisper (CTranslate2 backend) -------------------
+faster-whisper==1.2.1
+ctranslate2==4.6.0
+huggingface-hub==0.30.2
+tokenizers==0.21.1
+onnxruntime==1.20.1        # VAD (Silero) মডেল চালানোর জন্য faster-whisper-এর লাগে
+av==14.2.0                 # অডিও decode করার জন্য faster-whisper-এর লাগে
+
+# --- CUDA runtime লাইব্রেরি (শুধু Linux) -------------------------------------
+# Colab-এ CTranslate2 মাঝে মাঝে libcudnn/libcublas খুঁজে পায় না;
+# এই দুটি প্যাকেজ থাকলে GPU নির্বিঘ্নে কাজ করে।
+nvidia-cublas-cu12==12.6.4.1 ; sys_platform == "linux"
+nvidia-cudnn-cu12==9.5.1.17  ; sys_platform == "linux"
+
+# --- Translation: English → Bangla -------------------------------------------
+deep-translator==1.11.4    # Google Translate backend (ডিফল্ট)
+requests==2.32.3
+
+# --- Text-to-Speech: Bangla neural voices -------------------------------------
+edge-tts==7.3.1            # bn-BD-NabanitaNeural / bn-BD-PradeepNeural
+
+# --- Audio প্রসেসিং ও ইউটিলিটি -------------------------------------------------
+pydub==0.25.1              # চূড়ান্ত অডিও ট্র্যাক assemble করা (ffmpeg দরকার)
+PyYAML==6.0.2              # config.yaml পড়া
+tqdm==4.67.1               # progress bar
+
+# দ্রষ্টব্য: torch এখানে ইচ্ছাকৃতভাবে রাখা হয়নি — মূল pipeline-এর দরকার নেই
+# এবং Colab-এ torch আগে থেকেই ইনস্টল থাকে (IndicTrans2 বিকল্পের জন্য
+# requirements-indictrans2.txt দেখুন)।
+# ffmpeg পাইথন প্যাকেজ নয়: Colab-এ সাধারণত আগে থেকেই থাকে; না থাকলে:
+#   apt-get update -qq && apt-get install -y -qq ffmpeg

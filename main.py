@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""ProXMax — English → Bangla video dubbing tool (main entry point).
+
+ব্যবহার (Google Colab-এ রিপো clone করার পর)::
+
+    python main.py                      # config.yaml-এর সেটিংস দিয়ে পুরো ব্যাচ
+    python main.py --model medium       # বেশি speed-এর জন্য ছোট মডেল
+    python main.py --voice bn-BD-PradeepNeural   # পুরুষ কণ্ঠ
+    python main.py --force              # আউটপুট থাকলেও আবার প্রসেস করা
+
+Input ভিডিও নেওয়া হয় ``/content/drive/MyDrive/Video/input/`` থেকে
+এবং ডাবিং করা ভিডিও রাখা হয় ``/content/drive/MyDrive/Video/output/``
+ফোল্ডারে (পাথ বদলাতে ``config.yaml`` অথবা ``--input-dir/--output-dir``)।
+"""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import sys
+from pathlib import Path
+
+# স্ক্রিপ্টটি যেখান থেকেই চালানো হোক, রিপোর রুট যেন import path-এ থাকে
+REPO_ROOT = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from proxmax.config import AppConfig                      # noqa: E402
+from proxmax.pipeline import DubbingPipeline              # noqa: E402
+from proxmax.utils import ensure_tool, get_logger, setup_logging  # noqa: E402
+
+logger = get_logger("proxmax.main")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="ProXMax: English ভিডিও → Bangla ডাবিং (faster-whisper + edge-tts)",
+    )
+    parser.add_argument(
+        "--config", default=str(REPO_ROOT / "config.yaml"),
+        help="config.yaml-এর পাথ (ডিফল্ট: রিপোর config.yaml)",
+    )
+    parser.add_argument("--input-dir", default=None, help="Input ভিডিওর ফোল্ডার (config override)")
+    parser.add_argument("--output-dir", default=None, help="Output ফোল্ডার (config override)")
+    parser.add_argument(
+        "--model", default=None,
+        help="Whisper মডেল: large-v3 (ডিফল্ট, best accuracy) অথবা medium (বেশি speed)",
+    )
+    parser.add_argument("--device", default=None, help="STT device: auto | cuda | cpu")
+    parser.add_argument("--batch-size", type=int, default=None, help="Whisper batch size (VRAM অনুযায়ী)")
+    parser.add_argument(
+        "--translator", default=None, choices=["google", "indictrans2"],
+        help="অনুবাদ backend: google (ডিফল্ট) অথবা indictrans2",
+    )
+    parser.add_argument(
+        "--voice", default=None,
+        help="Bangla TTS ভয়েস: bn-BD-NabanitaNeural (নারী, ডিফল্ট) / bn-BD-PradeepNeural (পুরুষ)",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="output-এ ফাইল থাকলেও আবার প্রসেস করা (skip-existing বন্ধ)",
+    )
+    parser.add_argument(
+        "--keep-temp", action="store_true",
+        help="মধ্যবর্তী ফাইল (extracted wav, TTS ক্লিপ ইত্যাদি) রেখে দেওয়া (debug-এর জন্য)",
+    )
+    parser.add_argument("--log-level", default=None, help="INFO (ডিফল্ট) | DEBUG | WARNING")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    config = AppConfig.from_yaml(args.config)
+    config.apply_overrides(
+        {
+            "input_dir": args.input_dir,
+            "output_dir": args.output_dir,
+            "whisper_model": args.model,
+            "whisper_device": args.device,
+            "whisper_batch_size": args.batch_size,
+            "translator_backend": args.translator,
+            "tts_voice": args.voice,
+            "log_level": args.log_level,
+            "skip_existing": False if args.force else None,
+            "keep_temp_files": True if args.keep_temp else None,
+        }
+    )
+
+    setup_logging(config.log_level)
+
+    logger.info("=" * 70)
+    logger.info("🎙️  ProXMax — English → Bangla ভিডিও ডাবিং")
+    logger.info("=" * 70)
+    logger.info("Input   : %s", config.input_dir)
+    logger.info("Output  : %s", config.output_dir)
+    logger.info("Work dir: %s (সাময়িক ফাইল)", config.resolved_work_dir)
+    logger.info(
+        "STT=%s | Translator=%s | Voice=%s",
+        config.whisper_model, config.translator_backend, config.tts_voice,
+    )
+
+    # ffmpeg ছাড়া এক ধাপও এগোনো যাবে না — শুরুতেই পরিষ্কার error দেওয়া ভালো
+    try:
+        ensure_tool("ffmpeg")
+    except Exception as exc:
+        logger.error(str(exc))
+        return 2
+    if not shutil.which("ffprobe"):
+        logger.warning("ffprobe পাওয়া যায়নি — duration জানতে ffmpeg fallback ব্যবহৃত হবে।")
+
+    try:
+        config.validate()
+        pipeline = DubbingPipeline(config)
+    except Exception as exc:
+        logger.error("সেটআপে সমস্যা: %s", exc)
+        return 2
+
+    summary = pipeline.run_batch()
+
+    if not summary.results:
+        # Input খালি / ফোল্ডার নেই — উপরে বিস্তারিত বার্তা দেওয়া হয়েছে
+        return 0
+    return 1 if summary.failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

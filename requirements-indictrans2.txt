@@ -1,0 +1,18 @@
+# =============================================================================
+# ঐচ্ছিক (OPTIONAL): IndicTrans2 translation backend-এর অতিরিক্ত dependencies
+#
+# শুধুমাত্র config.yaml-এ  translator: backend: "indictrans2"  দিলে এটি লাগবে।
+# ডিফল্ট Google Translate backend-এর জন্য এটি ইনস্টল করার দরকার নেই।
+#
+# ইনস্টল:  pip install -r requirements.txt -r requirements-indictrans2.txt
+# =============================================================================
+
+transformers==4.48.3
+sentencepiece==0.2.0
+sacremoses==0.1.1
+# IndicTrans2-এর অফিসিয়াল প্রিপ্রসেসিং টুলকিট (সঠিক মানের অনুবাদের জন্য জরুরি)
+IndicTransToolkit @ git+https://github.com/VarunGumma/IndicTransToolkit.git@main
+
+# দ্রষ্টব্য: torch এখানে রাখা হয়নি — Google Colab-এ CUDA-সহ torch আগে
+# থেকেই ইনস্টল থাকে; আলাদা করে ইনস্টল করলে সময় ও জায়গা দুটোই নষ্ট হয়।
+# লোকাল মেশিনে চালালে নিজের CUDA সংস্করণ অনুযায়ী torch ইনস্টল করে নিন।
