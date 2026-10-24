@@ -1,36 +1,38 @@
-# Local environments and generated data
-.venv/
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+.venv/
+venv/
+env/
 .pytest_cache/
-.ipynb_checkpoints/
-.cache/
-.coverage
-htmlcov/
-build/
-dist/
-*.egg-info/
+.mypy_cache/
+.ruff_cache/
 
-# Never commit media, models, Drive contents or credentials
-/content/
-drive/
-Video/
-proxmax-app/
-proxmax-work/
-proxmax-model-cache/
+# ProXMax সাময়িক/আউটপুট ফাইল (ভিডিও ও অডিও কখনোই গিটে যাবে না)
+proxmax_work/
+work/
+input/
+output/
 *.mp4
 *.mkv
 *.mov
-*.webm
 *.avi
-*.m4v
 *.wav
-*.pcm
 *.mp3
-*.safetensors
-*.bin
-.env
-.env.*
-!.env.example
-credentials*.json
-token*.json
+*.srt
+!notebook/*.ipynb
+
+# মডেল cache
+.cache/
+models/
+
+# Jupyter / Colab
+.ipynb_checkpoints/
+
+# OS / এডিটর
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
