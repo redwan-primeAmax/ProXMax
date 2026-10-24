@@ -27,13 +27,32 @@ stt:
 
 # --- Translation (English → Bangla) -----------------------------------------
 translation:
-  # "google"      = deep-translator দিয়ে Google Translate (ডিফল্ট, দ্রুত ও ফ্রি)
+  # "gemini"      = Google Gemini API (ডিফল্ট)
   # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (offline, En→Bn-তে বিশেষ ভালো;
   #                 আগে: pip install -r requirements-indictrans2.txt)
-  backend: "google"
-  max_workers: 5            # একসঙ্গে কয়টি segment translate হবে (Google backend)
-  max_retries: 3
+  backend: "gemini"
+  # Gemini-র সব সেটিংস নিচের gemini সেকশনে
+  # IndicTrans2 ব্যবহার করতে চাইলে এর নাম বদলানো যায়:
   indictrans2_model: "ai4bharat/indictrans2-en-indic-1B"
+
+# --- Google Gemini API (ডিফল্ট অনুবাদ ইঞ্জিন) --------------------------------
+gemini:
+  # API key নিন: https://aistudio.google.com/app/apikey
+  # এখানে key না লিখে environment variable ব্যবহার করা বেশি নিরাপদ:
+  #   export GEMINI_API_KEY="your-key"       (অথবা GOOGLE_API_KEY)
+  # Colab-এ নোটবুকের "Gemini কনফিগারেশন" সেলেই key দেওয়া যায়।
+  api_key: ""
+  # ডিফল্ট মডেল (ব্যবহারকারীর নির্দেশ অনুযায়ী)। দরকার হলে নাম বদলান।
+  model: "gemini-3.5-flash-light"
+  batch_size: 25                # এক API request-এ কতটি segment অনুবাদ হবে
+  max_chars_per_request: 12000  # এক request-এ সর্বোচ্চ অক্ষর
+  max_retries: 7                # সর্বোচ্চ ৭ বার চেষ্টা (৬–৭ এর মধ্যে রাখুন)
+  retry_base_delay: 4.0         # প্রথম retry-এর আগে অপেক্ষা (সেকেন্ড)
+  retry_max_delay: 90.0         # এক retry-তে সর্বোচ্চ অপেক্ষা (সেকেন্ড)
+  requests_per_minute: 15       # rate limit — আপনার API plan অনুযায়ী বাড়ান/কমান
+  temperature: 0.2              # কম = বেশি নির্ভুল ও ধারাবাহিক অনুবাদ
+  timeout: 120                  # এক request-এর timeout (সেকেন্ড)
+  max_output_tokens: 8192       # উত্তরে সর্বোচ্চ টোকেন
 
 # --- Text-to-Speech (edge-tts, Bangla ভয়েস) ----------------------------------
 tts:
@@ -52,6 +71,12 @@ sync:
   slow_down_short_clips: true   # ছোট ক্লিপকে হালকা ধীর করে আসল slot-এর সাথে মেলানো
   sync_workers: 4           # সমান্তরাল ffmpeg প্রসেসের সংখ্যা
   sync_sample_rate: 24000   # edge-tts-এর native sample rate (মেমরি ও সময় বাঁচায়)
+
+# --- Runtime --------------------------------------------------------------------
+runtime:
+  # true হলে কাজ শেষে Whisper মডেল আনলোড করে GPU (VRAM) ছেড়ে দেওয়া হয়,
+  # ফলে Colab-এ GPU ব্যবহার সাথে সাথে কমে যায়।
+  release_gpu_when_done: true
 
 # --- Output ---------------------------------------------------------------------
 output:

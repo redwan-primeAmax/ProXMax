@@ -6,6 +6,7 @@ ffmpeg চালানো, মিডিয়ার duration বের করা
 
 from __future__ import annotations
 
+import gc
 import logging
 import re
 import shutil
@@ -171,17 +172,47 @@ def write_srt(segments: Iterable[Segment], path: Path | str, language: str = "bn
     return out
 
 
-def iter_progress(iterable, desc: str = "", total: Optional[int] = None):
+def iter_progress(
+    iterable,
+    desc: str = "",
+    total: Optional[int] = None,
+    unit: str = "seg",
+):
     """Iterate with a tqdm progress bar when tqdm is available.
 
     tqdm না থাকলে সাধারণ iterable হিসেবেই ফেরত দেয় — কোড কোথাও
     আটকায় না।
+
+    Args:
+        iterable: যার উপর progress দেখানো হবে।
+        desc: progress bar-এর নাম।
+        total: মোট item সংখ্যা।
+        unit: এককের নাম (যেমন ``"seg"`` বা ``"batch"``)।
     """
     try:
         from tqdm.auto import tqdm
     except Exception:  # pragma: no cover - tqdm is a pinned dependency
         return iterable
-    return tqdm(iterable, desc=desc, total=total, unit="seg", leave=False)
+    return tqdm(iterable, desc=desc, total=total, unit=unit, leave=False)
+
+
+def release_cuda_memory() -> None:
+    """Force garbage collection and empty the CUDA cache (best effort).
+
+    Whisper/CTranslate2 বা torch-এর মডেল object মেমরি থেকে সরে গেলে GPU
+    (VRAM) ছেড়ে দেয়; তার পরও allocator-এর cache আটকে থাকতে পারে।
+    কাজ শেষে এই ফাংশনটি ডাকলে Colab-এ GPU ব্যবহার দ্রুত কমে যায়।
+    ``torch`` ইনস্টল না থাকলেও নিরাপদে কাজ করে।
+    """
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:  # torch নেই / CUDA নেই — কিছু করার দরকার নেই
+        pass
 
 
 def output_filename_for(video_path: Path | str) -> str:

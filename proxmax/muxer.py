@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 @functools.lru_cache(maxsize=1)
 def _available_encoders() -> frozenset:
-    """ffmpeg-এ उपलब्ध সব encoder-এর নাম (একবারই যাচাই হয়)।"""
+    """ffmpeg-এ উপলব্ধ সব encoder-এর নাম (একবারই যাচাই হয়)।"""
     ffmpeg = ensure_tool("ffmpeg")
     proc = subprocess.run(
         [ffmpeg, "-hide_banner", "-encoders"],

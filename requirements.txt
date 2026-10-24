@@ -18,9 +18,9 @@ av==14.2.0                 # অডিও decode করার জন্য faste
 nvidia-cublas-cu12==12.6.4.1 ; sys_platform == "linux"
 nvidia-cudnn-cu12==9.5.1.17  ; sys_platform == "linux"
 
-# --- Translation: English → Bangla -------------------------------------------
-deep-translator==1.11.4    # Google Translate backend (ডিফল্ট)
-requests==2.32.3
+# --- Translation: English → Bangla (Google Gemini API) ------------------------
+google-genai==2.33.0       # Gemini API SDK (ডিফল্ট অনুবাদ backend)
+requests==2.32.3           # google-genai / huggingface-hub-এর নির্ভরতা
 
 # --- Text-to-Speech: Bangla neural voices -------------------------------------
 edge-tts==7.3.1            # bn-BD-NabanitaNeural / bn-BD-PradeepNeural
