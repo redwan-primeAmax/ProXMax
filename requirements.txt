@@ -26,12 +26,16 @@ requests==2.32.3           # google-genai / huggingface-hub-এর নির্�
 edge-tts==7.3.1            # bn-BD-NabanitaNeural / bn-BD-PradeepNeural
 
 # --- Audio প্রসেসিং ও ইউটিলিটি -------------------------------------------------
-pydub==0.25.1              # চূড়ান্ত অডিও ট্র্যাক assemble করা (ffmpeg দরকার)
+# অডিও decode/write/assemble সবই numpy + ffmpeg দিয়ে করা হয় (audio_fx.py) —
+# তাই pydub আর দরকার নেই।
 PyYAML==6.0.2              # config.yaml পড়া
 tqdm==4.67.1               # progress bar
+soundfile==0.13.1          # IndicF5-এর WAV I/O path (numpy-এর সাথে)
 
-# দ্রষ্টব্য: torch এখানে ইচ্ছাকৃতভাবে রাখা হয়নি — মূল pipeline-এর দরকার নেই
-# এবং Colab-এ torch আগে থেকেই ইনস্টল থাকে (IndicTrans2 বিকল্পের জন্য
-# requirements-indictrans2.txt দেখুন)।
+# দ্রষ্টব্য: torch এখানে ইচ্ছাকৃতভাবে রাখা হয়নি — Colab-এ CUDA-সহ torch আগে
+# থেকেই ইনস্টল থাকে (pin করলে ~১ GB ডাউনলোড ও CUDA mismatch ঝুঁকি)।
+# ভয়েস ক্লোনিং (IndicF5) চালাতে:  pip install -r requirements-indicf5.txt
+# IndicTrans2 বিকল্প চাইলে:        pip install -r requirements-indictrans2.txt
+# numpy-ও pin করা হয়নি — Colab-এর preinstalled সংস্করণই সবচেয়ে নিরাপদ।
 # ffmpeg পাইথন প্যাকেজ নয়: Colab-এ সাধারণত আগে থেকেই থাকে; না থাকলে:
 #   apt-get update -qq && apt-get install -y -qq ffmpeg
