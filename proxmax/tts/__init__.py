@@ -18,6 +18,7 @@ Hugging Face token, লাইসেন্স সম্মতি বা রেক
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from ..config import AppConfig
@@ -38,10 +39,42 @@ __all__ = [
     "SpeedGovernor",
     "build_tts_engine",
     "resolve_tts_engine",
+    "hf_token_available",
     "BANGLA_VOICE_FEMALE",
     "BANGLA_VOICE_MALE",
     "DEFAULT_MODEL_ID",
 ]
+
+
+#: Hugging Face টোকেন যে environment variable-গুলোতে থাকতে পারে
+_HF_TOKEN_ENV_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN")
+
+
+def hf_token_available() -> bool:
+    """Hugging Face access token পাওয়া যাচ্ছে কি না (IndicF5 gated মডেল)।
+
+    টোকেন খোঁজা হয় এই ক্রমে: প্রথমে environment variable (``HF_TOKEN``
+    ইত্যাদি), তারপর ``huggingface_hub``-এর সংরক্ষিত token (``login()``
+    করলে সেটি সেখানেই জমা থাকে)।
+
+    টোকেন না থাকলে কণ্ঠ ক্লোনিং **কখনোই** সম্ভব নয় — তখন অ্যাপ কিছু
+    ডাউনলোডের চেষ্টা না করে সরাসরি বিল্ট-ইন বাংলা ভয়েস ব্যবহার করে,
+    অর্থাৎ ব্যবহারকারী কিছু না দিলেও কাজ আগায়।
+
+    Returns:
+        ``True`` যদি কোনো টোকেন পাওয়া যায়, নাহলে ``False``।
+    """
+    for name in _HF_TOKEN_ENV_VARS:
+        if (os.environ.get(name) or "").strip():
+            return True
+    try:
+        from huggingface_hub import get_token  # huggingface_hub >= 0.19
+    except Exception:
+        return False
+    try:
+        return bool((get_token() or "").strip())
+    except Exception:  # pragma: no cover - পুরোনো/ভাঙা install
+        return False
 
 
 def resolve_tts_engine(
@@ -94,7 +127,12 @@ def build_tts_engine(
     """
     engine_name = resolve_tts_engine(config, profile)
 
-    if engine_name == "indicf5":
+    if engine_name == "indicf5" and profile is None:
+        logger.info(
+            "কণ্ঠ ক্লোনিংয়ের জন্য কোনো ভয়েস নমুনা নেই — বিল্ট-ইন বাংলা ভয়েস "
+            "(%s) ব্যবহার হবে।", config.tts_voice,
+        )
+    elif engine_name == "indicf5":
         engine: BaseTTSEngine = IndicF5Engine(
             model_id=config.tts_indicf5_model,
             fp16=config.tts_fp16,

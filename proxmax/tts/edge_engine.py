@@ -166,6 +166,7 @@ class EdgeTTSEngine(BaseTTSEngine):
                     "-c:a", "pcm_s16le", str(wav_path),
                 ],
                 description="edge-tts mp3→wav",
+                timeout=120.0,
             )
         except FFmpegError as exc:
             raise TTSError(f"edge-tts অডিও রূপান্তর ব্যর্থ: {exc}") from exc

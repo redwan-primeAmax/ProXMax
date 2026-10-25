@@ -31,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import glob
 import os
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -276,17 +277,33 @@ class SpeechToText:
         from faster_whisper import WhisperModel
 
         logger.info(
-            "Whisper মডেল লোড হচ্ছে: %s | device=%s | compute=%s "
-            "(প্রথমবার ডাউনলোড হতে সময় লাগবে)…",
+            "Whisper মডেল লোড হচ্ছে: %s | device=%s | compute=%s — প্রথমবার ওজন "
+            "ডাউনলোড হবে (large-v3 ≈ ৩ GB), তাই কিছুক্ষণ কোনো নতুন লগ নাও দেখতে "
+            "পারেন; ডাউনলোডের অগ্রগতি নিচে দেখানো হবে।",
             self.model_size, self.device, self.compute_type,
         )
         started = time.perf_counter()
-        self._model = WhisperModel(
-            self.model_size,
-            device=self.device,
-            compute_type=self.compute_type,
-            cpu_threads=(os.cpu_count() or 4) if self.device == "cpu" else 0,
-        )
+        # ডাউনলোড/লোডের সময় নীরবতা যেন "ঝুলে গেছে" মনে না হয় — heartbeat
+        stop_heartbeat = threading.Event()
+
+        def _heartbeat() -> None:
+            while not stop_heartbeat.wait(30.0):
+                logger.info(
+                    "  … Whisper মডেল লোড/ডাউনলোড এখনো চলছে (%.0fs) — অপেক্ষা করুন।",
+                    time.perf_counter() - started,
+                )
+
+        heartbeat = threading.Thread(target=_heartbeat, daemon=True)
+        heartbeat.start()
+        try:
+            self._model = WhisperModel(
+                self.model_size,
+                device=self.device,
+                compute_type=self.compute_type,
+                cpu_threads=(os.cpu_count() or 4) if self.device == "cpu" else 0,
+            )
+        finally:
+            stop_heartbeat.set()
         logger.info("Whisper মডেল প্রস্তুত (লোড: %.1fs)।", time.perf_counter() - started)
 
     def release(self) -> None:
@@ -393,11 +410,21 @@ class SpeechToText:
         words: List[Word] = []
         carried = ""
         per_chunk_text: List[str] = []
-        for chunk in chunks:
+        total_chunks = len(chunks)
+        logger.info(
+            "Whisper ডিকোড শুরু: %dটি chunk | মোট অডিও %s | device=%s",
+            total_chunks, format_duration(total_seconds), self.device,
+        )
+        for index, chunk in enumerate(chunks, start=1):
             start_sample = int(chunk.start * sample_rate)
             end_sample = min(audio.size, int(chunk.end * sample_rate))
             if end_sample <= start_sample:
                 continue
+            logger.info(
+                "  STT %d/%d — %s–%s (%s)",
+                index, total_chunks, format_duration(chunk.start),
+                format_duration(chunk.end), format_duration(chunk.duration),
+            )
             chunk_words, text = self._decode_words(
                 audio[start_sample:end_sample],
                 offset=chunk.start,
