@@ -35,9 +35,22 @@ REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from proxmax.config import AppConfig                      # noqa: E402
-from proxmax.pipeline import DubbingPipeline              # noqa: E402
-from proxmax.utils import ensure_tool, get_logger, setup_logging  # noqa: E402
+if __name__ == "__main__":
+    # প্রথম লগটাই সাথে সাথে দেখা যাবে — নোটবুকে "কিছুই হচ্ছে না" ভাব দূর হয়
+    print("▶ ProXMax চালু হচ্ছে — প্রয়োজনীয় মডিউল লোড হচ্ছে…", flush=True)
+
+try:
+    from proxmax.config import AppConfig                       # noqa: E402
+    from proxmax.pipeline import DubbingPipeline               # noqa: E402
+    from proxmax.utils import ensure_tool, get_logger, setup_logging  # noqa: E402
+except ModuleNotFoundError as _import_error:                   # pragma: no cover
+    print(
+        f"❌ প্রয়োজনীয় প্যাকেজ পাওয়া যায়নি: '{_import_error.name}'\n"
+        f"   নোটবুকের **ধাপ ৪** (Dependency ইনস্টল) সেলটি রান করুন, অথবা চালান:\n"
+        f"   pip install -r requirements.txt",
+        file=sys.stderr, flush=True,
+    )
+    raise SystemExit(2) from _import_error
 
 logger = get_logger("proxmax.main")
 
