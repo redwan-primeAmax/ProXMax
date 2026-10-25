@@ -145,6 +145,17 @@ def main(argv: list[str] | None = None) -> int:
         config.min_tempo, config.max_tempo,
     )
 
+    # Gemini key ছাড়া অনুবাদই সম্ভব নয় — শুরুতেই স্পষ্ট error, অপেক্ষা নয়
+    if config.translator_backend == "gemini" and not config.resolved_gemini_api_key():
+        logger.error(
+            "❌ Gemini API key পাওয়া যায়নি — কিছুই শুরু করা হলো না।\n"
+            "   নোটবুকের **ধাপ ৬**-এ `GEMINI_API_KEY = \"...\"` এর ভেতরে key পেস্ট করে "
+            "সেই সেলটি রান করুন (অথবা Colab Secrets-এ GEMINI_API_KEY রাখুন), "
+            "তারপর আবার চালান।\n"
+            "   key নিন: https://aistudio.google.com/app/apikey"
+        )
+        return 2
+
     # ffmpeg ছাড়া এক ধাপও এগোনো যাবে না — শুরুতেই পরিষ্কার error দেওয়া ভালো
     try:
         ensure_tool("ffmpeg")

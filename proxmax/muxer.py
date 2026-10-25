@@ -13,7 +13,13 @@ import functools
 import subprocess
 from pathlib import Path
 
-from .utils import FFmpegError, ensure_tool, get_logger, get_media_duration, run_ffmpeg
+from .utils import (
+    FFmpegError,
+    ensure_tool,
+    get_logger,
+    get_media_duration,
+    run_ffmpeg_with_progress,
+)
 
 logger = get_logger(__name__)
 
@@ -23,7 +29,8 @@ def _available_encoders() -> frozenset:
     """ffmpeg-এ উপলব্ধ সব encoder-এর নাম (একবারই যাচাই হয়)।"""
     ffmpeg = ensure_tool("ffmpeg")
     proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-encoders"],
+        [ffmpeg, "-nostdin", "-hide_banner", "-encoders"],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         encoding="utf-8", errors="replace", check=False,
     )
@@ -82,7 +89,12 @@ class VideoMuxer:
             ]
             try:
                 logger.info("Muxing চলছে (%s)…", attempt["label"])
-                run_ffmpeg(cmd, description=f"Muxing [{attempt['label']}]")
+                run_ffmpeg_with_progress(
+                    cmd,
+                    description=f"Muxing [{attempt['label']}]",
+                    duration_seconds=self._duration_hint(video_path),
+                    stall_timeout=120.0,
+                )
                 self._verify(output_path)
                 logger.info("Muxing সম্পন্ন: %s", output_path.name)
                 return output_path
@@ -91,6 +103,15 @@ class VideoMuxer:
                 logger.warning("Muxing পদ্ধতি '%s' ব্যর্থ: %s", attempt["label"], str(exc)[:300])
                 output_path.unlink(missing_ok=True)
         raise FFmpegError(f"সব muxing পদ্ধতি ব্যর্থ হয়েছে। শেষ error: {last_error}")
+
+    @staticmethod
+    def _duration_hint(video_path: Path):
+        """Muxing progress-এর জন্য duration (না পেলে ``None``)।"""
+        try:
+            duration = get_media_duration(video_path)
+        except Exception:
+            return None
+        return duration if duration and duration > 0 else None
 
     @staticmethod
     def _verify(output_path: Path) -> None:

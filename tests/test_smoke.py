@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -593,6 +595,30 @@ class TestTTSResolution(unittest.TestCase):
             resolve_tts_engine(AppConfig(tts_engine="indicf5"), None), "indicf5"
         )
 
+    def test_hf_token_available_reads_environment(self):
+        from proxmax.tts import hf_token_available
+
+        fake_hub = types.ModuleType("huggingface_hub")
+        fake_hub.get_token = lambda: None  # type: ignore[attr-defined]
+        with mock.patch.dict("os.environ", {}, clear=True), \
+                mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+            self.assertFalse(hf_token_available())
+        with mock.patch.dict("os.environ", {"HF_TOKEN": "hf_test"}, clear=True):
+            self.assertTrue(hf_token_available())
+
+    def test_explicit_indicf5_without_profile_falls_back(self):
+        from proxmax.tts import build_tts_engine
+
+        try:
+            engine = build_tts_engine(
+                AppConfig(tts_engine="indicf5"), profile=None
+            )
+        except TTSError as exc:
+            # edge-tts ইনস্টল না থাকলে এখানেই থামবে (IndicF5 নয়)
+            self.assertIn("edge-tts", str(exc))
+            return
+        self.assertIsInstance(engine, EdgeTTSEngine)
+
     def test_auto_is_the_repo_default(self):
         try:
             import yaml  # noqa: F401
@@ -626,6 +652,8 @@ class TestTTSResolution(unittest.TestCase):
             )
             try:
                 with mock.patch(
+                    "proxmax.pipeline.hf_token_available", return_value=True
+                ), mock.patch(
                     "proxmax.pipeline.discover_reference_audio", return_value=None
                 ) as finder:
                     self.assertIsNone(pipeline._ensure_profile())
@@ -657,6 +685,61 @@ class TestTTSResolution(unittest.TestCase):
                 self.assertEqual(finder.call_count, 0)
             finally:
                 pipeline.close()
+
+    def test_missing_hf_token_skips_cloning_and_keeps_going(self):
+        # টোকেন না দিলে = ব্যবহারকারী ক্লোনিং চান না → নমুনা খোঁজাও বন্ধ, কাজ চলবে
+        from proxmax.pipeline import DubbingPipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            in_dir = Path(tmp) / "in"
+            out_dir = Path(tmp) / "out"
+            in_dir.mkdir()
+            out_dir.mkdir()
+            pipeline = DubbingPipeline(
+                AppConfig(input_dir=in_dir, output_dir=out_dir, gemini_api_key="test-key")
+            )
+            try:
+                with mock.patch(
+                    "proxmax.pipeline.hf_token_available", return_value=False
+                ), mock.patch(
+                    "proxmax.pipeline.discover_reference_audio", return_value=None
+                ) as finder:
+                    self.assertIsNone(pipeline._ensure_profile())
+                self.assertEqual(finder.call_count, 0)
+            finally:
+                pipeline.close()
+
+
+class TestFFmpegSafety(unittest.TestCase):
+    def test_nostdin_is_always_added(self):
+        from proxmax.utils import ffmpeg_args
+
+        self.assertEqual(ffmpeg_args(["ffmpeg", "-i", "in.mp4"]),
+                         ["ffmpeg", "-nostdin", "-i", "in.mp4"])
+        # ইতিমধ্যে থাকলে দুবার যোগ হয় না
+        self.assertEqual(ffmpeg_args(["ffmpeg", "-nostdin", "-i", "x"]).count("-nostdin"), 1)
+
+    def test_hanging_ffmpeg_is_killed_instead_of_blocking(self):
+        from proxmax.utils import FFmpegError, run_ffmpeg_with_progress
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "hang_ffmpeg"
+            script.write_text(
+                "#!/bin/sh\n"
+                "echo out_time_ms=1000000\n"
+                "echo progress=continue\n"
+                "sleep 30\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+            started = time.monotonic()
+            with self.assertRaises(FFmpegError) as ctx:
+                run_ffmpeg_with_progress(
+                    [str(script), "-i", "x"], "test", duration_seconds=10,
+                    stall_timeout=2,
+                )
+            self.assertLess(time.monotonic() - started, 15)
+            self.assertIn("অগ্রগতি", str(ctx.exception))
 
 
 class TestTTSGovernor(unittest.TestCase):

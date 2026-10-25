@@ -66,7 +66,8 @@ def available_filters() -> frozenset:
     except Exception:  # pragma: no cover - ffmpeg নেই
         return frozenset()
     proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-filters"],
+        [ffmpeg, "-nostdin", "-hide_banner", "-filters"],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         encoding="utf-8", errors="replace", check=False,
     )
@@ -237,6 +238,7 @@ class SyncEngine:
                         str(out_path),
                     ],
                     description=f"time-stretch (segment {seg.index}, tempo={tempo:.2f})",
+                    timeout=120.0,
                 )
             except Exception as exc:
                 logger.warning("Segment %d stretch ব্যর্থ, বাদ দেওয়া হলো: %s", seg.index, exc)

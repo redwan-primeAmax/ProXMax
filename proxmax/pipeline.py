@@ -46,7 +46,7 @@ from .muxer import VideoMuxer
 from .stt import SpeechToText
 from .sync_engine import SyncEngine
 from .translator import create_translator
-from .tts import BaseTTSEngine, build_tts_engine, resolve_tts_engine
+from .tts import BaseTTSEngine, build_tts_engine, hf_token_available, resolve_tts_engine
 from .utils import (
     format_duration,
     get_logger,
@@ -78,7 +78,10 @@ class DubbingPipeline:
     def __init__(self, config: AppConfig) -> None:
         self.config = config.validate()
         cfg = self.config
-        self.extractor = AudioExtractor(use_hwaccel=cfg.use_hwaccel)
+        self.extractor = AudioExtractor(
+            use_hwaccel=False,  # অডিও extraction-এ GPU decode দরকার নেই, ঝুঁকি কেবল
+            stall_timeout=cfg.extract_stall_seconds,
+        )
         self.stt = SpeechToText(
             model_size=cfg.whisper_model,
             device=cfg.whisper_device,
@@ -164,8 +167,19 @@ class DubbingPipeline:
         self._profile_checked = True
         cfg = self.config
 
-        if (cfg.tts_engine or "auto").strip().lower() == "edge":
+        mode = (cfg.tts_engine or "auto").strip().lower()
+        if mode == "edge":
             # স্পষ্টভাবে বিল্ট-ইন ভয়েস চাওয়া হয়েছে — নমুনা খোঁজার দরকার নেই
+            return None
+        if not hf_token_available():
+            # টোকেন নেই = ব্যবহারকারী ক্লোনিং চান না (IndicF5 gated, টোকেন ছাড়া
+            # ডাউনলোডই হবে না) — কিছু না করে বিল্ট-ইন ভয়েসে এগিয়ে যাওয়া হয়।
+            logger.info(
+                "Hugging Face টোকেন পাওয়া যায়নি — কণ্ঠ ক্লোনিং (IndicF5) বাদ দিয়ে "
+                "বিল্ট-ইন বাংলা neural ভয়েস (%s) ব্যবহার হবে। নিজের কণ্ঠে ডাবিং চাইলে "
+                "নোটবুকের ধাপ ৫-এ HF_TOKEN বসান (ঐচ্ছিক)।",
+                cfg.tts_voice,
+            )
             return None
 
         source = discover_reference_audio(cfg.input_dir, explicit=cfg.voice_reference or None)
@@ -306,11 +320,26 @@ class DubbingPipeline:
         # 1) Audio extraction (16 kHz mono WAV — Whisper-এর ইনপুট) -----------
         marker = time.perf_counter()
         with self._step(1, "অডিও extract করা (ffmpeg)"):
-            audio_wav = self.extractor.extract(video_path, work_dir / "audio_16k.wav")
+            # আগেই duration বের করা হয় — progress শতাংশ ও পরের ধাপে কাজে লাগে
+            total_duration = 0.0
             try:
                 total_duration = get_media_duration(video_path)
-            except Exception:
-                total_duration = get_media_duration(audio_wav)
+            except Exception as exc:
+                logger.warning(
+                    "ভিডিওর দৈর্ঘ্য জানা যায়নি (%s) — অডিও বের করার পর মাপা হবে।", exc
+                )
+            audio_wav = self.extractor.extract(
+                video_path,
+                work_dir / "audio_16k.wav",
+                duration_seconds=total_duration or None,
+            )
+            if total_duration <= 0:
+                total_duration = self.extractor.last_duration or 0.0
+            if total_duration <= 0:
+                try:
+                    total_duration = get_media_duration(audio_wav)
+                except Exception:
+                    total_duration = 0.0
             if total_duration <= 0:
                 raise RuntimeError("ভিডিওর দৈর্ঘ্য শনাক্ত করা যায়নি (duration = 0)।")
         timings.extract = time.perf_counter() - marker
@@ -319,7 +348,7 @@ class DubbingPipeline:
 
         # 2) Voice profile (আপনার কণ্ঠ) --------------------------------------
         marker = time.perf_counter()
-        with self._step(2, "ভয়েস প্রোফাইল তৈরি/লোড (আপনার কণ্ঠ)"):
+        with self._step(2, "ভয়েস প্রোফাইল (ঐচ্ছিক — কণ্ঠের নমুনা থাকলে)"):
             profile = self._ensure_profile()
             if profile is not None:
                 logger.info("ভয়েস: %s", profile.summary())
@@ -352,7 +381,7 @@ class DubbingPipeline:
         )
 
         marker = time.perf_counter()
-        with self._step(4, "অনুবাদ (Gemini) + Bangla TTS (ভয়েস ক্লোনিং)"):
+        with self._step(4, "অনুবাদ (Gemini) + Bangla TTS (ভয়েস)"):
             translate_seconds, tts_seconds = self._translate_and_synthesize(
                 segments, tts_dir
             )

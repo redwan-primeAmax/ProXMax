@@ -162,6 +162,8 @@ class AppConfig:
     # --- runtime -------------------------------------------------------------
     release_gpu_when_done: bool = True      # কাজ শেষে মডেল আনলোড → VRAM খালি
     enable_overlap: bool = True             # অনুবাদ ও TTS একসাথে (সময় বাঁচে)
+    #: ffmpeg এত সেকেন্ড অগ্রগতি না দেখালে ঝুলে গেছে ধরে থামিয়ে দেওয়া হয়
+    extract_stall_seconds: float = 90.0
 
     # --- output --------------------------------------------------------------
     audio_bitrate: str = "160k"
@@ -299,6 +301,7 @@ class AppConfig:
             "runtime": {
                 "release_gpu_when_done": "release_gpu_when_done",
                 "enable_overlap": "enable_overlap",
+                "extract_stall_seconds": "extract_stall_seconds",
             },
             "output": {
                 "bitrate": "audio_bitrate", "hwaccel": "use_hwaccel",

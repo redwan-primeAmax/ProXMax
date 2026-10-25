@@ -11,14 +11,13 @@ float32 mono-তে decode করা, WAV পড়া/লেখা, peak/RMS no
 
 from __future__ import annotations
 
-import subprocess
 import wave
 from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
 
-from .utils import ensure_tool, get_logger
+from .utils import capture_bytes, ensure_tool, get_logger
 
 logger = get_logger(__name__)
 
@@ -60,11 +59,14 @@ def decode_audio(
     if filters:
         cmd += ["-af", filters]
     cmd += ["-f", "f32le", "-acodec", "pcm_f32le", "-"]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    if proc.returncode != 0:
-        tail = (proc.stderr or b"").decode("utf-8", "replace").strip()[-500:]
+    # stdin বন্ধ + stall detection: নোটবুকে ffmpeg যেন কখনো ঝুলে না যায়
+    raw, stderr_text, returncode = capture_bytes(
+        cmd, description=f"অডিও decode ({Path(path).name})"
+    )
+    if returncode != 0:
+        tail = (stderr_text or "").strip()[-500:]
         raise RuntimeError(f"অডিও decode করা যায়নি ({Path(path).name}): {tail or 'unknown ffmpeg error'}")
-    audio = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    audio = np.frombuffer(raw, dtype=np.float32).copy()
     if audio.size == 0:
         raise RuntimeError(f"অডিও ফাইল খালি (কোনো sample নেই): {Path(path).name}")
     return np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
