@@ -41,8 +41,27 @@ class Segment:
     tts_duration: Optional[float] = None
     stretched_audio_path: Optional[Path] = None
     stretched_duration: Optional[float] = None
+    #: চূড়ান্ত ট্র্যাকে **প্রকৃতপক্ষে** কত সেকেন্ড বসানো হলো (কাটা বাদ দিয়ে) —
+    #: সাবটাইটেলের সময় এই মান ধরেই হিসাব হয়, তাই লাইন অডিওর সঙ্গে মেলে
+    placed_duration: Optional[float] = None
     #: sync ধাপে ব্যবহৃত tempo (১.০ = স্বাভাবিক গতি)
     tempo_used: float = 1.0
+    #: ``True`` হলে এটি একাধিক segment মিলিয়ে বানানো "speech unit"
+    #: (এক clip-এ পুরো বাক্য — স্বাভাবিক prosody, মাঝপথে থামা নেই)
+    is_unit: bool = False
+    #: unit হলে তার ভেতরের মূল segment-গুলো (সাবটাইটেলের জন্য দরকার)
+    children: List["Segment"] = field(default_factory=list)
+
+    @property
+    def speech_seconds(self) -> float:
+        """কত সেকেন্ডের অডিও এই segment/unit দখল করবে (জানা থাকলে)।"""
+        if self.placed_duration:
+            return float(self.placed_duration)
+        if self.stretched_duration:
+            return float(self.stretched_duration)
+        if self.tts_duration:
+            return float(self.tts_duration)
+        return self.duration
 
     @property
     def duration(self) -> float:

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from .models import Segment, Word
 from .utils import get_logger
@@ -49,10 +49,44 @@ def _ends_soft(token: str) -> bool:
     return bool(stripped) and stripped[-1] in SOFT_BREAK
 
 
+def _best_split_index(words: Sequence[Word], min_words: int = 3,
+                      search_words: int = 9, min_pause: float = 0.16) -> Optional[int]:
+    """লম্বা বাক্য ভাঙার সবচেয়ে ভালো জায়গা (index) বের করে।
+
+    অগ্রাধিকার:
+      1. পাংচুয়েশন (কমা/সেমিকোলন/ড্যাশ) — সবচেয়ে স্বাভাবিক থামা,
+      2. সবচেয়ে বড় শব্দ-মধ্যবর্তী নীরবতা (``min_pause``-এর বেশি হলে),
+      3. কিছুই না পেলে ``None`` (ডাকার দায়িত্বে শব্দ-সংখ্যায় ভাগ হবে)।
+
+    Args:
+        words: বর্তমান বাক্যের শব্দ।
+        min_words: ভাগের দুই পাশে ন্যূনতম শব্দ।
+        search_words: শেষ কতটি শব্দের মধ্যে জায়গা খোঁজা হবে।
+        min_pause: নীরবতা হিসেবে ধরার ন্যূনতম ব্যবধান (সেকেন্ড)।
+
+    Returns:
+        ভাগ করার index (``current[:index]`` প্রথম অংশ) বা ``None``।
+    """
+    if len(words) < min_words * 2:
+        return None
+    lowest = max(min_words, len(words) - max(min_words, search_words))
+
+    for back in range(len(words) - 1, lowest - 1, -1):
+        if _ends_soft(words[back].word):
+            return back + 1
+
+    best_index, best_pause = None, min_pause
+    for i in range(lowest, len(words) - min_words + 1):
+        pause = float(words[i].start) - float(words[i - 1].end)
+        if pause > best_pause:
+            best_index, best_pause = i, pause
+    return best_index
+
+
 def build_sentences(
     words: Sequence[Word],
-    max_words: int = 15,
-    max_seconds: float = 10.0,
+    max_words: int = 18,
+    max_seconds: float = 12.0,
     pause_gap: float = 0.7,
     min_words: int = 3,
     min_seconds: float = 0.9,
@@ -94,13 +128,14 @@ def build_sentences(
             continue
 
         if too_long:
-            # লম্বা হয়ে গেলে শেষ কমা/সেমিকোলনে ভাঙার চেষ্টা — স্বাভাবিক শ্বাসের জায়গা
-            split_at = None
-            for back in range(len(current) - 1, max(0, len(current) - 6), -1):
-                if _ends_soft(current[back].word):
-                    split_at = back + 1
-                    break
-            if split_at and split_at >= min_words:
+            # লম্বা হয়ে গেলে সবচেয়ে প্রাকৃতিক জায়গায় ভাগ করা হয়:
+            #   ১) শেষ কমা/সেমিকোলন, ২) সবচেয়ে বড় নীরবতা (শ্বাস নেওয়ার জায়গা),
+            #   ৩) কিছুই না পেলে শব্দ-সংখ্যায়।
+            split_at = _best_split_index(current, min_words)
+            if not split_at and len(current) > max_words:
+                # কোনো কমা/বিরতিই নেই — তবু unit অসীম লম্বা হতে দেওয়া যাবে না
+                split_at = max(min_words, min(max_words, len(current) - min_words))
+            if split_at:
                 groups.append(current[:split_at])
                 current = current[split_at:]
             else:

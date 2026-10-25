@@ -94,6 +94,9 @@ class AppConfig:
     log_prob_threshold: float = -1.0
     #: TTS শুরু করার আগে Whisper আনলোড করা (VRAM বাঁচে) — IndicF5 + Whisper একসাথে ভারী
     unload_stt_before_tts: bool = True
+    #: ভিডিও-নির্দিষ্ট নাম/শব্দ (কমা দিয়ে) — Whisper-কে এগুলো চিনতে সাহায্য করে
+    #: যেমন ``"FC Mobile, Ballon d'Or, OVR, star pass, Yashin"``। খালি = বন্ধ।
+    stt_hotwords: str = ""
 
     # --- audio preprocessing (0 GPU) -----------------------------------------
     audio_preprocess: bool = True
@@ -114,8 +117,12 @@ class AppConfig:
     gemini_temperature: float = 0.2
     gemini_timeout: int = 120
     gemini_max_output_tokens: int = 8192
-    #: বাংলা কথার গতি (অক্ষর/সেকেন্ড) — duration-aware অনুবাদ ও সময় অনুমানের ভিত্তি
-    translation_char_rate: float = 14.0
+    #: বাংলা কথার গতি (অক্ষর/সেকেন্ড) — ক্যালিব্রেশন না হলে এই মানই ধরা হয়।
+    #: বাস্তব বাংলা neural কণ্ঠ এর চেয়ে ধীরে বলে (≈১২), তাই ১৪ দিলে অনুবাদ
+    #: লম্বা হয়ে sync-এ ১.২৫× দ্রুত করতে হতো → কণ্ঠ তাড়াহুড়ো শোনাত।
+    translation_char_rate: float = 12.0
+    #: শুরুতেই আসল কণ্ঠ দিয়ে ২টি বাক্য বলে প্রকৃত গতি মাপা (≈১–২s খরচ)
+    translation_calibrate_speech_rate: bool = True
     #: সময়ে না আঁটা লাইন Gemini দিয়ে ছোট করে লেখানো
     translation_shorten_pass: bool = True
     indictrans2_model: str = "ai4bharat/indictrans2-en-indic-1B"
@@ -148,6 +155,13 @@ class AppConfig:
     tts_pitch: str = "+0Hz"
     tts_concurrency: int = 5
     tts_max_retries: int = 3
+    #: এক clip-এ কয় সেকেন্ড পর্যন্ত কথা (বাক্য জোড়া লাগিয়ে) — বড় হলে
+    #: কণ্ঠ আরও স্বাভাবিক, কিন্তু sync-এ নড়াচড়ার জায়গা কমে
+    tts_unit_max_seconds: float = 12.0
+    #: এক clip-এ সর্বোচ্চ অক্ষর (খুব লম্বা হলে নেটওয়ার্ক/মডেল সমস্যা করে)
+    tts_unit_max_chars: int = 240
+    #: এই সেকেন্ডের কম বিরতি থাকলে দুই segment এক clip-এ পড়া হয়
+    tts_unit_max_gap: float = 0.6
 
     # --- audio-video sync ----------------------------------------------------
     min_tempo: float = 0.95                 # ডিফল্টে ধীর করা হয় না
@@ -241,6 +255,7 @@ class AppConfig:
                 "seam_window_seconds": "seam_window_seconds",
                 "max_seam_repairs": "max_seam_repairs",
                 "unload_before_tts": "unload_stt_before_tts",
+                "hotwords": "stt_hotwords",
             },
             "audio": {
                 "preprocess": "audio_preprocess",
@@ -251,6 +266,7 @@ class AppConfig:
                 "backend": "translator_backend",
                 "max_retries": "gemini_max_retries",   # পুরনো config-এর সঙ্গে সামঞ্জস্য
                 "char_rate": "translation_char_rate",
+                "calibrate_speech_rate": "translation_calibrate_speech_rate",
                 "shorten_pass": "translation_shorten_pass",
                 "indictrans2_model": "indictrans2_model",
             },
@@ -288,6 +304,9 @@ class AppConfig:
                 "voice": "tts_voice", "rate": "tts_rate", "volume": "tts_volume",
                 "pitch": "tts_pitch", "concurrency": "tts_concurrency",
                 "max_retries": "tts_max_retries",
+                "unit_max_seconds": "tts_unit_max_seconds",
+                "unit_max_chars": "tts_unit_max_chars",
+                "unit_max_gap": "tts_unit_max_gap",
             },
             "sync": {
                 "min_tempo": "min_tempo", "max_tempo": "max_tempo",
@@ -390,6 +409,21 @@ class AppConfig:
             raise ValueError(
                 "retry delay অবৈধ: gemini_retry_base_delay > 0 এবং "
                 "gemini_retry_max_delay >= gemini_retry_base_delay হতে হবে।"
+            )
+        if not 1.0 <= float(self.tts_unit_max_seconds) <= 25.0:
+            raise ValueError(
+                "tts_unit_max_seconds ১–২৫ এর মধ্যে হতে হবে "
+                f"(পাওয়া গেছে: {self.tts_unit_max_seconds})"
+            )
+        if not 40 <= int(self.tts_unit_max_chars) <= 800:
+            raise ValueError(
+                "tts_unit_max_chars ৪০–৮০০ এর মধ্যে হতে হবে "
+                f"(পাওয়া গেছে: {self.tts_unit_max_chars})"
+            )
+        if not 0.0 <= float(self.tts_unit_max_gap) <= 2.0:
+            raise ValueError(
+                "tts_unit_max_gap ০–২ সেকেন্ডের মধ্যে হতে হবে "
+                f"(পাওয়া গেছে: {self.tts_unit_max_gap})"
             )
         if not 6.0 <= float(self.translation_char_rate) <= 30.0:
             raise ValueError(

@@ -310,6 +310,23 @@ class TestTextUtils(unittest.TestCase):
         self.assertNotIn("100", prepared)
         self.assertIn("টাকা", prepared)
 
+    def test_bangla_and_ascii_numbers_are_spoken_the_same(self):
+        from proxmax.text_utils import verbalize_numbers
+
+        self.assertEqual(verbalize_numbers("১২৫ ওভিআর"), "একশ পঁচিশ ওভিআর")
+        self.assertEqual(verbalize_numbers("125 ওভিআর"), "একশ পঁচিশ ওভিআর")
+        self.assertEqual(verbalize_numbers("50%"), "পঞ্চাশ শতাংশ")
+        self.assertEqual(verbalize_numbers("১২৫%"), "একশ পঁচিশ শতাংশ")
+
+    def test_number_estimate_counts_spoken_length(self):
+        from proxmax.text_utils import estimate_speech_seconds
+
+        # "১২৫" লেখায় ৩ অক্ষর, বলায় "একশ পঁচিশ" (৯ অক্ষর) — সময়ও বেশি লাগবে
+        self.assertAlmostEqual(
+            estimate_speech_seconds("১২৫", 12.0), len("একশ পঁচিশ") / 12.0, places=3
+        )
+        self.assertGreater(estimate_speech_seconds("১২৫", 12.0), 3 / 12.0)
+
     def test_estimate_and_split(self):
         self.assertGreater(estimate_speech_seconds("এটি একটি পরীক্ষা।"), 0.4)
         self.assertEqual(estimate_speech_seconds(""), 0.0)
@@ -412,6 +429,21 @@ class TestSegmenter(unittest.TestCase):
         segments = build_sentences(words, max_words=8, max_seconds=6.0)
         self.assertGreaterEqual(len(segments), 4)
         self.assertTrue(all(len(s.words) <= 12 for s in segments))
+
+    def test_long_run_splits_at_widest_pause(self):
+        from proxmax.models import Word
+        from proxmax.segmenter import build_sentences
+
+        words, t = [], 0.0
+        for i in range(24):
+            gap = 0.9 if i == 12 else 0.05   # ঠিক মাঝখানে বড় বিরতি
+            t += gap
+            words.append(Word(start=t, end=t + 0.3, word=f"w{i}"))
+            t += 0.3
+        sentences = build_sentences(words, max_words=15, max_seconds=30.0)
+        self.assertEqual(len(sentences), 2)
+        self.assertEqual(sentences[0].end, words[11].end)
+        self.assertEqual(sentences[1].start, words[12].start)
 
     def test_empty_words(self):
         self.assertEqual(build_sentences([]), [])
@@ -543,6 +575,65 @@ class TestSttHelpers(unittest.TestCase):
         self.assertTrue(segments)
         self.assertTrue(all(s.text_en for s in segments))
         self.assertTrue(all(s.end > s.start for s in segments))
+
+    def test_hotwords_reach_whisper_and_unknown_kwarg_is_safe(self):
+        calls: list = []
+
+        class _Model:
+            def __init__(self, accept_hotwords=True):
+                self.accept = accept_hotwords
+
+            def transcribe(self, samples, **kwargs):
+                calls.append(dict(kwargs))
+                if "hotwords" in kwargs and not self.accept:
+                    raise TypeError("unexpected keyword argument 'hotwords'")
+                return iter([]), None
+
+        samples = np.ones(16000 * 2, dtype=np.float32) * 0.1
+        stt = SpeechToText(model_size="tiny", hotwords="FC Mobile, star pass")
+        stt._model = _Model(accept_hotwords=True)
+        stt._decode_words(samples, 0.0, None, "en")
+        self.assertEqual(calls[0].get("hotwords"), "FC Mobile, star pass")
+
+        # পুরোনো faster-whisper: hotwords চেনে না → TypeError খেয়ে আবার চেষ্টা
+        calls.clear()
+        old = SpeechToText(model_size="tiny", hotwords="FC Mobile")
+        old._model = _Model(accept_hotwords=False)
+        old._decode_words(samples, 0.0, None, "en")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("hotwords", calls[1])
+        self.assertEqual(old.hotwords, "")
+
+    def test_video_name_is_used_as_first_prompt(self):
+        from proxmax.models import Word
+
+        audio = _speech_with_silence([(6.0, 0.6)] * 5)
+        prompts: list = []
+
+        class _Fake(SpeechToText):
+            def _load(self):
+                self.device, self.compute_type = "cpu", "int8"
+
+            def _decode_words(self, samples, offset=0.0, initial_prompt=None, language="en"):
+                prompts.append(initial_prompt)
+                base = offset + 0.2
+                return (
+                    [Word(base, base + 0.5, " Squad"), Word(base + 0.5, base + 1.0, " builder.")],
+                    " Squad builder.",
+                )
+
+        stt = _Fake(model_size="tiny", chunk_min_seconds=8.0, chunk_max_seconds=20.0,
+                    seam_repair=False, carry_context_chars=40)
+        stt.set_context_hint("FC_Mobile_125_OVR_squad.mp4")
+        self.assertEqual(stt.context_hint, "FC Mobile 125 OVR squad")
+        stt.transcribe_audio(audio, 16000)
+        self.assertEqual(prompts[0], "FC Mobile 125 OVR squad")   # প্রথম chunk-এ নাম
+        self.assertIn("builder", prompts[1])                      # পরে rolling প্রসঙ্গ
+
+    def test_context_hint_never_breaks_empty_name(self):
+        stt = SpeechToText(model_size="tiny")
+        stt.set_context_hint("")
+        self.assertEqual(stt.context_hint, "")
 
     def test_transcribe_audio_rejects_silence(self):
         class _Fake(SpeechToText):
@@ -708,6 +799,150 @@ class TestTTSResolution(unittest.TestCase):
                 self.assertEqual(finder.call_count, 0)
             finally:
                 pipeline.close()
+
+
+class TestProsodyUnits(unittest.TestCase):
+    """ছোট segment জোড়া লেগে এক clip-এ পুরো বাক্য হয় (মাঝপথে থামা বন্ধ)।"""
+
+    @staticmethod
+    def _seg(i, start, end, en, bn=""):
+        return Segment(index=i, start=start, end=end, text_en=en, text_bn=bn)
+
+    def test_mid_sentence_fragments_are_merged(self):
+        from proxmax.prosody import build_units
+
+        segments = [
+            self._seg(0, 0.0, 2.0, "and give away one star pass"),
+            self._seg(1, 2.1, 4.0, "to a lucky subscriber."),
+        ]
+        units = build_units(segments, text_attr="text_en")
+        self.assertEqual(len(units), 1)
+        self.assertTrue(units[0].is_unit)
+        self.assertEqual(len(units[0].children), 2)
+        self.assertIn("star pass", units[0].text_en)
+        self.assertIn("lucky subscriber", units[0].text_en)
+
+    def test_big_pause_keeps_separate_units(self):
+        from proxmax.prosody import build_units
+
+        segments = [
+            self._seg(0, 0.0, 2.0, "This is one idea"),
+            self._seg(1, 5.0, 7.0, "and this is another."),
+        ]
+        units = build_units(segments, text_attr="text_en", max_gap=0.6)
+        self.assertEqual(len(units), 2)
+
+    def test_limits_are_respected(self):
+        from proxmax.prosody import build_units
+
+        segments = [
+            self._seg(0, 0.0, 5.0, "first long clause"),
+            self._seg(1, 5.1, 10.0, "second long clause"),
+            self._seg(2, 10.1, 15.0, "third long clause"),
+        ]
+        units = build_units(segments, text_attr="text_en", max_seconds=10.5)
+        self.assertGreater(len(units), 1)
+        for unit in units:
+            self.assertLessEqual(unit.end - unit.start, 10.5 + 1e-6)
+
+    def test_bangla_text_is_joined_for_tts(self):
+        from proxmax.prosody import build_units
+
+        segments = [
+            self._seg(0, 0.0, 2.0, "a", bn="আমি একটি"),
+            self._seg(1, 2.05, 4.0, "b", bn="স্টার পাস দেব।"),
+        ]
+        units = build_units(segments, text_attr="text_bn")
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0].text_bn, "আমি একটি স্টার পাস দেব।")
+
+    def test_subtitles_split_a_long_unit_and_keep_timing(self):
+        from proxmax.prosody import subtitles_for_unit
+
+        unit = Segment(index=0, start=10.0, end=20.0, text_bn="প্রথম বাক্য এখানে। দ্বিতীয় বাক্য এখানেও আছে।")
+        unit.stretched_duration = 10.0
+        unit.is_unit = True
+        lines = subtitles_for_unit(unit, max_chars=20)
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertAlmostEqual(lines[0].start, 10.0, places=2)
+        self.assertAlmostEqual(lines[-1].end, 20.0, places=2)
+        for line in lines:
+            self.assertTrue(line.text_bn)
+            self.assertLessEqual(line.start + 1e-6, line.end)
+
+    def test_english_text_never_leaks_into_text_bn(self):
+        from proxmax.prosody import build_units
+
+        segments = [
+            self._seg(0, 0.0, 2.0, "and give away one star pass"),
+            self._seg(1, 2.05, 4.0, "to a lucky subscriber."),
+        ]
+        unit = build_units(segments, text_attr="text_en")[0]
+        self.assertEqual(unit.text_bn, "")          # TTS যেন ইংরেজি না পড়ে
+        self.assertIn("star pass", unit.text_en)
+
+    def test_units_cover_all_children(self):
+        from proxmax.prosody import build_units
+
+        segments = [self._seg(i, i * 1.0, i * 1.0 + 0.9, f"line {i}") for i in range(6)]
+        segments[-1].text_en = "last line."
+        units = build_units(segments, text_attr="text_en")
+        total_children = sum(len(u.children) for u in units)
+        self.assertEqual(total_children, len(segments))
+        self.assertEqual(units[0].start, 0.0)
+        self.assertAlmostEqual(units[-1].end, segments[-1].end, places=3)
+
+
+class TestSpeechRateCalibration(unittest.TestCase):
+    """কণ্ঠের প্রকৃত গতি মেপে অনুবাদের বাজেট ঠিক হয় (১.২৫× তাড়াহুড়ো বন্ধ)।"""
+
+    class _SlowEngine:
+        def __init__(self, chars_per_second=12.0):
+            self.rate = chars_per_second
+            self.calls = 0
+
+        def synthesize(self, segments, output_dir):
+            self.calls += 1
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for seg in segments:
+                seconds = max(0.4, len(seg.text_bn) / self.rate)
+                path = output_dir / f"rate_{seg.index}.wav"
+                t = np.arange(int(seconds * 24000)) / 24000.0
+                audio_fx.write_wav(path, 0.2 * np.sin(2 * np.pi * 220 * t), 24000)
+                seg.tts_audio_path = path
+                seg.tts_duration = seconds
+            return segments
+
+    def test_measure_rate_recovers_engine_speed(self):
+        from proxmax.speech_rate import measure_rate
+
+        rate = measure_rate(self._SlowEngine(11.5))
+        self.assertIsNotNone(rate)
+        self.assertAlmostEqual(float(rate), 11.5, delta=0.6)
+
+    def test_calibration_falls_back_when_engine_fails(self):
+        from proxmax.speech_rate import calibrate
+
+        class Broken:
+            def synthesize(self, *_args, **_kwargs):
+                raise RuntimeError("no network")
+
+        self.assertEqual(calibrate(Broken(), fallback=12.0), 12.0)
+
+    def test_translator_accepts_measured_rate(self):
+        translator = create_translator("gemini", gemini_api_key="test-key")
+        try:
+            translator.set_char_rate(11.4)
+            self.assertAlmostEqual(translator.char_rate, 11.4, places=2)
+            payload = translator._payload([("hello", 2.0)])
+            data = json.loads(payload)
+            self.assertEqual(data["lines"][0]["d"], 2.0)
+            self.assertEqual(data["lines"][0]["c"], int(round(2.0 * 11.4)))
+            translator.set_char_rate(999)  # অবাস্তব মান উপেক্ষা করা হয়
+            self.assertAlmostEqual(translator.char_rate, 11.4, places=2)
+        finally:
+            translator.close()
 
 
 class TestExistingOutputGuard(unittest.TestCase):
