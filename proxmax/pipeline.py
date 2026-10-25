@@ -67,6 +67,38 @@ def _safe_dirname(name: str) -> str:
     return safe or "video"
 
 
+#: এর চেয়ে ছোট ফাইল কখনোই বৈধ ডাবিং করা ভিডিও নয় (অর্ধেক লেখা/ভাঙা ফাইল)
+_MIN_USABLE_OUTPUT_BYTES = 20 * 1024
+#: এর কম duration-এর MP4 আসলে ডাবিং করা ভিডিও নয়
+_MIN_USABLE_OUTPUT_SECONDS = 0.5
+
+
+def existing_output_is_usable(path: Path, min_bytes: int = _MIN_USABLE_OUTPUT_BYTES) -> bool:
+    """আগের আউটপুট ফাইলটি সত্যিই ব্যবহারযোগ্য কি না (skip করার যোগ্য)।
+
+    শুধু ``exists()`` দেখলে পুরোনো/অসম্পূর্ণ ফাইলও "সম্পন্ন" ধরে নেওয়া হয় —
+    তখন ব্যবহারকারী নতুন করে চালালেও কিছু হয় না (``⏭️ বাদ দেওয়া হলো``)।
+    তাই আকার ও duration দুটোই যাচাই করা হয়।
+
+    Args:
+        path: সম্ভাব্য আউটপুট MP4।
+        min_bytes: এর চেয়ে ছোট ফাইল অসম্পূর্ণ ধরা হবে।
+
+    Returns:
+        ``True`` যদি ফাইলটি বৈধ ও পূর্ণ মনে হয়।
+    """
+    path = Path(path)
+    try:
+        if not path.is_file() or path.stat().st_size < min_bytes:
+            return False
+    except OSError:
+        return False
+    try:
+        return get_media_duration(path) >= _MIN_USABLE_OUTPUT_SECONDS
+    except Exception:
+        return False
+
+
 def _usable(segments: List[Segment]) -> List[Segment]:
     """Segments that carry speech (STT text or translated text)."""
     return [s for s in segments if (s.text_en or "").strip() or (s.text_bn or "").strip()]
@@ -268,12 +300,24 @@ class DubbingPipeline:
             output_path = Path(output_dir) / output_filename_for(video_path)
         started = time.perf_counter()
 
-        if self.config.skip_existing and output_path.is_file() and output_path.stat().st_size > 0:
-            logger.info("⏭️  ইতিমধ্যে আউটপুট আছে, বাদ দেওয়া হলো: %s", output_path.name)
-            return VideoResult(
-                video_path=video_path, status="skipped", output_path=output_path,
-                elapsed_seconds=0.0,
+        if self.config.skip_existing and output_path.is_file():
+            if existing_output_is_usable(output_path):
+                size_mb = output_path.stat().st_size / (1024 * 1024)
+                logger.info(
+                    "⏭️  আগের আউটপুট পাওয়া গেছে (%.1f MB), তাই বাদ দেওয়া হলো: %s\n"
+                    "   নতুন করে (নতুন কোড/কণ্ঠ দিয়ে) ডাবিং করতে চাইলে চালান: "
+                    "python main.py --force  (নোটবুকে ধাপ ৭-এ FORCE_REPROCESS = True)",
+                    size_mb, output_path.name,
+                )
+                return VideoResult(
+                    video_path=video_path, status="skipped", output_path=output_path,
+                    elapsed_seconds=0.0,
+                )
+            logger.warning(
+                "⚠️ আগের আউটপুট অসম্পূর্ণ/পড়া যাচ্ছে না (%s) — আবার তৈরি করা হবে।",
+                output_path.name,
             )
+            output_path.unlink(missing_ok=True)
 
         work_dir = self.config.resolved_work_dir / _safe_dirname(video_path.stem)
         try:
