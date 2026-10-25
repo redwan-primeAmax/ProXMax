@@ -1,16 +1,19 @@
-"""TTS subpackage: IndicF5 voice cloning (primary) plus edge-tts fallback.
+"""TTS subpackage: built-in Bangla neural voice plus optional voice cloning.
 
-IndicF5 (মূল, ভয়েস ক্লোনিং) এবং edge-tts (শুধু fallback)। ব্যবহার::
+``auto`` মোডে **কিছুই দিতে হয় না**: ইনপুট ফোল্ডারে কণ্ঠের নমুনা না
+থাকলে বিল্ট-ইন বাংলা neural ভয়েস (edge-tts) ব্যবহার হয় — কোনো
+Hugging Face token, লাইসেন্স সম্মতি বা রেকর্ডিং লাগে না।
 
-    from proxmax.tts import build_tts_engine
+ইনপুট ফোল্ডারে আপনার ১০–২০ সেকেন্ডের বাংলা কথার audio ফাইল রাখলে
+(``auto`` বা ``indicf5`` মোডে) IndicF5 দিয়ে কণ্ঠ ক্লোনিং হয় — সেটি
+ঐচ্ছিক, বাধ্যতামূলক নয়।
+
+ব্যবহার::
+
+    from proxmax.tts import build_tts_engine, resolve_tts_engine
 
     engine = build_tts_engine(config, profile=voice_profile)
     engine.synthesize(segments, work_dir / "tts")
-
-``build_tts_engine`` একটাই ইঞ্জিন ফেরত দেয় — ব্যবহারকারীকে বেছে নিতে
-হয় না। ডিফল্ট ও প্রধান ইঞ্জিন **IndicF5**; শুধু সেটি চালু করতে না
-পারলে (মডেল ডাউনলোড ব্লকড/GPU নেই) এবং কনফিগে অনুমতি থাকলে
-edge-tts-এ নামে, যাতে ভিডিওটা নষ্ট না হয়।
 """
 
 from __future__ import annotations
@@ -34,10 +37,38 @@ __all__ = [
     "EdgeTTSEngine",
     "SpeedGovernor",
     "build_tts_engine",
+    "resolve_tts_engine",
     "BANGLA_VOICE_FEMALE",
     "BANGLA_VOICE_MALE",
     "DEFAULT_MODEL_ID",
 ]
+
+
+def resolve_tts_engine(
+    config: AppConfig, profile: Optional[VoiceProfile] = None
+) -> str:
+    """Return the concrete engine name (``"indicf5"`` or ``"edge"``).
+
+    ``auto`` (ডিফল্ট) মানে — কণ্ঠের নমুনা থাকলে IndicF5 ক্লোনিং, না থাকলে
+    বিল্ট-ইন edge ভয়েস। ব্যবহারকারীকে কিছু বেছে নিতে হয় না।
+
+    Args:
+        config: অ্যাপ্লিকেশন কনফিগ।
+        profile: পাওয়া গেলে ভয়েস প্রোফাইল (নমুনা থেকে তৈরি)।
+
+    Returns:
+        ``"indicf5"`` অথবা ``"edge"``।
+    """
+    name = (getattr(config, "tts_engine", "auto") or "auto").strip().lower()
+    if name in ("indicf5", "edge"):
+        return name
+    if profile is not None:
+        try:
+            if profile.is_valid():
+                return "indicf5"
+        except Exception:  # pragma: no cover - নষ্ট প্রোফাইল → বিল্ট-ইন ভয়েস
+            pass
+    return "edge"
 
 
 def build_tts_engine(
@@ -50,7 +81,8 @@ def build_tts_engine(
 
     Args:
         config: অ্যাপ্লিকেশন কনফিগ।
-        profile: ভয়েস ক্লোনিংয়ের রেফারেন্স।
+        profile: কণ্ঠ ক্লোনিংয়ের রেফারেন্স (থাকলে এবং ``auto``/``indicf5``
+            মোডে IndicF5 ব্যবহার হয়)।
         time_budget_seconds: TTS-এর জন্য সময়ের বাজেট (governor ব্যবহার করে)।
         total_audio_seconds: মোট কত সেকেন্ড কথা হবে।
 
@@ -60,7 +92,7 @@ def build_tts_engine(
     Raises:
         TTSError: কোনো ইঞ্জিনই চালু করা না গেলে।
     """
-    engine_name = (config.tts_engine or "indicf5").lower()
+    engine_name = resolve_tts_engine(config, profile)
 
     if engine_name == "indicf5":
         engine: BaseTTSEngine = IndicF5Engine(
@@ -82,7 +114,7 @@ def build_tts_engine(
             if not config.tts_fallback_to_edge:
                 raise TTSError(f"IndicF5 চালু করা যায়নি: {exc}") from exc
             logger.warning(
-                "⚠️ IndicF5 চালু করা যায়নি (%s) — ভয়েস ক্লোনিং ছাড়া edge-tts-এ "
+                "⚠️ IndicF5 চালু করা যায়নি (%s) — বিল্ট-ইন বাংলা ভয়েসে "
                 "fallback করা হচ্ছে, যাতে ভিডিওটা নষ্ট না হয়।", exc,
             )
 

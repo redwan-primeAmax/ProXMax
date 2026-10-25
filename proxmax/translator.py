@@ -317,7 +317,7 @@ class GeminiTranslator(BaseTranslator):
 
     Args:
         api_key: Gemini API key। না দিলে ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY``।
-        model: মডেলের নাম (ডিফল্ট ``gemini-3.5-flash-light``)।
+        model: মডেলের নাম (ডিফল্ট ``gemini-3.5-flash-lite``)।
         batch_size: এক request-এ সর্বোচ্চ কতটি লাইন।
         max_chars_per_request: এক request-এ সর্বোচ্চ অক্ষর।
         max_retries: সর্বোচ্চ কতবার চেষ্টা (ডিফল্ট ৭)।

@@ -68,7 +68,13 @@ from proxmax.translator import (                                       # noqa: E
     create_translator,
     parse_translations,
 )
-from proxmax.tts import TTSError, IndicF5Engine, SpeedGovernor         # noqa: E402
+from proxmax.tts import (                                              # noqa: E402
+    TTSError,
+    EdgeTTSEngine,
+    IndicF5Engine,
+    SpeedGovernor,
+    resolve_tts_engine,
+)
 from proxmax.tts.governor import SpeedGovernor as _Governor            # noqa: E402
 from proxmax.utils import (                                            # noqa: E402
     format_srt_timestamp,
@@ -92,9 +98,9 @@ class TestConfig(unittest.TestCase):
         cfg = AppConfig()
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.translator_backend, "gemini")
-        self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-light")
+        self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
         self.assertEqual(cfg.gemini_max_retries, 7)
-        self.assertEqual(cfg.tts_engine, "indicf5")
+        self.assertEqual(cfg.tts_engine, "auto")
         self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.95, 1.25))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
         self.assertLessEqual(cfg.chunk_max_seconds, 29.5)
@@ -111,7 +117,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
         self.assertEqual(cfg.gemini_max_retries, 7)
-        self.assertEqual(cfg.tts_engine, "indicf5")
+        self.assertEqual(cfg.tts_engine, "auto")
         self.assertEqual(cfg.tts_indicf5_model, "ai4bharat/IndicF5")
         self.assertAlmostEqual(cfg.max_tempo, 1.25)
         self.assertAlmostEqual(cfg.min_tempo, 0.95)
@@ -557,6 +563,102 @@ class TestSttHelpers(unittest.TestCase):
 # ===========================================================================
 # TTS — governor ও ইঞ্জিনের নিরাপত্তা
 # ===========================================================================
+class _ProfileStub:
+    """Minimal stand-in for :class:`VoiceProfile` (no audio file needed)."""
+
+    def __init__(self, valid=True):
+        self._valid = valid
+
+    def is_valid(self):
+        return self._valid
+
+
+class TestTTSResolution(unittest.TestCase):
+    def test_auto_without_reference_uses_builtin_voice(self):
+        self.assertEqual(resolve_tts_engine(AppConfig(), None), "edge")
+
+    def test_auto_with_invalid_reference_uses_builtin_voice(self):
+        profile = _ProfileStub(valid=False)
+        self.assertEqual(resolve_tts_engine(AppConfig(), profile), "edge")
+
+    def test_auto_with_reference_clones(self):
+        profile = _ProfileStub(valid=True)
+        self.assertEqual(resolve_tts_engine(AppConfig(), profile), "indicf5")
+
+    def test_explicit_engines_win(self):
+        self.assertEqual(
+            resolve_tts_engine(AppConfig(tts_engine="edge"), _ProfileStub()), "edge"
+        )
+        self.assertEqual(
+            resolve_tts_engine(AppConfig(tts_engine="indicf5"), None), "indicf5"
+        )
+
+    def test_auto_is_the_repo_default(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:  # pragma: no cover
+            self.skipTest("PyYAML not installed")
+        cfg = AppConfig.from_yaml(REPO_ROOT / "config.yaml")
+        self.assertEqual(cfg.tts_engine, "auto")
+
+    def test_build_auto_without_reference_targets_builtin_engine(self):
+        from proxmax.tts import build_tts_engine
+
+        try:
+            engine = build_tts_engine(AppConfig(tts_engine="auto"), profile=None)
+        except TTSError as exc:
+            # edge-tts ইনস্টল না থাকলে ঠিক এই path-এই ব্যর্থ হবে (IndicF5 নয়)
+            self.assertIn("edge-tts", str(exc))
+            return
+        self.assertIsInstance(engine, EdgeTTSEngine)
+
+    def test_auto_mode_still_looks_for_a_reference_sample(self):
+        # auto = নমুনা থাকলে ক্লোনিং; তাই নমুনা খোঁজা বন্ধ করা যাবে না
+        from proxmax.pipeline import DubbingPipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            in_dir = Path(tmp) / "in"
+            out_dir = Path(tmp) / "out"
+            in_dir.mkdir()
+            out_dir.mkdir()
+            pipeline = DubbingPipeline(
+                AppConfig(input_dir=in_dir, output_dir=out_dir, gemini_api_key="test-key")
+            )
+            try:
+                with mock.patch(
+                    "proxmax.pipeline.discover_reference_audio", return_value=None
+                ) as finder:
+                    self.assertIsNone(pipeline._ensure_profile())
+                self.assertEqual(finder.call_count, 1)
+            finally:
+                pipeline.close()
+
+    def test_explicit_edge_skips_the_reference_lookup(self):
+        from proxmax.pipeline import DubbingPipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            in_dir = Path(tmp) / "in"
+            out_dir = Path(tmp) / "out"
+            in_dir.mkdir()
+            out_dir.mkdir()
+            pipeline = DubbingPipeline(
+                AppConfig(
+                    input_dir=in_dir,
+                    output_dir=out_dir,
+                    gemini_api_key="test-key",
+                    tts_engine="edge",
+                )
+            )
+            try:
+                with mock.patch(
+                    "proxmax.pipeline.discover_reference_audio", return_value=None
+                ) as finder:
+                    self.assertIsNone(pipeline._ensure_profile())
+                self.assertEqual(finder.call_count, 0)
+            finally:
+                pipeline.close()
+
+
 class TestTTSGovernor(unittest.TestCase):
     def test_downgrades_when_over_budget(self):
         gov = _Governor(nfe_steps=16, min_nfe_steps=8, time_budget_seconds=5.0,

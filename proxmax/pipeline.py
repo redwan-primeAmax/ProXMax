@@ -2,14 +2,14 @@
 
 একটি ভিডিওর পুরো যাত্রা::
 
-    video ─► [1] Audio Extract ─► [2] ভয়েস প্রোফাইল (আপনার কণ্ঠ)
+    video ─► [1] Audio Extract ─► [2] ঐচ্ছিক ভয়েস প্রোফাইল (নমুনা থাকলে)
           ─► [3] STT (faster-whisper, silence-aware chunking)
-          ─► [4] অনুবাদ (Gemini) + TTS (IndicF5 ভয়েস ক্লোনিং)
+          ─► [4] অনুবাদ (Gemini) + TTS (বিল্ট-ইন বাংলা ভয়েস / ঐচ্ছিক IndicF5 ক্লোনিং)
           ─► [5] Sync (non-overlap, tempo ≤ 1.25) ─► [6] Mux ─► *_bn.mp4
           ─► [7] SRT
 
 ``run_batch()`` input ফোল্ডারের সব ভিডিও একটার পর একটা প্রসেস করে।
-Whisper, Gemini client, IndicF5 মডেল ও ভয়েস প্রোফাইল একবারই তৈরি হয়
+Whisper, Gemini client, TTS ইঞ্জিন ও (ঐচ্ছিক) ভয়েস প্রোফাইল একবারই তৈরি হয়
 এবং ব্যাচের সব ভিডিওতে পুনরায় ব্যবহার হয় — বড় speed সাশ্রয়।
 
 গুরুত্বপূর্ণ সিদ্ধান্ত:
@@ -46,7 +46,7 @@ from .muxer import VideoMuxer
 from .stt import SpeechToText
 from .sync_engine import SyncEngine
 from .translator import create_translator
-from .tts import BaseTTSEngine, build_tts_engine
+from .tts import BaseTTSEngine, build_tts_engine, resolve_tts_engine
 from .utils import (
     format_duration,
     get_logger,
@@ -164,17 +164,17 @@ class DubbingPipeline:
         self._profile_checked = True
         cfg = self.config
 
-        if cfg.tts_engine == "edge":
-            # edge-tts-এর রেফারেন্স লাগে না — অযথা Whisper চালানো হবে না
+        if (cfg.tts_engine or "auto").strip().lower() == "edge":
+            # স্পষ্টভাবে বিল্ট-ইন ভয়েস চাওয়া হয়েছে — নমুনা খোঁজার দরকার নেই
             return None
 
         source = discover_reference_audio(cfg.input_dir, explicit=cfg.voice_reference or None)
         if source is None:
-            logger.warning(
-                "⚠️ ইনপুট ফোল্ডারে কোনো ভয়েস নমুনা (audio) পাওয়া যায়নি: %s\n"
-                "   ভয়েস ক্লোনিংয়ের জন্য আপনার ১০–২০ সেকেন্ডের পরিষ্কার বাংলা কথার "
-                "একটি .wav/.mp3/.m4a ফাইল ওই ফোল্ডারেই রাখুন, তারপর আবার রান করুন।",
-                cfg.input_dir,
+            logger.info(
+                "কণ্ঠের নমুনা পাওয়া যায়নি — বিল্ট-ইন বাংলা neural ভয়েস (%s) ব্যবহার হবে। "
+                "নিজের কণ্ঠে ডাবিং চাইলে %s ফোল্ডারে ১০–২০ সেকেন্ডের বাংলা কথার "
+                "একটি .wav/.mp3/.m4a ফাইল রাখুন (ঐচ্ছিক)।",
+                cfg.tts_voice, cfg.input_dir,
             )
             return None
 
@@ -337,8 +337,8 @@ class DubbingPipeline:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
         timings.stt = time.perf_counter() - marker
 
-        # GPU-তে Whisper আর TTS একসাথে না রাখাই নিরাপদ (T4-এ VRAM সীমিত)
-        if cfg.unload_stt_before_tts and cfg.tts_engine != "edge":
+        # শুধু IndicF5 (GPU) ব্যবহার হলেই Whisper আনলোড করা দরকার
+        if cfg.unload_stt_before_tts and resolve_tts_engine(cfg, self._profile) == "indicf5":
             logger.info("TTS-এর আগে Whisper আনলোড করা হচ্ছে (VRAM খালি রাখতে)…")
             self.stt.release()
 
@@ -565,9 +565,15 @@ class DubbingPipeline:
         cfg = self.config
         logger.info("=" * 70)
         logger.info(
-            "ব্যাচ শুরু: %dটি ভিডিও | STT=%s | অনুবাদ=%s | TTS=%s | tempo %.2f–%.2f",
+            "ব্যাচ শুরু: %dটি ভিডিও | STT=%s | অনুবাদ=%s | কণ্ঠ=%s | tempo %.2f–%.2f",
             len(videos), cfg.whisper_model, self.translator.describe(),
-            "IndicF5 (ভয়েস ক্লোনিং)" if cfg.tts_engine == "indicf5" else f"edge-tts ({cfg.tts_voice})",
+            {
+                "indicf5": "IndicF5 (কণ্ঠ ক্লোনিং)",
+                "edge": f"বিল্ট-ইন ({cfg.tts_voice})",
+            }.get(
+                cfg.tts_engine,
+                f"স্বয়ংক্রিয় — নমুনা থাকলে ক্লোনিং, নাহলে বিল্ট-ইন ({cfg.tts_voice})",
+            ),
             cfg.min_tempo, cfg.max_tempo,
         )
         logger.info("=" * 70)
