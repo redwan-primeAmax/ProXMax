@@ -41,11 +41,41 @@ class Segment:
     tts_duration: Optional[float] = None
     stretched_audio_path: Optional[Path] = None
     stretched_duration: Optional[float] = None
+    #: sync ধাপে ব্যবহৃত tempo (১.০ = স্বাভাবিক গতি)
+    tempo_used: float = 1.0
 
     @property
     def duration(self) -> float:
         """Original (English) segment duration in seconds (never < 0.05)."""
         return max(0.05, float(self.end) - float(self.start))
+
+
+@dataclass
+class StageTimings:
+    """Per-stage wall-clock timings for one video (used in the final report)."""
+
+    extract: float = 0.0
+    voice_profile: float = 0.0
+    stt: float = 0.0
+    translate: float = 0.0
+    tts: float = 0.0
+    sync: float = 0.0
+    mux: float = 0.0
+    total: float = 0.0
+    audio_seconds: float = 0.0
+
+    @property
+    def realtime_factor(self) -> float:
+        """মোট সময় / অডিওর দৈর্ঘ্য (কম = দ্রুত)।"""
+        return (self.total / self.audio_seconds) if self.audio_seconds > 0 else 0.0
+
+    def as_text(self) -> str:
+        """এক লাইনের সারসংক্ষেপ।"""
+        return (
+            f"extract {self.extract:.0f}s | stt {self.stt:.0f}s | translate {self.translate:.0f}s | "
+            f"tts {self.tts:.0f}s | sync {self.sync:.0f}s | mux {self.mux:.0f}s | "
+            f"মোট {self.total:.0f}s (RTF {self.realtime_factor:.2f})"
+        )
 
 
 @dataclass
@@ -58,6 +88,8 @@ class VideoResult:
     error: Optional[str] = None
     segment_count: int = 0
     elapsed_seconds: float = 0.0
+    timings: Optional[StageTimings] = None
+    stats: dict = field(default_factory=dict)
 
 
 @dataclass

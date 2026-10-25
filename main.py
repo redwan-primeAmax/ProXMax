@@ -5,9 +5,13 @@
 
     python main.py                      # config.yaml-এর সেটিংস দিয়ে পুরো ব্যাচ
     python main.py --model medium       # বেশি speed-এর জন্য ছোট মডেল
-    python main.py --voice bn-BD-PradeepNeural   # পুরুষ কণ্ঠ
+    python main.py --reference my-voice.wav      # ভয়েস নমুনা (নিজের কণ্ঠ)
     python main.py --gemini-model gemini-3.5-flash-light   # অনুবাদ মডেল
     python main.py --force              # আউটপুট থাকলেও আবার প্রসেস করা
+
+কণ্ঠ: ডিফল্টে **IndicF5** দিয়ে আপনার নিজের কণ্ঠ ক্লোন করা হয়। ইনপুট
+ফোল্ডারেই ১০–২০ সেকেন্ডের পরিষ্কার বাংলা কথার একটি অডিও ফাইল
+(.wav/.mp3/.m4a) রাখলেই হবে — আলাদা কিছু করতে হয় না।
 
 অনুবাদে **Google Gemini API** ব্যবহৃত হয়। API key ধরা হয় এই ক্রমে:
 ``--gemini-api-key`` → ``config.yaml``-এর ``gemini.api_key`` →
@@ -40,7 +44,10 @@ logger = get_logger("proxmax.main")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="ProXMax: English ভিডিও → Bangla ডাবিং (faster-whisper + edge-tts)",
+        description=(
+            "ProXMax: English ভিডিও → Bangla ডাবিং "
+            "(faster-whisper + Gemini + IndicF5 ভয়েস ক্লোনিং)"
+        ),
     )
     parser.add_argument(
         "--config", default=str(REPO_ROOT / "config.yaml"),
@@ -53,7 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whisper মডেল: large-v3 (ডিফল্ট, best accuracy) অথবা medium (বেশি speed)",
     )
     parser.add_argument("--device", default=None, help="STT device: auto | cuda | cpu")
-    parser.add_argument("--batch-size", type=int, default=None, help="Whisper batch size (VRAM অনুযায়ী)")
     parser.add_argument(
         "--translator", default=None, choices=["gemini", "indictrans2"],
         help="অনুবাদ backend: gemini (ডিফল্ট) অথবা indictrans2",
@@ -68,8 +74,17 @@ def build_parser() -> argparse.ArgumentParser:
              "CLI-তে key দেওয়া নিরাপদ নয়)",
     )
     parser.add_argument(
+        "--reference", default=None,
+        help="ভয়েস নমুনার পাথ (না দিলে ইনপুট ফোল্ডার থেকেই নিজে খুঁজে নেবে)",
+    )
+    parser.add_argument(
+        "--tts-engine", default=None, choices=["indicf5", "edge"],
+        help="TTS ইঞ্জিন: indicf5 (ডিফল্ট, ভয়েস ক্লোনিং) অথবা edge (ক্লোনিং ছাড়া)",
+    )
+    parser.add_argument(
         "--voice", default=None,
-        help="Bangla TTS ভয়েস: bn-BD-NabanitaNeural (নারী, ডিফল্ট) / bn-BD-PradeepNeural (পুরুষ)",
+        help="edge-tts ভয়েস (শুধু fallback/edge ইঞ্জিনে): "
+             "bn-BD-NabanitaNeural (নারী) / bn-BD-PradeepNeural (পুরুষ)",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -93,10 +108,11 @@ def main(argv: list[str] | None = None) -> int:
             "output_dir": args.output_dir,
             "whisper_model": args.model,
             "whisper_device": args.device,
-            "whisper_batch_size": args.batch_size,
             "translator_backend": args.translator,
             "gemini_model": args.gemini_model,
             "gemini_api_key": args.gemini_api_key,
+            "voice_reference": args.reference,
+            "tts_engine": args.tts_engine,
             "tts_voice": args.voice,
             "log_level": args.log_level,
             "skip_existing": False if args.force else None,
@@ -117,9 +133,15 @@ def main(argv: list[str] | None = None) -> int:
         if config.translator_backend == "gemini"
         else f"indictrans2:{config.indictrans2_model}"
     )
+    voice_label = (
+        "IndicF5 (আপনার কণ্ঠ ক্লোন)"
+        if config.tts_engine == "indicf5"
+        else f"edge-tts ({config.tts_voice})"
+    )
     logger.info(
-        "STT=%s | Translator=%s | Voice=%s",
-        config.whisper_model, translator_label, config.tts_voice,
+        "STT=%s | অনুবাদ=%s | কণ্ঠ=%s | tempo %.2f–%.2f",
+        config.whisper_model, translator_label, voice_label,
+        config.min_tempo, config.max_tempo,
     )
 
     # ffmpeg ছাড়া এক ধাপও এগোনো যাবে না — শুরুতেই পরিষ্কার error দেওয়া ভালো

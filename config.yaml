@@ -15,24 +15,47 @@ paths:
 
 # --- Speech-to-Text (faster-whisper) --------------------------------------
 stt:
-  # "large-v3" = সর্বোচ্চ accuracy (ডিফল্ট)।
-  # বেশি speed দরকার হলে "medium" ব্যবহার করুন।
-  model: "large-v3"
+  model: "large-v3"         # সর্বোচ্চ accuracy (ডিফল্ট); speed দরকার হলে "medium"
   device: "auto"            # auto = CUDA GPU থাকলে GPU, না থাকলে CPU fallback
   compute_type: "float16"   # GPU (T4)-এর জন্য দ্রুততম; CPU হলে নিজে থেকেই int8 হবে
-  batch_size: 8             # T4 (16GB VRAM) + large-v3 এর জন্য নিরাপদ; VRAM বেশি থাকলে 16
   beam_size: 5              # বেশি = বেশি accuracy, একটু ধীর
-  vad_filter: true          # নীরব অংশ বাদ দিয়ে speed বাড়ায়
-  vad_min_silence_duration_ms: 500
+
+  # — নীরবতা-সচেতন chunking (শব্দের মাঝখানে কাটা বন্ধ) —
+  # Whisper একবারে ৩০ সেকেন্ডের বেশি দেখতে পারে না। তাই আগে VAD দিয়ে
+  # নীরবতা খুঁজে **নীরবতার মাঝখানে** কাটা হয়; কোনো শব্দ দুই টুকরো হয় না।
+  vad_min_silence_ms: 300   # এই দৈর্ঘ্যের নীরবতা পেলেই কাটার সুযোগ (300 ms)
+  chunk_min_seconds: 18.0   # এক chunk-এ অন্তত এতটুকু কথা
+  chunk_max_seconds: 28.0   # এক chunk-এ সর্বোচ্চ (৩০s-এর নিরাপদ নিচে)
+  chunk_pad_ms: 120         # chunk-এর দুই পাশে অতিরিক্ত context
+  carry_context_chars: 220  # আগের লেখার শেষ ~২২০ অক্ষর prompt হিসেবে যায়
+                            # (এতে বাক্যের ধারাবাহিকতা ও punctuation বজায় থাকে)
+
+  # — সীমান্ত মেরামত (seam repair) —
+  seam_repair: true         # chunk সীমানায় শব্দ কাটা পড়লে ছোট উইন্ডো আবার ডিকোড
+  seam_window_seconds: 2.5  # সীমানার দুই পাশে কত সেকেন্ড দেখা হবে
+  max_seam_repairs: 60      # সর্বোচ্চ কতটি সীমানা ঠিক করা হবে (সময় নিয়ন্ত্রণে)
+
+  # TTS-এর আগে Whisper আনলোড? (T4-এ IndicF5-এর জন্য VRAM খালি রাখতে সুপারিশ)
+  unload_before_tts: true
+
+# --- অডিও পরিষ্কার (ভয়েস নমুনার জন্য; Demucs লাগে না) ----------------------
+audio:
+  preprocess: true          # high-pass + হালকা loudness normalization
+  highpass_hz: 70           # কম-কম্পাঙ্কের গুঞ্জন/হাম সরায়
+  loudnorm_i: -16.0         # EBU R128 loudness target (dB)
 
 # --- Translation (English → Bangla) -----------------------------------------
 translation:
   # "gemini"      = Google Gemini API (ডিফল্ট)
-  # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (offline, En→Bn-তে বিশেষ ভালো;
-  #                 আগে: pip install -r requirements-indictrans2.txt)
+  # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (আগে requirements-indictrans2.txt)
   backend: "gemini"
-  # Gemini-র সব সেটিংস নিচের gemini সেকশনে
-  # IndicTrans2 ব্যবহার করতে চাইলে এর নাম বদলানো যায়:
+
+  # বাংলা কথার স্বাভাবিক গতি (অক্ষর/সেকেন্ড) — সময়ের হিসাব ও duration-aware
+  # অনুবাদের ভিত্তি। কণ্ঠ ধীর হলে ১২, দ্রুত হলে ১৬ দিন।
+  char_rate: 14.0
+  # সময়ে না আঁটা লাইন Gemini দিয়ে আবার ছোট করে লেখানো হবে
+  shorten_pass: true
+
   indictrans2_model: "ai4bharat/indictrans2-en-indic-1B"
 
 # --- Google Gemini API (ডিফল্ট অনুবাদ ইঞ্জিন) --------------------------------
@@ -54,35 +77,66 @@ gemini:
   timeout: 120                  # এক request-এর timeout (সেকেন্ড)
   max_output_tokens: 8192       # উত্তরে সর্বোচ্চ টোকেন
 
-# --- Text-to-Speech (edge-tts, Bangla ভয়েস) ----------------------------------
+# --- ভয়েস নমুনা (আপনার কণ্ঠ) ------------------------------------------------
+voice:
+  # খালি রাখলে ইনপুট ফোল্ডার থেকেই নিজে খুঁজে নেবে (এটাই সুপারিশ)।
+  # চাইলে নির্দিষ্ট ফাইলের পাথ দিতে পারেন।
+  reference: ""
+
+  min_seconds: 5.0            # এর কম কথা থাকলে নমুনা গ্রহণ করা হবে না
+  target_seconds: 16.0        # সর্বোত্তম কণ্ঠ-উইন্ডোটির কাঙ্ক্ষিত দৈর্ঘ্য
+  max_seconds: 40.0           # এর চেয়ে লম্বা নমুনা থেকে সেরা অংশ নেওয়া হয়
+  language: "bn"              # নমুনার ভাষা (আপনার বাংলা কথা)
+  max_internal_pause_ms: 800  # নমুনার ভেতরের বড় বিরতি এই সীমায় ছেঁটে আনা হয়
+  cache: true                 # একবার তৈরি হলে পরের রানে ক্যাশ থেকে লোড হবে
+
+# --- Text-to-Speech (IndicF5 — আপনার কণ্ঠ ক্লোন) ------------------------------
 tts:
-  # নারী কণ্ঠ: bn-BD-NabanitaNeural | পুরুষ কণ্ঠ: bn-BD-PradeepNeural
-  voice: "bn-BD-NabanitaNeural"
-  rate: "+0%"               # গতি: যেমন "+10%" দ্রুত, "-10%" ধীরে
+  engine: "indicf5"           # "indicf5" (মূল) | "edge" (শুধু emergency fallback)
+  indicf5_model: "ai4bharat/IndicF5"
+  nfe_steps: 16               # diffusion ধাপ — বেশি = ভালো মান, ধীর
+  min_nfe_steps: 8            # গতি বাজেট রাখতে সর্বনিম্ন এই ধাপ পর্যন্ত নামতে পারে
+  fp16: true                  # GPU-তে half precision (দ্রুত, কম VRAM)
+  max_attempts: 2             # একটি বাক্যের জন্য সর্বোচ্চ চেষ্টা
+  # TTS-এর সময় বাজেট = (মোট কথা-দৈর্ঘ্য × এই গুণক)। বাজেট ছাড়ালে governor
+  # ধীরে ধীরে nfe ধাপ কমায় — ভিডিও ২–৩ মিনিটে শেষ করার জন্য।
+  time_budget_factor: 0.35
+  fallback_to_edge: true      # IndicF5 চালু না হলে ভিডিও নষ্ট না করতে edge-tts
+
+  # — edge-tts (শুধু fallback) — IndicF5 ভয়েস ক্লোন করে, তাই এটি ডিফল্টে
+  #   ব্যবহার হয় না। fallback ঘটলে এই কণ্ঠে ডাবিং হবে।
+  voice: "bn-BD-NabanitaNeural"   # পুরুষ: bn-BD-PradeepNeural
+  rate: "+0%"
   volume: "+0%"
   pitch: "+0Hz"
-  concurrency: 5            # একসঙ্গে কয়টি segment-এর অডিও তৈরি হবে (async)
+  concurrency: 5
   max_retries: 3
 
 # --- Audio-Video Sync (time-stretch) -------------------------------------------
 sync:
-  min_tempo: 0.65           # বাংলা অডিওকে এর চেয়ে বেশি ধীর করা হবে না
-  max_tempo: 1.90           # বাংলা অডিওকে এর চেয়ে বেশি দ্রুত করা হবে না
-  slow_down_short_clips: true   # ছোট ক্লিপকে হালকা ধীর করে আসল slot-এর সাথে মেলানো
-  sync_workers: 4           # সমান্তরাল ffmpeg প্রসেসের সংখ্যা
-  sync_sample_rate: 24000   # edge-tts-এর native sample rate (মেমরি ও সময় বাঁচায়)
+  # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
+  min_tempo: 0.95           # ডিফল্টে ধীর করা হয় না (রোবটিক শোনায়)
+  max_tempo: 1.25           # এর বেশি দ্রুত করলে কণ্ঠ বিকৃত হয় — hard cap
+  slow_down_short_clips: false   # ছোট ক্লিপ ধীর না করে নীরবতা রাখা হয়
+  slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
+  borrow_silence_ms: 250    # পরের নীরবতা থেকে সর্বোচ্চ কতটুকু ধার নেওয়া যাবে
+  prefer_rubberband: true   # ffmpeg-এ থাকলে rubberband (formant রক্ষা করে)
+  workers: 4                # সমান্তরাল ffmpeg প্রসেস
+  sample_rate: 24000        # IndicF5-এর native sample rate
 
 # --- Runtime --------------------------------------------------------------------
 runtime:
-  # true হলে কাজ শেষে Whisper মডেল আনলোড করে GPU (VRAM) ছেড়ে দেওয়া হয়,
-  # ফলে Colab-এ GPU ব্যবহার সাথে সাথে কমে যায়।
+  # true হলে কাজ শেষে সব মডেল আনলোড করে GPU (VRAM) ছেড়ে দেওয়া হয়।
   release_gpu_when_done: true
+  # অনুবাদ (Gemini API) ও TTS একসাথে চালানো হবে — ১০ মিনিটের ভিডিও
+  # ২–৩ মিনিটে শেষ করার জন্য এটি জরুরি (কোনো অডিও overlap হয় না)।
+  enable_overlap: true
 
 # --- Output ---------------------------------------------------------------------
 output:
   audio_bitrate: "160k"     # চূড়ান্ত MP4-এর AAC অডিও বিটরেট
-  use_hwaccel: true         # ffmpeg hardware acceleration (NVENC ইত্যাদি) চেষ্টা করা
-  skip_existing: true       # output-এ ফাইল থাকলে সেটি আবার প্রসেস না করা (resume সুবিধা)
-  save_srt: true            # output ফোল্ডারে _en.srt ও _bn.srt সাবটাইটেলও সেভ করা
-  keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, segment mp3) থেকে যাবে
+  use_hwaccel: true         # ffmpeg hardware acceleration (NVENC ইত্যাদি) চেষ্টা
+  skip_existing: true       # output-এ ফাইল থাকলে আবার প্রসেস না করা (resume)
+  save_srt: true            # output ফোল্ডারে _en.srt ও _bn.srt সাবটাইটেলও সেভ
+  keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, TTS ক্লিপ) থেকে যাবে
   log_level: "INFO"         # DEBUG দিলে আরও বিস্তারিত লগ

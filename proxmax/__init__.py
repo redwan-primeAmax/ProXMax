@@ -1,10 +1,11 @@
 """ProXMax — English-to-Bangla video dubbing package.
 
-English ভিডিও থেকে Bangla ডাবিং অডিও তৈরি করে নতুন ভিডিও বানানোর
-সম্পূর্ণ pipeline এই প্যাকেজে রয়েছে (STT → Translation → TTS → Sync → Mux).
+English ভিডিও থেকে **আপনার নিজের কণ্ঠে** Bangla ডাবিং তৈরি করার সম্পূর্ণ
+pipeline এই প্যাকেজে রয়েছে: নীরবতা-সচেতন chunking → faster-whisper STT →
+duration-aware Gemini অনুবাদ → IndicF5 ভয়েস ক্লোনিং → non-overlap sync → mux।
 """
 
 from __future__ import annotations
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 __all__ = ["__version__"]

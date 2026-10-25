@@ -1,12 +1,22 @@
 """Application configuration: defaults, YAML loading, validation.
 
-সব সেটিংস (Drive-এর পাথ, Whisper মডেল, TTS ভয়েস, tempo সীমা ইত্যাদি)
-একটাই ``AppConfig`` dataclass-এ থাকে। ``config.yaml`` থেকে লোড হয়,
-চাইলে CLI আর্গুমেন্ট দিয়েও override করা যায়।
+সব সেটিংস (Drive-এর পাথ, Whisper মডেল, chunking, Gemini, IndicF5, sync
+ইত্যাদি) একটাই ``AppConfig`` dataclass-এ থাকে। ``config.yaml`` থেকে
+লোড হয়, চাইলে CLI আর্গুমেন্ট দিয়েও override করা যায়।
+
+নীতিগুলো:
+
+* **গুণমান আগে, কিন্তু একটাই পথ** — ব্যবহারকারীকে accuracy mode বাছতে
+  হয় না; ডিফল্ট মানগুলোই সর্বোচ্চ মানের সেটিং।
+* **নীরবতায় কাটা** — STT chunk সীমা এমনভাবে রাখা হয়েছে যাতে Whisper
+  কখনো শব্দের মাঝখানে না কাটে।
+* **কণ্ঠ যেন রোবট না লাগে** — tempo সীমা ১.২৫, লম্বা রেফারেন্স সমর্থন,
+  ভয়েস ক্লোনিংয়ের জন্য IndicF5।
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -37,11 +47,14 @@ SUPPORTED_WHISPER_MODELS = (
 )
 
 SUPPORTED_TRANSLATORS = ("gemini", "indictrans2")
+SUPPORTED_TTS_ENGINES = ("indicf5", "edge")
 
 #: ডিফল্ট অনুবাদ মডেল (ব্যবহারকারীর নির্দেশ অনুযায়ী) — নোটবুক/CLI দিয়ে বদলানো যায়
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-light"
+#: ডিফল্ট ভয়েস ইঞ্জিন — zero-shot voice cloning
+DEFAULT_TTS_MODEL = "ai4bharat/IndicF5"
 
-# edge-tts এর native Bangla (Bangladesh) ভয়েস
+#: edge-tts (শুধু emergency fallback)-এর Bangla ভয়েস
 BANGLA_VOICES = {
     "female": "bn-BD-NabanitaNeural",
     "male": "bn-BD-PradeepNeural",
@@ -62,65 +75,121 @@ class AppConfig:
     whisper_model: str = "large-v3"        # best accuracy; speed দরকার হলে "medium"
     whisper_device: str = "auto"           # auto = CUDA থাকলে GPU, না থাকলে CPU
     whisper_compute_type: str = "float16"  # GPU-এর জন্য; CPU fallback-এ int8 হয়
-    whisper_batch_size: int = 8            # T4 (16GB) + large-v3 এর জন্য নিরাপদ মান
     whisper_beam_size: int = 5
-    vad_filter: bool = True
-    vad_min_silence_duration_ms: int = 500
+    #: নীরবতা শনাক্তকরণের সংবেদনশীলতা (এই নীরবতাগুলোতেই কাটা হয়)
+    vad_min_silence_ms: int = 300
+    #: চাঙ্ক ১৮–২৮s — Whisper-এর ৩০s সীমার ভেতরে, কিন্তু শব্দের মাঝে নয়
+    chunk_min_seconds: float = 18.0
+    chunk_max_seconds: float = 28.0
+    chunk_pad_ms: int = 120
+    #: আগের টেক্সটের শেষ কত অক্ষর prompt হিসেবে পরের চাঙ্কে যাবে (পাংচুয়েশন/প্রসঙ্গ)
+    carry_context_chars: int = 220
+    condition_on_previous_text: bool = True
+    #: সীমানায় শব্দ কাটা পড়লে ছোট উইন্ডো আবার ডিকোড করে ঠিক করা
+    seam_repair: bool = True
+    seam_window_seconds: float = 2.5
+    max_seam_repairs: int = 60
+    no_speech_threshold: float = 0.6
+    compression_ratio_threshold: float = 2.4
+    log_prob_threshold: float = -1.0
+    #: TTS শুরু করার আগে Whisper আনলোড করা (VRAM বাঁচে) — IndicF5 + Whisper একসাথে ভারী
+    unload_stt_before_tts: bool = True
+
+    # --- audio preprocessing (0 GPU) -----------------------------------------
+    audio_preprocess: bool = True
+    audio_highpass_hz: int = 70
+    #: EBU R128 loudness target (নিচু/উঁচু ভিডিওর জন্য একই রকম লেভেল)
+    audio_loudnorm_i: float = -16.0
 
     # --- translation: Google Gemini API (ডিফল্ট) -------------------------------
     translator_backend: str = "gemini"      # "gemini" | "indictrans2"
     gemini_api_key: str = ""                # খালি হলে GEMINI_API_KEY / GOOGLE_API_KEY env
     gemini_model: str = DEFAULT_GEMINI_MODEL
-    gemini_batch_size: int = 25             # এক request-এ কত segment
+    gemini_batch_size: int = 25             # এক request-এ কত লাইন
     gemini_max_chars_per_request: int = 12000
     gemini_max_retries: int = 7             # সর্বোচ্চ ৭ বার চেষ্টা
-    gemini_retry_base_delay: float = 4.0    # প্রথম retry-এর আগে অপেক্ষা (সেকেন্ড)
-    gemini_retry_max_delay: float = 90.0    # এক retry-তে সর্বোচ্চ অপেক্ষা (সেকেন্ড)
-    gemini_requests_per_minute: int = 15    # rate limit (RPM)
-    gemini_temperature: float = 0.2         # কম = বেশি নির্ভুল অনুবাদ
-    gemini_timeout: int = 120               # এক request-এর timeout (সেকেন্ড)
+    gemini_retry_base_delay: float = 4.0
+    gemini_retry_max_delay: float = 90.0
+    gemini_requests_per_minute: int = 15
+    gemini_temperature: float = 0.2
+    gemini_timeout: int = 120
     gemini_max_output_tokens: int = 8192
+    #: বাংলা কথার গতি (অক্ষর/সেকেন্ড) — duration-aware অনুবাদ ও সময় অনুমানের ভিত্তি
+    translation_char_rate: float = 14.0
+    #: সময়ে না আঁটা লাইন Gemini দিয়ে ছোট করে লেখানো
+    translation_shorten_pass: bool = True
     indictrans2_model: str = "ai4bharat/indictrans2-en-indic-1B"
 
-    # --- text-to-speech (edge-tts) -------------------------------------------
+    # --- voice reference (আপনার গলার নমুনা) -------------------------------------
+    voice_reference: str = ""               # খালি = ইনপুট ফোল্ডার থেকে নিজে খুঁজে নেবে
+    voice_min_seconds: float = 5.0
+    voice_target_seconds: float = 16.0
+    voice_max_seconds: float = 40.0
+    voice_language: str = "bn"
+    voice_max_internal_pause_ms: int = 800   # লম্বা বিরতি এই সীমায় ছেঁটে আনা হয়
+    voice_cache: bool = True
+
+    # --- text-to-speech ------------------------------------------------------
+    tts_engine: str = "indicf5"              # "indicf5" (মূল) | "edge" (শুধু fallback)
+    tts_indicf5_model: str = DEFAULT_TTS_MODEL
+    tts_nfe_steps: int = 16                  # diffusion ধাপ (বেশি = ভালো, ধীর)
+    tts_min_nfe_steps: int = 8               # governor এর নিচে নামবে না
+    tts_fp16: bool = True                    # GPU-তে half precision (দ্রুত, কম VRAM)
+    tts_max_attempts: int = 2
+    #: TTS-এর জন্য বরাদ্দ সময় = মোট কথা × এই গুণক (governor বাজেট রাখে)
+    tts_time_budget_factor: float = 0.35
+    tts_fallback_to_edge: bool = True        # IndicF5 চালু না হলে ভিডিও নষ্ট না করতে
+    # edge-tts (fallback) সেটিংস
     tts_voice: str = BANGLA_VOICES["female"]
-    tts_rate: str = "+0%"                  # যেমন "+10%" দ্রুত, "-10%" ধীরে
+    tts_rate: str = "+0%"
     tts_volume: str = "+0%"
     tts_pitch: str = "+0Hz"
-    tts_concurrency: int = 5               # একসঙ্গে কয়টি segment generate হবে
+    tts_concurrency: int = 5
     tts_max_retries: int = 3
 
-    # --- audio-video sync ------------------------------------------------------
-    min_tempo: float = 0.65                # এর চেয়ে বেশি ধীর করা হবে না
-    max_tempo: float = 1.90                # এর চেয়ে বেশি দ্রুত করা হবে না
-    slow_down_short_clips: bool = True     # ছোট ক্লিপ সামান্য ধীর করে slot পূরণ
-    sync_workers: int = 4                  # সমান্তরাল ffmpeg atempo কাজ
-    sync_sample_rate: int = 24000          # edge-tts এর native rate (মেমরি বাঁচায়)
+    # --- audio-video sync ----------------------------------------------------
+    min_tempo: float = 0.95                 # ডিফল্টে ধীর করা হয় না
+    max_tempo: float = 1.25                 # এর বেশি দ্রুত করলে কণ্ঠ বিকৃত শোনায়
+    slow_down_short_clips: bool = False     # ছোট ক্লিপ ধীর না করে নীরবতা রাখা হয়
+    slot_gap_ms: int = 80                   # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
+    borrow_silence_ms: int = 250            # পরের নীরবতা থেকে সর্বোচ্চ ধার
+    prefer_rubberband: bool = True          # থাকলে rubberband (formant রক্ষা করে)
+    sync_workers: int = 4
+    sync_sample_rate: int = 24000           # IndicF5-এর native rate
 
-    # --- runtime ------------------------------------------------------------------
-    release_gpu_when_done: bool = True     # কাজ শেষে Whisper মডেল আনলোড → VRAM খালি
+    # --- runtime -------------------------------------------------------------
+    release_gpu_when_done: bool = True      # কাজ শেষে মডেল আনলোড → VRAM খালি
+    enable_overlap: bool = True             # অনুবাদ ও TTS একসাথে (সময় বাঁচে)
 
-    # --- output ------------------------------------------------------------------
+    # --- output --------------------------------------------------------------
     audio_bitrate: str = "160k"
-    use_hwaccel: bool = True               # ffmpeg hwaccel / NVENC চেষ্টা করা হবে
-    skip_existing: bool = True             # output-এ থাকলে আবার প্রসেস নয় (resume)
-    save_srt: bool = True                  # English + Bangla .srt সেভ করা হবে
-    keep_temp_files: bool = False          # True হলে debug-এর জন্য মধ্যবর্তী ফাইল থাকে
+    use_hwaccel: bool = True
+    skip_existing: bool = True
+    save_srt: bool = True
+    keep_temp_files: bool = False
     log_level: str = "INFO"
 
     # ---------------------------------------------------------------------------
     @property
     def resolved_work_dir(self) -> Path:
-        """Resolve ``work_dir`` ("auto" হলে Colab-এর লোকাল ডিস্ক ব্যবহার হয়)।
-
-        Google Drive (FUSE) ধীরগতির, তাই সব সাময়িক ফাইল Colab-এর লোকাল
-        SSD-তে রাখা হয়; শুধু চূড়ান্ত ফলাফল Drive-এ কপি হয়।
-        """
+        """Resolve ``work_dir`` ("auto" হলে Colab-এর লোকাল ডিস্ক ব্যবহার হয়)।"""
         if self.work_dir and self.work_dir != "auto":
             return Path(self.work_dir).expanduser()
         if Path("/content").is_dir():  # Google Colab
             return Path("/content/proxmax_work")
         return Path.cwd() / "proxmax_work"
+
+    @property
+    def voice_profile_dir(self) -> Path:
+        """ভয়েস প্রোফাইল cache কোথায় থাকবে।"""
+        return self.resolved_work_dir / "voice_profile"
+
+    def resolved_gemini_api_key(self) -> str:
+        """Return the Gemini API key from config or environment (may be empty)."""
+        key = (self.gemini_api_key or "").strip()
+        if key:
+            return key
+        return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
 
     # ---------------------------------------------------------------------------
     @classmethod
@@ -149,22 +218,37 @@ class AppConfig:
         """Apply a (possibly sectioned) mapping onto this config.
 
         ``config.yaml``-এর section গঠন:
-        paths / stt / translation / gemini / tts / sync / runtime / output —
-        পাশাপাশি সরাসরি flat key দিলেও কাজ করবে।
+        paths / stt / audio / translation / gemini / voice / tts / sync /
+        runtime / output — পাশাপাশি সরাসরি flat key দিলেও কাজ করবে।
         """
         flat: Dict[str, Any] = {}
-        # সেকশনভিত্তিক ছোট alias নাম — লক্ষণীয়: "max_retries" translation ও
-        # tts দুই সেকশনেই আছে, তাই alias অবশ্যই সেকশন অনুযায়ী আলাদা হতে হবে
+        # সেকশনভিত্তিক ছোট alias — একই নাম দুই সেকশনে থাকলে সংঘর্ষ এড়াতে
         section_aliases: Dict[str, Dict[str, str]] = {
+            "paths": {"input": "input_dir", "output": "output_dir", "work": "work_dir"},
             "stt": {
                 "model": "whisper_model", "device": "whisper_device",
-                "compute_type": "whisper_compute_type", "batch_size": "whisper_batch_size",
-                "beam_size": "whisper_beam_size",
+                "compute_type": "whisper_compute_type", "beam_size": "whisper_beam_size",
+                "vad_min_silence_ms": "vad_min_silence_ms",
+                "chunk_min_seconds": "chunk_min_seconds",
+                "chunk_max_seconds": "chunk_max_seconds",
+                "chunk_pad_ms": "chunk_pad_ms",
+                "carry_context_chars": "carry_context_chars",
+                "seam_repair": "seam_repair",
+                "seam_window_seconds": "seam_window_seconds",
+                "max_seam_repairs": "max_seam_repairs",
+                "unload_before_tts": "unload_stt_before_tts",
+            },
+            "audio": {
+                "preprocess": "audio_preprocess",
+                "highpass_hz": "audio_highpass_hz",
+                "loudnorm_i": "audio_loudnorm_i",
             },
             "translation": {
                 "backend": "translator_backend",
-                # পুরনো/সরল config-এর সুবিধার্থে: max_retries এখানেও দেওয়া যায়
-                "max_retries": "gemini_max_retries",
+                "max_retries": "gemini_max_retries",   # পুরনো config-এর সঙ্গে সামঞ্জস্য
+                "char_rate": "translation_char_rate",
+                "shorten_pass": "translation_shorten_pass",
+                "indictrans2_model": "indictrans2_model",
             },
             "gemini": {
                 "api_key": "gemini_api_key",
@@ -179,15 +263,51 @@ class AppConfig:
                 "timeout": "gemini_timeout",
                 "max_output_tokens": "gemini_max_output_tokens",
             },
-            "runtime": {"release_gpu_when_done": "release_gpu_when_done"},
+            "voice": {
+                "reference": "voice_reference",
+                "min_seconds": "voice_min_seconds",
+                "target_seconds": "voice_target_seconds",
+                "max_seconds": "voice_max_seconds",
+                "language": "voice_language",
+                "max_internal_pause_ms": "voice_max_internal_pause_ms",
+                "cache": "voice_cache",
+            },
             "tts": {
+                "engine": "tts_engine",
+                "indicf5_model": "tts_indicf5_model",
+                "nfe_steps": "tts_nfe_steps",
+                "min_nfe_steps": "tts_min_nfe_steps",
+                "fp16": "tts_fp16",
+                "max_attempts": "tts_max_attempts",
+                "time_budget_factor": "tts_time_budget_factor",
+                "fallback_to_edge": "tts_fallback_to_edge",
                 "voice": "tts_voice", "rate": "tts_rate", "volume": "tts_volume",
                 "pitch": "tts_pitch", "concurrency": "tts_concurrency",
                 "max_retries": "tts_max_retries",
             },
-            "output": {"bitrate": "audio_bitrate"},
+            "sync": {
+                "min_tempo": "min_tempo", "max_tempo": "max_tempo",
+                "slow_down_short_clips": "slow_down_short_clips",
+                "slot_gap_ms": "slot_gap_ms",
+                "borrow_silence_ms": "borrow_silence_ms",
+                "prefer_rubberband": "prefer_rubberband",
+                "workers": "sync_workers",
+                "sample_rate": "sync_sample_rate",
+            },
+            "runtime": {
+                "release_gpu_when_done": "release_gpu_when_done",
+                "enable_overlap": "enable_overlap",
+            },
+            "output": {
+                "bitrate": "audio_bitrate", "hwaccel": "use_hwaccel",
+                "skip_existing": "skip_existing", "save_srt": "save_srt",
+                "keep_temp_files": "keep_temp_files", "log_level": "log_level",
+            },
         }
-        sections = ("paths", "stt", "translation", "gemini", "tts", "sync", "runtime", "output")
+        sections = (
+            "paths", "stt", "audio", "translation", "gemini",
+            "voice", "tts", "sync", "runtime", "output",
+        )
         known = set(vars(self).keys())
 
         for section in sections:
@@ -198,6 +318,8 @@ class AppConfig:
                     target = aliases.get(k, k)
                     if target in known:
                         flat[target] = v
+                    else:
+                        logger.debug("অজানা config key উপেক্ষা করা হলো: %s.%s", section, k)
         for k, v in data.items():  # সরাসরি flat (canonical) key দিলেও কাজ করবে
             if k in known and not isinstance(v, Mapping):
                 flat[k] = v
@@ -205,15 +327,6 @@ class AppConfig:
         for key, value in flat.items():
             if value is not None:
                 setattr(self, key, value)
-
-    def resolved_gemini_api_key(self) -> str:
-        """Return the Gemini API key from config or environment (may be empty)."""
-        key = (self.gemini_api_key or "").strip()
-        if key:
-            return key
-        import os
-
-        return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
 
     def apply_overrides(self, overrides: Mapping[str, Any]) -> "AppConfig":
         """Apply CLI overrides (``None`` মান উপেক্ষা করা হয়)।"""
@@ -230,6 +343,22 @@ class AppConfig:
                 f"অজানা Whisper মডেল: '{self.whisper_model}'। "
                 f"সমর্থিত: {', '.join(SUPPORTED_WHISPER_MODELS)}"
             )
+        if not 5.0 <= float(self.chunk_max_seconds) <= 29.5:
+            raise ValueError(
+                f"chunk_max_seconds ৫–২৯.৫ এর মধ্যে হতে হবে (Whisper ৩০s-এর বেশি দেখতে "
+                f"পারে না), পাওয়া গেছে: {self.chunk_max_seconds}"
+            )
+        if not 1.0 <= float(self.chunk_min_seconds) <= float(self.chunk_max_seconds):
+            raise ValueError(
+                "chunk_min_seconds অবৈধ: ১ থেকে chunk_max_seconds-এর মধ্যে হতে হবে।"
+            )
+        if not 0 <= int(self.carry_context_chars) <= 4000:
+            raise ValueError("carry_context_chars ০–৪০০০ এর মধ্যে হতে হবে।")
+        if self.seam_window_seconds <= 0:
+            raise ValueError("seam_window_seconds ধনাত্মক হতে হবে।")
+        if self.whisper_beam_size < 1:
+            raise ValueError("whisper_beam_size অন্তত 1 হতে হবে।")
+
         if self.translator_backend not in SUPPORTED_TRANSLATORS:
             raise ValueError(
                 f"translator_backend হতে হবে {SUPPORTED_TRANSLATORS}, পাওয়া গেছে: "
@@ -257,6 +386,53 @@ class AppConfig:
                 "retry delay অবৈধ: gemini_retry_base_delay > 0 এবং "
                 "gemini_retry_max_delay >= gemini_retry_base_delay হতে হবে।"
             )
+        if not 6.0 <= float(self.translation_char_rate) <= 30.0:
+            raise ValueError(
+                f"translation_char_rate ৬–৩০ অক্ষর/সেকেন্ডের মধ্যে হতে হবে, "
+                f"পাওয়া গেছে: {self.translation_char_rate}"
+            )
+
+        if self.tts_engine not in SUPPORTED_TTS_ENGINES:
+            raise ValueError(
+                f"tts_engine হতে হবে {SUPPORTED_TTS_ENGINES}, পাওয়া গেছে: '{self.tts_engine}'"
+            )
+        if not 1 <= self.tts_nfe_steps <= 64:
+            raise ValueError("tts_nfe_steps ১–৬৪ এর মধ্যে হতে হবে।")
+        if not 1 <= self.tts_min_nfe_steps <= self.tts_nfe_steps:
+            raise ValueError(
+                f"tts_min_nfe_steps অবৈধ: ১ থেকে tts_nfe_steps ({self.tts_nfe_steps})-এর মধ্যে হতে হবে।"
+            )
+        if self.tts_max_attempts < 1:
+            raise ValueError("tts_max_attempts অন্তত ১ হতে হবে।")
+        if self.tts_time_budget_factor <= 0:
+            raise ValueError("tts_time_budget_factor ধনাত্মক হতে হবে।")
+
+        if self.voice_min_seconds < 2:
+            raise ValueError("voice_min_seconds অন্তত ২ সেকেন্ড হতে হবে।")
+        if self.voice_target_seconds < self.voice_min_seconds:
+            raise ValueError("voice_target_seconds অবশ্যই voice_min_seconds-এর চেয়ে বড় হতে হবে।")
+        if self.voice_max_seconds < self.voice_target_seconds:
+            raise ValueError("voice_max_seconds অবশ্যই voice_target_seconds-এর চেয়ে বড় হতে হবে।")
+        if self.voice_max_internal_pause_ms < 100:
+            raise ValueError("voice_max_internal_pause_ms অন্তত ১০০ হতে হবে।")
+
+        if not (0.5 <= self.min_tempo <= 1.0 < self.max_tempo <= 2.0):
+            raise ValueError(
+                f"tempo সীমা অবৈধ: min_tempo={self.min_tempo}, max_tempo={self.max_tempo} "
+                f"(শর্ত: 0.5 <= min_tempo <= 1 < max_tempo <= 2)"
+            )
+        if self.slot_gap_ms < 0 or self.borrow_silence_ms < 0:
+            raise ValueError("slot_gap_ms ও borrow_silence_ms ঋণাত্মক হতে পারবে না।")
+        if self.sync_sample_rate < 8000:
+            raise ValueError("sync_sample_rate অন্তত ৮০০০ হতে হবে।")
+
+        if Path(self.input_dir) == Path(self.output_dir):
+            raise ValueError("input_dir ও output_dir একই হতে পারবে না।")
+        if self.tts_engine == "edge" and not self.tts_voice.startswith("bn-"):
+            logger.warning(
+                "TTS ভয়েস '%s' Bangla (bn-*) নয় — ডাবিংয়ের জন্য bn-BD ভয়েস সুপারিশ করা হয়।",
+                self.tts_voice,
+            )
         if self.translator_backend == "gemini" and not self.resolved_gemini_api_key():
             global _MISSING_KEY_WARNED
             if not _MISSING_KEY_WARNED:
@@ -265,18 +441,4 @@ class AppConfig:
                     "Gemini API key এখনো সেট হয়নি — নোটবুকের 'Gemini কনফিগারেশন' সেলে "
                     "GEMINI_API_KEY বসান, নইলে প্রোগ্রাম শুরু হতে পারবে না।"
                 )
-        if self.whisper_batch_size < 1:
-            raise ValueError("whisper_batch_size অন্তত 1 হতে হবে।")
-        if not (0.1 <= self.min_tempo < 1.0 < self.max_tempo <= 4.0):
-            raise ValueError(
-                f"tempo সীমা অবৈধ: min_tempo={self.min_tempo}, max_tempo={self.max_tempo} "
-                f"(শর্ত: 0.1 <= min_tempo < 1 < max_tempo <= 4)"
-            )
-        if Path(self.input_dir) == Path(self.output_dir):
-            raise ValueError("input_dir ও output_dir একই হতে পারবে না।")
-        if not self.tts_voice.startswith("bn-"):
-            logger.warning(
-                "TTS ভয়েস '%s' Bangla (bn-*) নয় — ডাবিংয়ের জন্য bn-BD ভয়েস সুপারিশ করা হয়।",
-                self.tts_voice,
-            )
         return self
