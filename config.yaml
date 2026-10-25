@@ -38,6 +38,11 @@ stt:
   # TTS-এর আগে Whisper আনলোড? (T4-এ IndicF5-এর জন্য VRAM খালি রাখতে সুপারিশ)
   unload_before_tts: true
 
+  # ভিডিও-নির্দিষ্ট নাম/শব্দ (কমা দিয়ে) — Whisper এগুলো সহজে চিনবে।
+  # গেমিং/টেকনিক্যাল ভিডিওতে accuracy স্পষ্টভাবে বাড়ায়। উদাহরণ:
+  #   hotwords: "FC Mobile, Ballon d'Or, OVR, star pass, Yashin, Buffon"
+  hotwords: ""
+
 # --- অডিও পরিষ্কার (ভয়েস নমুনার জন্য; Demucs লাগে না) ----------------------
 audio:
   preprocess: true          # high-pass + হালকা loudness normalization
@@ -50,9 +55,14 @@ translation:
   # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (আগে requirements-indictrans2.txt)
   backend: "gemini"
 
-  # বাংলা কথার স্বাভাবিক গতি (অক্ষর/সেকেন্ড) — সময়ের হিসাব ও duration-aware
-  # অনুবাদের ভিত্তি। কণ্ঠ ধীর হলে ১২, দ্রুত হলে ১৬ দিন।
-  char_rate: 14.0
+  # বাংলা কথার স্বাভাবিক গতি (অক্ষর/সেকেন্ড) — duration-aware অনুবাদের ভিত্তি।
+  # বাস্তব বাংলা neural কণ্ঠ এর চেয়ে ধীরে বলে (≈১২): বড় মান দিলে অনুবাদ
+  # লম্বা হয়ে sync-এ ১.২৫× দ্রুত করতে হয় → কণ্ঠ তাড়াহুড়ো শোনায়।
+  # নিচের `calibrate_speech_rate: true` থাকলে শুরুতেই আসল কণ্ঠ দিয়ে মাপা হয়,
+  # তাই এই মানটি কেবল ব্যাকআপ।
+  char_rate: 12.0
+  # শুরুতেই (প্রতি ব্যাচে একবার) কণ্ঠের প্রকৃত গতি মাপা — ১–২ সেকেন্ড খরচ
+  calibrate_speech_rate: true
   # সময়ে না আঁটা লাইন Gemini দিয়ে আবার ছোট করে লেখানো হবে
   shorten_pass: true
 
@@ -108,6 +118,12 @@ tts:
 
   # — বিল্ট-ইন edge-tts ভয়েস — ডিফল্ট পথ, কোনো নমুনা/টোকেন লাগে না।
   #   fallback হলেও এই কণ্ঠেই ডাবিং হবে।
+  # — এক clip-এ পুরো বাক্য (prosody) — ছোট ছোট ক্লিপে কণ্ঠ বারবার থামে,
+  #   তাই পাশাপাশি segment জোড়া লাগিয়ে এক clip-এ পড়া হয়।
+  unit_max_seconds: 12.0      # এক clip-এ সর্বোচ্চ কত সেকেন্ড কথা
+  unit_max_chars: 240         # এক clip-এ সর্বোচ্চ অক্ষর
+  unit_max_gap: 0.6           # এই সেকেন্ডের কম বিরতি হলে দুই segment একসাথে
+
   voice: "bn-BD-NabanitaNeural"   # পুরুষ: bn-BD-PradeepNeural
   rate: "+0%"
   volume: "+0%"

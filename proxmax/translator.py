@@ -61,23 +61,41 @@ DURATION_TOLERANCE = 0.10
 
 #: Gemini-কে দেওয়া নির্দেশনা — শুধু অনুবাদের কাজ, বাড়তি কিছু নয়
 SYSTEM_INSTRUCTION = (
-    "You are a professional English to Bengali (Bangla) dubbing translator. "
-    "Every input line has a speaking time in seconds ('d'). Translate each line into "
-    "natural, spoken Bangla that a narrator can read within about d seconds at a normal "
-    "pace (roughly 14 Bangla characters per second), keeping within plus or minus ten "
-    "percent of d. Prefer shorter wording over losing meaning. Never add, remove, merge, "
-    "split, summarise or explain content, and keep the same number of lines in the same "
-    "order. Keep names, numbers, units, code and technical terms accurate. Use proper "
-    "Bangla punctuation (। for a full stop, ? and ! where needed, commas for short "
-    "pauses). If a line is already Bangla or empty, return it as is."
+    "You are a professional English-to-Bengali (Bangla) dubbing writer for YouTube "
+    "videos. Translate each input line into Bangla that sounds like a real person "
+    "speaking, not like a textbook. "
+    "Each input line has a speaking time in seconds ('d'); aim for a line that a "
+    "narrator reads comfortably in about d seconds at a normal conversational pace "
+    "(roughly the number of Bangla characters given as 'c'). "
+    "Rules: "
+    "1) ALWAYS finish every sentence with proper Bangla punctuation (। ? !) — never end "
+    "a line mid-word or mid-phrase, even if that makes it slightly longer than 'c'. "
+    "A complete, natural sentence is more important than the exact character count. "
+    "2) If a line must be shortened, compress by choosing shorter everyday words and "
+    "dropping filler; never drop facts, numbers, names or the main idea. "
+    "3) Keep names, numbers, units, game/technical terms accurate — write such terms "
+    "in Bangla script the way Bangla speakers say them (e.g. স্টার পাস, ওভিআর, "
+    "ব্যালন ডি'অর), but do not turn ordinary English verbs into Bangla-letter "
+    "transliterations (translate 'giveaway' as ভাগ করে দেওয়া/উপহার, not গিভঅ্যাওয়ে). "
+    "4) Numbers take as long to say as their Bengali words (125 is spoken "
+    "'একশ পঁচিশ'), so count a number as its spoken length, not its digits. "
+    "5) Use conversational Bangla as spoken by young Bangladeshi speakers; short "
+    "sentences, natural rhythm, no literary or overly formal words. "
+    "6) Never add, remove, merge, split, summarise or explain content; keep the same "
+    "number of lines in the same order. "
+    "7) If a line is already Bangla or empty, return it as is. "
+    "Return only the translations."
 )
 
 SHORTEN_INSTRUCTION = (
-    "You shorten Bengali (Bangla) lines for dubbing. Each input line has a target "
-    "speaking time in seconds ('d'). Rewrite each line so it can be spoken within d "
-    "seconds at a normal pace, keeping the original meaning, tone and facts. Remove "
-    "filler words; do not add new information; do not merge or split lines; keep the "
-    "same number of lines in the same order. Return only the shortened Bangla lines."
+    "You shorten Bengali (Bangla) dubbing lines. Each input line has a target speaking "
+    "time in seconds ('d') and roughly how many Bangla characters fit ('c'). Rewrite "
+    "each line so it is spoken comfortably within d seconds, keeping the original "
+    "meaning, tone, numbers and names. Remove filler and use shorter everyday words. "
+    "Never cut a word or leave a sentence unfinished — every output line must be a "
+    "complete sentence ending with ।, ? or !. Do not add new information; do not merge "
+    "or split lines; keep the same number of lines in the same order. Return only the "
+    "shortened Bangla lines."
 )
 
 #: Gemini থেকে সবসময় বৈধ JSON পাওয়ার জন্য response schema
@@ -376,6 +394,8 @@ class GeminiTranslator(BaseTranslator):
         self.timeout = max(10, int(timeout))
         self.max_output_tokens = max(256, int(max_output_tokens))
         self.char_rate = max(6.0, float(char_rate))
+        #: এই গতি কোথা থেকে এলো — ``"config"`` (অনুমান) বা ``"measured"`` (মাপা)
+        self.rate_source = "config"
 
         self._api_key = resolved_key
         self._client = client
@@ -419,10 +439,23 @@ class GeminiTranslator(BaseTranslator):
             )
         return self._client
 
-    @staticmethod
-    def _payload(items: Sequence[Tuple[str, float]]) -> str:
-        """(text, duration) জোড়াকে JSON-এ রূপান্তর (মডেলের ইনপুট)।"""
-        lines = [{"d": round(float(duration), 2), "t": text} for text, duration in items]
+    def _payload(self, items: Sequence[Tuple[str, float]]) -> str:
+        """(text, duration) জোড়াকে JSON-এ রূপান্তর (মডেলের ইনপুট)।
+
+        প্রতিটি লাইনে ``d`` = কথা বলার সময় (সেকেন্ড), ``c`` = ওই সময়ে
+        কণ্ঠের প্রকৃত গতিতে কত অক্ষর আঁটে, ``t`` = English টেক্সট।
+        ``c`` জোগাড় করা হয় **মাপা** গতি দিয়ে (দেখুন
+        :mod:`proxmax.speech_rate`), তাই মডেলকে ভুল দৈর্ঘ্যের লক্ষ্য দেওয়া
+        হয় না।
+        """
+        lines = [
+            {
+                "d": round(float(duration), 2),
+                "c": max(8, int(round(float(duration) * self.char_rate))),
+                "t": text,
+            }
+            for text, duration in items
+        ]
         return json.dumps({"lines": lines}, ensure_ascii=False)
 
     def _generate(
@@ -725,6 +758,20 @@ class GeminiTranslator(BaseTranslator):
                 changed += 1
         logger.info("ছোট করা হয়েছে %dটি লাইন।", changed)
         return changed
+
+    def set_char_rate(self, chars_per_second: float, source: str = "measured") -> None:
+        """কণ্ঠের প্রকৃত গতি বসায় (ক্যালিব্রেশনের পর ডাকা হয়)।
+
+        Args:
+            chars_per_second: মাপা গতি (অক্ষর/সেকেন্ড)।
+            source: কোথা থেকে এলো (``"measured"`` / ``"config"``) — লগে দেখানো হয়।
+        """
+        rate = float(chars_per_second)
+        if not 6.0 <= rate <= 24.0:
+            return
+        self.char_rate = rate
+        self.rate_source = source
+        logger.info("অনুবাদের সময়-বাজেট এখন %.1f অক্ষর/সেকেন্ড (%s)", rate, source)
 
     def describe(self) -> str:
         return f"gemini:{self.model}"

@@ -31,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import glob
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -223,6 +224,7 @@ class SpeechToText:
         no_speech_threshold: float = 0.6,
         compression_ratio_threshold: float = 2.4,
         log_prob_threshold: float = -1.0,
+        hotwords: str = "",
     ) -> None:
         """Args:
             model_size: Whisper মডেল (``large-v3`` / ``medium``)।
@@ -241,6 +243,8 @@ class SpeechToText:
             no_speech_threshold: Whisper-এর নীরবতা থ্রেশহোল্ড।
             compression_ratio_threshold: পুনরাবৃত্তি-লুপ আটকানোর থ্রেশহোল্ড।
             log_prob_threshold: কম আত্মবিশ্বাসের segment বাদ দেওয়ার সীমা।
+            hotwords: ভিডিও-নির্দিষ্ট নাম/শব্দ (কমা দিয়ে) — Whisper এগুলো
+                চিনতে সুবিধা পায় (যেমন ``"Ballon d'Or, OVR, star pass"``)।
         """
         self.model_size = model_size
         self.requested_device = device
@@ -256,6 +260,10 @@ class SpeechToText:
         self.seam_window_seconds = max(0.5, float(seam_window_seconds))
         self.max_seam_repairs = max(0, int(max_seam_repairs))
         self.no_speech_threshold = float(no_speech_threshold)
+        self.hotwords = (hotwords or "").strip()
+        #: প্রথম chunk-এ শুধু একবার দেওয়া প্রসঙ্গ (ভিডিওর নাম/বিষয়) —
+        #: নাম-শব্দের বানান ঠিক রাখতে সাহায্য করে, ব্যবহারকারীকে কিছু দিতে হয় না
+        self.context_hint = ""
         self.compression_ratio_threshold = float(compression_ratio_threshold)
         self.log_prob_threshold = float(log_prob_threshold)
 
@@ -346,8 +354,7 @@ class SpeechToText:
         """
         if self._model is None:  # pragma: no cover - transcribe() আগে _load() ডাকে
             self._load()
-        segments, _info = self._model.transcribe(
-            samples,
+        options = dict(
             language=language,
             task="transcribe",
             beam_size=self.beam_size,
@@ -361,6 +368,19 @@ class SpeechToText:
             log_prob_threshold=self.log_prob_threshold,
             hallucination_silence_threshold=2.0,
         )
+        if self.hotwords:
+            # পুরোনো faster-whisper-এ ``hotwords`` নেই — TypeError হলে বাদ দেওয়া হয়
+            try:
+                segments, _info = self._model.transcribe(samples, hotwords=self.hotwords,
+                                                         **options)
+            except TypeError:  # pragma: no cover - পুরোনো সংস্করণ
+                logger.info(
+                    "এই faster-whisper সংস্করণে hotwords নেই — সাধারণ ডিকোড চলবে।"
+                )
+                self.hotwords = ""
+                segments, _info = self._model.transcribe(samples, **options)
+        else:
+            segments, _info = self._model.transcribe(samples, **options)
         words: List[Word] = []
         texts: List[str] = []
         for segment in segments:
@@ -379,6 +399,25 @@ class SpeechToText:
                     )
                 )
         return words, " ".join(texts)
+
+    # ------------------------------------------------------------------
+    def set_context_hint(self, text: str, max_chars: int = 200) -> None:
+        """প্রথম chunk-এ দেওয়ার জন্য সংক্ষিপ্ত প্রসঙ্গ (ভিডিওর নাম) বসায়।
+
+        উদাহরণ: ফাইলের নাম ``"FC Mobile 125 OVR squad.mp4"`` হলে Whisper
+        প্রথম chunk-এ এই শব্দগুলো দেখে "OVR", "squad" ঠিকভাবে লিখতে পারে।
+        এতে ব্যবহারকারীকে কিছু টাইপ করতে হয় না; খালি হলে কিছুই বদলায় না।
+
+        Args:
+            text: ভিডিওর নাম/শিরোনাম (প্রতীক বাদ দেওয়া হয়)।
+            max_chars: সর্বোচ্চ অক্ষর (Whisper-এর prompt সীমা মেনে)।
+        """
+        cleaned = re.sub(r"[_\-]+", " ", str(text or ""))
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        # ফাইলের এক্সটেনশন/সংখ্যা-শুধু টুকরো বাদ — শব্দই কাজে লাগে
+        cleaned = re.sub(r"\b(mp4|mkv|mov|webm|avi|flv|wav|mp3|m4a)\b", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        self.context_hint = cleaned[:max_chars]
 
     # ------------------------------------------------------------------
     def transcribe(self, audio_path: Path | str) -> List[Segment]:
@@ -415,6 +454,7 @@ class SpeechToText:
             "Whisper ডিকোড শুরু: %dটি chunk | মোট অডিও %s | device=%s",
             total_chunks, format_duration(total_seconds), self.device,
         )
+        first_prompt = self.context_hint or None
         for index, chunk in enumerate(chunks, start=1):
             start_sample = int(chunk.start * sample_rate)
             end_sample = min(audio.size, int(chunk.end * sample_rate))
@@ -428,7 +468,7 @@ class SpeechToText:
             chunk_words, text = self._decode_words(
                 audio[start_sample:end_sample],
                 offset=chunk.start,
-                initial_prompt=carried or None,
+                initial_prompt=carried or (first_prompt if index == 1 else None),
             )
             if chunk_words:
                 words.extend(chunk_words)

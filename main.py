@@ -75,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", default=None, help="STT device: auto | cuda | cpu")
     parser.add_argument(
+        "--hotwords", default=None,
+        help="ভিডিওর নাম/শব্দ (কমা দিয়ে) — Whisper এগুলো সহজে চিনবে। "
+             "যেমন: \"FC Mobile, Ballon d'Or, OVR, star pass\"",
+    )
+    parser.add_argument(
         "--translator", default=None, choices=["gemini", "indictrans2"],
         help="অনুবাদ backend: gemini (ডিফল্ট) অথবা indictrans2",
     )
@@ -123,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             "output_dir": args.output_dir,
             "whisper_model": args.model,
             "whisper_device": args.device,
+            "stt_hotwords": args.hotwords,
             "translator_backend": args.translator,
             "gemini_model": args.gemini_model,
             "gemini_api_key": args.gemini_api_key,
@@ -157,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         config.whisper_model, translator_label, voice_label,
         config.min_tempo, config.max_tempo,
     )
+    if config.stt_hotwords:
+        logger.info("Whisper hotwords: %s", config.stt_hotwords)
 
     # Gemini key ছাড়া অনুবাদই সম্ভব নয় — শুরুতেই স্পষ্ট error, অপেক্ষা নয়
     if config.translator_backend == "gemini" and not config.resolved_gemini_api_key():

@@ -140,7 +140,10 @@ def plan_windows(
             hard_end = float(total_duration)
         desired = float(seg.tts_duration or seg.duration)
         natural_end = start + max(desired, seg.duration)
-        end = min(hard_end, natural_end + borrow_seconds)
+        # speech unit (পুরো বাক্য) হলে পরের বাক্যের আগের নীরবতা থেকে একটু বেশি
+        # ধার নেওয়া হয় — নাহলে বাক্যের শেষ শব্দটা কেটে যাওয়ার ঝুঁকি থাকে
+        borrow = max(borrow_seconds, 0.45) if getattr(seg, "is_unit", False) else borrow_seconds
+        end = min(hard_end, natural_end + borrow)
         end = max(end, min(hard_end, start + 0.15))
         windows.append((start, end))
     return windows
@@ -395,6 +398,7 @@ class SyncEngine:
                 end_sample = canvas.size
             # যোগ নয়, বসানো — কিন্তু উইন্ডো আগেই ওভারল্যাপ-মুক্ত রাখা হয়েছে
             canvas[start_sample:end_sample] += clip
+            seg.placed_duration = float(clip.size / sr)
             spans.append((start_sample / sr, end_sample / sr))
 
         spans.sort()

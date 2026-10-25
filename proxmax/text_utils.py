@@ -26,6 +26,8 @@ _ONES: List[str] = [
 ]
 
 _BANGLA_DIGIT_MAP = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
+#: বাংলা অঙ্ক → ASCII (সংখ্যা কথায় বদলানোর আগে দরকার)
+_ASCII_DIGIT_MAP = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 
 _SCALES = ((10_000_000, "কোটি"), (100_000, "লক্ষ"), (1_000, "হাজার"))
 
@@ -74,7 +76,8 @@ def _decimal_to_words(text: str) -> str:
 
 def _replace_number(match: re.Match) -> str:
     raw = match.group(0)
-    cleaned = raw.replace(",", "")
+    # match-এ "%", "টাকা", "tk" থাকতে পারে (যেমন "50%") — শুধু সংখ্যাটুকু রাখা হয়
+    cleaned = re.sub(r"[^0-9.,]", "", raw.translate(_ASCII_DIGIT_MAP)).replace(",", "")
     if "." in cleaned:
         return _decimal_to_words(cleaned)
     try:
@@ -91,7 +94,9 @@ def verbalize_numbers(text: str) -> str:
     """
     if not text:
         return ""
-    result = text
+    # বাংলা অঙ্ক (১২৫) খুঁজে পাওয়ার জন্য আগে ASCII-তে আনা হয়, নাহলে TTS
+    # অঙ্কগুলোকে অক্ষর হিসেবে পড়ে ("এক-দুই-পাঁচ") বা একদম চুপ থাকে।
+    result = text.translate(_ASCII_DIGIT_MAP)
     # শতকরা: সংখ্যার সাথে % জোড়া লাগানো থাকলে আগে আলাদা করা হয়
     result = re.sub(
         r"(\d[\d,]*(?:\.\d+)?)\s*%",
@@ -147,8 +152,12 @@ def estimate_speech_seconds(
     cleaned = (text or "").strip()
     if not cleaned:
         return 0.0
+    # সংখ্যা কথায় বদলে দৈর্ঘ্য মাপা হয়: "১২৫" লেখা হয় ৩ অক্ষরে, কিন্তু
+    # বলা হয় "একশ পঁচিশ" (১০ অক্ষর) — নাহলে সময়ের হিসাব কমে যায়, ক্লিপ
+    # বড় হয়ে sync-এ দ্রুত করতে হয় (কণ্ঠ তাড়াহুড়ো শোনায়)।
+    spoken = verbalize_numbers(cleaned)
     rate = max(6.0, float(chars_per_second))
-    return max(0.4, len(cleaned) / rate)
+    return max(0.4, len(spoken) / rate)
 
 
 def split_sentences(text: str) -> List[str]:

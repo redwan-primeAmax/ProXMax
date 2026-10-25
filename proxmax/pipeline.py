@@ -43,10 +43,19 @@ from .config import AppConfig
 from .discovery import discover_videos
 from .models import BatchSummary, Segment, StageTimings, VideoResult
 from .muxer import VideoMuxer
+from .prosody import build_units, subtitles_for_unit, unit_summary
+from .speech_rate import calibrate as calibrate_speech_rate
 from .stt import SpeechToText
 from .sync_engine import SyncEngine
 from .translator import create_translator
-from .tts import BaseTTSEngine, build_tts_engine, hf_token_available, resolve_tts_engine
+from .tts import (
+    BaseTTSEngine,
+    EdgeTTSEngine,
+    IndicF5Engine,
+    build_tts_engine,
+    hf_token_available,
+    resolve_tts_engine,
+)
 from .utils import (
     format_duration,
     get_logger,
@@ -131,6 +140,7 @@ class DubbingPipeline:
             no_speech_threshold=cfg.no_speech_threshold,
             compression_ratio_threshold=cfg.compression_ratio_threshold,
             log_prob_threshold=cfg.log_prob_threshold,
+            hotwords=cfg.stt_hotwords,
         )
         self.translator = create_translator(
             cfg.translator_backend,
@@ -270,9 +280,41 @@ class DubbingPipeline:
                 time_budget_seconds=budget,
                 total_audio_seconds=total_speech_seconds,
             )
+            self._calibrate_speech_rate()
         else:
             self._tts.set_budget(budget, total_speech_seconds)
         return self._tts
+
+    # ------------------------------------------------------------------
+    def _calibrate_speech_rate(self) -> None:
+        """আসল কণ্ঠ দিয়ে বাংলা বলার গতি মেপে অনুবাদের বাজেট ঠিক করে।
+
+        এই ধাপ না থাকলে অনুবাদ "অনুমানকৃত" গতি (ডিফল্ট ১২ অক্ষর/সেকেন্ড)
+        ধরে সময় হিসাব করে; কণ্ঠ ধীরে বললে অডিও লম্বা হয়ে ১.২৫× দ্রুত
+        করতে হয় এবং শেষটা কেটে যায় — তাই এখানে একবার (প্রতি ব্যাচে)
+        সত্যিকারের গতি মাপা হয়। ব্যর্থ হলেও কিছু ভাঙে না।
+        """
+        cfg = self.config
+        if not cfg.translation_calibrate_speech_rate:
+            return
+        if self._tts is None or not hasattr(self._tts, "synthesize"):
+            return
+        # শুধু আসল TTS ইঞ্জিনে (টেস্টের ডামি ইঞ্জিনে নয়)
+        if not isinstance(self._tts, (EdgeTTSEngine, IndicF5Engine)):
+            return
+        try:
+            rate = calibrate_speech_rate(
+                self._tts,
+                fallback=cfg.translation_char_rate,
+                sample_rate=cfg.sync_sample_rate,
+            )
+        except Exception as exc:  # ক্যালিব্রেশন ব্যর্থ হলেও ডাবিং চলবে
+            logger.info("কণ্ঠের গতি মাপা যায়নি (%s) — অনুমানকৃত হার ব্যবহার হবে।", exc)
+            return
+        setter = getattr(self.translator, "set_char_rate", None)
+        if callable(setter) and rate > 0:
+            source = "measured" if abs(rate - cfg.translation_char_rate) > 1e-6 else "config"
+            setter(rate, source=source)
 
     # ------------------------------------------------------------------
     @contextmanager
@@ -401,6 +443,12 @@ class DubbingPipeline:
         # 3) Speech-to-Text -----------------------------------------------------
         marker = time.perf_counter()
         with self._step(3, "Speech-to-Text (faster-whisper, silence-aware)"):
+            # ভিডিওর নাম/শিরোনাম প্রথম chunk-এ প্রসঙ্গ হিসেবে দেওয়া হয় —
+            # গেম/ব্র্যান্ডের নাম Whisper ঠিকভাবে লেখার সম্ভাবনা বাড়ে
+            # (ব্যবহারকারীকে কিছু টাইপ করতে হয় না)
+            setter = getattr(self.stt, "set_context_hint", None)
+            if callable(setter):
+                setter(video_path.stem)
             segments = self.stt.transcribe(audio_wav)
             if not segments:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
@@ -409,6 +457,24 @@ class DubbingPipeline:
             if english_chars == 0:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
         timings.stt = time.perf_counter() - marker
+
+        # 3.5) Speech units: পুরো বাক্য একসাথে — TTS-এ মাঝপথে থামা বন্ধ ------
+        #      ছোট ছোট segment আলাদা ক্লিপ হলে কণ্ঠ বারবার থামে ("আমি একটি"…
+        #      থেমে… "স্টার পাস দিবো")। তাই পাশাপাশি segment জোড়া লাগিয়ে
+        #      বাক্য-ভিত্তিক unit বানানো হয়; unit-ই অনুবাদ/TTS/sync পায়।
+        units = build_units(
+            segments,
+            max_seconds=cfg.tts_unit_max_seconds,
+            max_chars=cfg.tts_unit_max_chars,
+            max_gap=cfg.tts_unit_max_gap,
+            text_attr="text_en",
+        )
+        if units:
+            logger.info(
+                "Speech unit: %s — এক clip-এ পুরো বাক্য (স্বাভাবিক prosody)",
+                unit_summary(units),
+            )
+            segments = units
 
         # শুধু IndicF5 (GPU) ব্যবহার হলেই Whisper আনলোড করা দরকার
         if cfg.unload_stt_before_tts and resolve_tts_engine(cfg, self._profile) == "indicf5":
@@ -461,6 +527,16 @@ class DubbingPipeline:
                 segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
             )
             stats["sync"] = dict(getattr(self.sync_engine, "last_stats", {}) or {})
+            trimmed = int(stats["sync"].get("trimmed") or 0)
+            if trimmed:
+                logger.warning(
+                    "⚠️ %dটি ক্লিপ উইন্ডোর চেয়ে লম্বা ছিল — প্রতিটির শেষটুকু কেটে "
+                    "বসানো হয়েছে (দুই কণ্ঠ একসাথে বাজবে না)। অনেক বেশি হলে "
+                    "`config.yaml`-এ translation.char_rate একটু বাড়ান বা "
+                    "`sync.borrow_silence_ms` বাড়ান।",
+                    trimmed,
+                )
+
         timings.sync = time.perf_counter() - marker
 
         # 6) Mux locally, then copy the finished file to the output (Drive) ----
@@ -478,13 +554,34 @@ class DubbingPipeline:
             with self._step(7, "সাবটাইটেল (SRT) সেভ করা"):
                 try:
                     stem = video_path.stem
-                    write_srt(segments, output_path.parent / f"{stem}_en.srt", language="en")
-                    write_srt(segments, output_path.parent / f"{stem}_bn.srt", language="bn")
+                    english_lines = [
+                        child
+                        for unit in segments
+                        for child in (getattr(unit, "children", None) or [unit])
+                    ]
+                    write_srt(
+                        english_lines or segments,
+                        output_path.parent / f"{stem}_en.srt",
+                        language="en",
+                    )
+                    bangla_lines = [
+                        line
+                        for unit in segments
+                        for line in subtitles_for_unit(unit)
+                    ]
+                    write_srt(
+                        bangla_lines or segments,
+                        output_path.parent / f"{stem}_bn.srt",
+                        language="bn",
+                    )
                     logger.info("সাবটাইটেল সেভ হয়েছে: %s_en.srt, %s_bn.srt", stem, stem)
                 except Exception as exc:  # SRT ব্যর্থ হলে মূল কাজ ব্যর্থ ধরা হবে না
                     logger.warning("SRT সেভ করা যায়নি: %s", exc)
 
-        stats["segments"] = len(segments)
+        stats["segments"] = sum(
+            len(getattr(unit, "children", None) or [unit]) for unit in segments
+        )
+        stats["units"] = sum(1 for unit in segments if getattr(unit, "is_unit", False)) or len(segments)
         stats["audio_seconds"] = round(total_duration, 2)
         return segments, timings, stats
 
