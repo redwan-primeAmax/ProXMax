@@ -47,14 +47,14 @@ SUPPORTED_WHISPER_MODELS = (
 )
 
 SUPPORTED_TRANSLATORS = ("gemini", "indictrans2")
-SUPPORTED_TTS_ENGINES = ("indicf5", "edge")
+SUPPORTED_TTS_ENGINES = ("auto", "indicf5", "edge")
 
 #: ডিফল্ট অনুবাদ মডেল (ব্যবহারকারীর নির্দেশ অনুযায়ী) — নোটবুক/CLI দিয়ে বদলানো যায়
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-light"
-#: ডিফল্ট ভয়েস ইঞ্জিন — zero-shot voice cloning
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+#: ঐচ্ছিক ভয়েস ক্লোনিং মডেল (auto মোডে কণ্ঠের নমুনা থাকলে ব্যবহৃত হয়)
 DEFAULT_TTS_MODEL = "ai4bharat/IndicF5"
 
-#: edge-tts (শুধু emergency fallback)-এর Bangla ভয়েস
+#: বিল্ট-ইন Bangla neural ভয়েস (কোনো নমুনা/টোকেন ছাড়াই কাজ করে)
 BANGLA_VOICES = {
     "female": "bn-BD-NabanitaNeural",
     "male": "bn-BD-PradeepNeural",
@@ -130,7 +130,9 @@ class AppConfig:
     voice_cache: bool = True
 
     # --- text-to-speech ------------------------------------------------------
-    tts_engine: str = "indicf5"              # "indicf5" (মূল) | "edge" (শুধু fallback)
+    #: "auto" = নমুনা থাকলে IndicF5 ক্লোনিং, না থাকলে বিল্ট-ইন edge ভয়েস
+    #: "edge" = সবসময় বিল্ট-ইন ভয়েস | "indicf5" = সবসময় ক্লোনিং (নমুনা লাগবে)
+    tts_engine: str = "auto"
     tts_indicf5_model: str = DEFAULT_TTS_MODEL
     tts_nfe_steps: int = 16                  # diffusion ধাপ (বেশি = ভালো, ধীর)
     tts_min_nfe_steps: int = 8               # governor এর নিচে নামবে না
@@ -139,7 +141,7 @@ class AppConfig:
     #: TTS-এর জন্য বরাদ্দ সময় = মোট কথা × এই গুণক (governor বাজেট রাখে)
     tts_time_budget_factor: float = 0.35
     tts_fallback_to_edge: bool = True        # IndicF5 চালু না হলে ভিডিও নষ্ট না করতে
-    # edge-tts (fallback) সেটিংস
+    # বিল্ট-ইন edge-tts ভয়েসের সেটিংস (ডিফল্ট পথ)
     tts_voice: str = BANGLA_VOICES["female"]
     tts_rate: str = "+0%"
     tts_volume: str = "+0%"
@@ -366,7 +368,7 @@ class AppConfig:
                 f"Gemini API ব্যবহার করুন)"
             )
         if not (self.gemini_model or "").strip():
-            raise ValueError("gemini_model খালি হতে পারে না (ডিফল্ট: gemini-3.5-flash-light)।")
+            raise ValueError("gemini_model খালি হতে পারে না (ডিফল্ট: gemini-3.5-flash-lite)।")
         if not 1 <= self.gemini_max_retries <= 10:
             raise ValueError(
                 f"gemini_max_retries 1–10 এর মধ্যে হতে হবে, পাওয়া গেছে: {self.gemini_max_retries}"
@@ -428,7 +430,7 @@ class AppConfig:
 
         if Path(self.input_dir) == Path(self.output_dir):
             raise ValueError("input_dir ও output_dir একই হতে পারবে না।")
-        if self.tts_engine == "edge" and not self.tts_voice.startswith("bn-"):
+        if self.tts_engine in ("edge", "auto") and not self.tts_voice.startswith("bn-"):
             logger.warning(
                 "TTS ভয়েস '%s' Bangla (bn-*) নয় — ডাবিংয়ের জন্য bn-BD ভয়েস সুপারিশ করা হয়।",
                 self.tts_voice,

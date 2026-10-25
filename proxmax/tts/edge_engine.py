@@ -1,11 +1,13 @@
-"""Emergency fallback TTS using the Bangla neural voices of edge-tts.
+"""Built-in Bangla neural voice via edge-tts (no sample, token or license needed).
 
-Microsoft edge-tts-এর Bangla neural ভয়েস। এটি **ডিফল্ট নয়** — মূল ইঞ্জিন IndicF5 (আপনার নিজের ক্লোন করা কণ্ঠ)।
-শুধু তখনই ব্যবহার হয় যখন IndicF5 লোডই করা যায় না (যেমন মডেল
-ডাউনলোড ব্লকড, GPU নেই, ``transformers`` ইনস্টল হয়নি)। এতে গলার
-ক্লোন হবে না, কিন্তু ভিডিওটা নষ্ট না হয়ে ডাবিং হয়ে যাবে।
+Microsoft edge-tts-এর ``bn-BD`` neural ভয়েস। ``tts.engine: auto`` (ডিফল্ট)
+এবং কণ্ঠের নমুনা না থাকলে **এটিই ব্যবহৃত হয়** — ব্যবহারকারীকে কিছু দিতে
+হয় না। ভয়েস ক্লোনিং (IndicF5) চালু করা না গেলেও এখানেই ফিরে আসা হয়,
+যাতে ভিডিওটা নষ্ট না হয়।
 
-কনফিগে বন্ধ করতে পারেন: ``tts → fallback_to_edge: false``।
+কনফিগে ভয়েস বদলানো যায়: ``tts.voice`` (``bn-BD-NabanitaNeural`` /
+``bn-BD-PradeepNeural``), আর ক্লোনিং-ব্যর্থতায় ফিরে আসা বন্ধ করতে
+``tts → fallback_to_edge: false``।
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ class EdgeTTSEngine(BaseTTSEngine):
             raise TTSError("TTS-এর জন্য কোনো বাংলা টেক্সট নেই (সব segment-এর text_bn খালি)।")
 
         logger.info(
-            "edge-tts (fallback) শুরু: %d segment | voice=%s | concurrency=%d",
+            "edge-tts (বিল্ট-ইন বাংলা ভয়েস) শুরু: %d segment | voice=%s | concurrency=%d",
             len(todo), self.voice, self.concurrency,
         )
         started = time.perf_counter()
