@@ -1,5 +1,9 @@
 # 🎙️ ProXMax — আপনার নিজের কণ্ঠে English → Bangla ভিডিও ডাবিং
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb)
+[![T4 GPU](https://img.shields.io/badge/GPU-T4%20(16GB)-76B900?logo=nvidia&logoColor=white)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+
 ProXMax একটি English ভিডিওকে **আপনার নিজের বাংলা কণ্ঠে** ডাবিং করে। ভিডিও থেকে
 কথা শোনে (faster-whisper), Gemini দিয়ে বাংলায় অনুবাদ করে, **IndicF5** দিয়ে
 আপনার কণ্ঠ ক্লোন করে কথা বানায় এবং এমনভাবে বসায় যাতে **কোনো দুই কণ্ঠ কখনো
@@ -7,6 +11,25 @@ ProXMax একটি English ভিডিওকে **আপনার নিজ�
 
 পুরো কাজটি Google Colab-এর **T4 GPU**-তে চলে; ইনপুট ও আউটপুট দুটোই Google
 Drive-এর ফোল্ডার থেকে।
+
+---
+
+## ☁️ এক ক্লিকে Colab-এ খুলুন
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb)
+
+উপরের বাটনে ক্লিক করলেই সম্পূর্ণ নোটবুকটি Colab-এ খুলে যাবে — সবসময়
+GitHub-এর `main` ব্র্যাঞ্চের **সর্বশেষ কোড** ব্যবহার হবে (আলাদা করে কিছু
+ডাউনলোড বা আপলোড করতে হবে না)।
+
+বাটনে ক্লিক করার পর মাত্র ৩টি কাজ:
+
+1. `Runtime → Change runtime type → **T4 GPU**` বেছে নিন।
+2. নোটবুকের ধাপ ৫ ও ৬-এ **Hugging Face token** ও **Gemini API key** দিন
+   (Colab Secrets-এ রাখলে নিজে থেকেই পড়ে নেবে)।
+3. ধাপ ৮-এ `python main.py` সেলটি রান করুন — বাকি সব নোটবুক নিজেই করে।
+
+> নোটবুকের লিংক: <https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb>
 
 ---
 
@@ -108,9 +131,9 @@ python main.py --gemini-model gemini-3.5-flash-light
 python main.py --force                         # আগের আউটপুট থাকলেও আবার
 ```
 
-**Colab নোটবুক:** [`notebook/ProXMax_Colab.ipynb`](notebook/ProXMax_Colab.ipynb) —
-সব ধাপ (GPU, Drive, ইনস্টল, HF লগইন, Gemini key, রান, GPU ফ্রি) বাংলায়
-ব্যাখ্যা করা আছে।
+**Colab নোটবুক:** [▶ Colab-এ খুলুন](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb) ·
+[`notebook/ProXMax_Colab.ipynb`](notebook/ProXMax_Colab.ipynb) — সব ধাপ
+(GPU, Drive, ইনস্টল, HF লগইন, Gemini key, রান, GPU ফ্রি) বাংলায় ব্যাখ্যা করা আছে।
 
 ---
 
