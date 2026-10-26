@@ -1,11 +1,10 @@
 # =============================================================================
 # ProXMax — কনফিগারেশন ফাইল
-# English → Bangla ভিডিও ডাবিং (Google Colab, T4 GPU)
+# English → Bangla ভিডিও ডাবিং (Google Colab)
 # দরকার অনুযায়ী শুধু এই ফাইলের মান বদলালেই হবে, কোড ছোঁয়ার দরকার নেই।
 # =============================================================================
 
 # --- Google Drive-এর পাথ -------------------------------------------------
-# লক্ষ্য করুন: "Video" এর V বড় হাতের, "input"/"output" সম্পূর্ণ ছোট হাতের।
 paths:
   input_dir: "/content/drive/MyDrive/Video/input"
   output_dir: "/content/drive/MyDrive/Video/output"
@@ -17,43 +16,28 @@ paths:
 stt:
   model: "large-v3"         # সর্বোচ্চ accuracy (ডিফল্ট); speed দরকার হলে "medium"
   device: "auto"            # auto = CUDA GPU থাকলে GPU, না থাকলে CPU fallback
-  compute_type: "float16"   # GPU (T4)-এর জন্য দ্রুততম; CPU হলে নিজে থেকেই int8 হবে
+  compute_type: "float16"   # GPU-এর জন্য দ্রুততম; CPU হলে নিজে থেকেই int8 হবে
   beam_size: 5              # বেশি = বেশি accuracy, একটু ধীর
 
   # — নীরবতা-সচেতন chunking (শব্দের মাঝখানে কাটা বন্ধ) —
-  # Whisper একবারে ৩০ সেকেন্ডের বেশি দেখতে পারে না। তাই আগে VAD দিয়ে
-  # নীরবতা খুঁজে **নীরবতার মাঝখানে** কাটা হয়; কোনো শব্দ দুই টুকরো হয় না।
   vad_min_silence_ms: 300   # এই দৈর্ঘ্যের নীরবতা পেলেই কাটার সুযোগ (300 ms)
   chunk_min_seconds: 18.0   # এক chunk-এ অন্তত এতটুকু কথা
   chunk_max_seconds: 28.0   # এক chunk-এ সর্বোচ্চ (৩০s-এর নিরাপদ নিচে)
   chunk_pad_ms: 120         # chunk-এর দুই পাশে অতিরিক্ত context
   carry_context_chars: 220  # আগের লেখার শেষ ~২২০ অক্ষর prompt হিসেবে যায়
-                            # (এতে বাক্যের ধারাবাহিকতা ও punctuation বজায় থাকে)
 
   # — সীমান্ত মেরামত (seam repair) —
   seam_repair: true         # chunk সীমানায় শব্দ কাটা পড়লে ছোট উইন্ডো আবার ডিকোড
   seam_window_seconds: 2.5  # সীমানার দুই পাশে কত সেকেন্ড দেখা হবে
   max_seam_repairs: 60      # সর্বোচ্চ কতটি সীমানা ঠিক করা হবে (সময় নিয়ন্ত্রণে)
 
-  # TTS শুরুর আগে Whisper আনলোড? (VRAM খালি রাখলে কণ্ঠ তৈরি দ্রুত হয়)
-  unload_before_tts: true
+  # TTS-এর আগে Whisper আনলোড?
+  unload_before_tts: false
 
-  # — নাম-শব্দের তালিকা (hotwords) — Whisper-এর নির্ভুলতা বাড়ায় —
-  # ফুটবল/FC Mobile-এর শত শত নাম (খেলোয়াড়, ক্লাব, প্রতিযোগিতা, ইভেন্ট)
-  # আলাদা ফাইলে আছে; নিজে থেকেই পড়া হয়, কিছু টাইপ করতে হয় না।
+  # আলাদা hotwords ফাইল (FC Mobile টার্ম, ইভেন্ট ও ইতিহাসের সব খেলোয়াড়ের নাম)
   hotwords_file: "hotwords.txt"
-  # এক chunk-এ hotwords-এর সর্বোচ্চ অক্ষর (Whisper-এর ২২৪ টোকেন সীমা মেনে
-  # পুরো তালিকা ছোট ছোট ভাগে ভেঙে প্রতি chunk-এ আলাদা ভাগ দেওয়া হয়)
-  hotwords_max_chars: 480   # প্রতি ভাগে সর্বোচ্চ অক্ষর (Whisper-এর ২২৪-টোকেন সীমার নিরাপদ মার্জিন)
-  # হাতে লেখা নাম (কমা দিয়ে) — দিলে ফাইলের বদলে কেবল এগুলোই ব্যবহার হবে।
-  # আপনার ভিডিওর বিশেষ নাম থাকলে এখানে লিখুন; সেগুলোই সবচেয়ে আগে যায়।
+  # অতিরিক্ত নাম/শব্দ দিতে চাইলে (কমা দিয়ে) — hotwords.txt-এর সাথে যুক্ত হবে
   hotwords: ""
-
-# --- অডিও পরিষ্কার (STT-এর আগে; Demucs লাগে না) ------------------------------
-audio:
-  preprocess: true          # high-pass + হালকা loudness normalization
-  highpass_hz: 70           # কম-কম্পাঙ্কের গুঞ্জন/হাম সরায়
-  loudnorm_i: -16.0         # EBU R128 loudness target (dB)
 
 # --- Translation (English → Bangla) -----------------------------------------
 translation:
@@ -62,17 +46,12 @@ translation:
   backend: "gemini"
 
   # বাংলা কথার স্বাভাবিক গতি (অক্ষর/সেকেন্ড) — duration-aware অনুবাদের ভিত্তি।
-  # বাস্তব বাংলা neural কণ্ঠ এর চেয়ে ধীরে বলে (≈১২): বড় মান দিলে অনুবাদ
-  # লম্বা হয়ে sync-এ ১.২৫× দ্রুত করতে হয় → কণ্ঠ তাড়াহুড়ো শোনায়।
-  # নিচের `calibrate_speech_rate: true` থাকলে শুরুতেই আসল কণ্ঠ দিয়ে মাপা হয়,
-  # তাই এই মানটি কেবল ব্যাকআপ।
   char_rate: 12.0
   # শুরুতেই (প্রতি ব্যাচে একবার) কণ্ঠের প্রকৃত গতি মাপা — ১–২ সেকেন্ড খরচ
   calibrate_speech_rate: true
   # সময়ে না আঁটা লাইন Gemini দিয়ে আবার ছোট করে লেখানো হবে
   shorten_pass: true
-  # স্লটের চেয়ে অনেক ছোট হয়ে যাওয়া লাইন (যেমন ১২s স্লটে ৭s কথা → ৫s ফাঁক)
-  # Gemini দিয়ে আরও ভরাট করে লেখানো হবে, তারপর শুধু সেই ক্লিপগুলো আবার TTS
+  # স্লটের চেয়ে অনেক ছোট হয়ে যাওয়া লাইন Gemini দিয়ে আরও ভরাট করে লেখানো হবে
   expand_pass: true
   expand_min_gap: 0.9
 
@@ -81,17 +60,11 @@ translation:
 # --- Google Gemini API (ডিফল্ট অনুবাদ ইঞ্জিন) --------------------------------
 gemini:
   # API key নিন: https://aistudio.google.com/app/apikey
-  # এখানে key না লিখে environment variable ব্যবহার করা বেশি নিরাপদ:
-  #   export GEMINI_API_KEY="your-key"       (অথবা GOOGLE_API_KEY)
-  # Colab-এ নোটবুকের ধাপ ৬-এর সেলেই key দেওয়া যায়।
   api_key: ""
-  # ডিফল্ট মডেল (ব্যবহারকারীর নির্দেশ অনুযায়ী)। দরকার হলে নাম বদলান।
   model: "gemini-3.5-flash-lite"
   batch_size: 25                # এক API request-এ কতটি segment অনুবাদ হবে
   max_chars_per_request: 12000  # এক request-এ সর্বোচ্চ অক্ষর
-  max_retries: 7                # সর্বোচ্চ ৭ বার চেষ্টা (৬–৭ এর মধ্যে রাখুন)
-  # retry-এর অপেক্ষা: **সর্বোচ্চ ২ সেকেন্ড**, দ্বিগুণ করে বাড়ে না।
-  # ফরম্যাট ভুল হলে অপেক্ষা নেই — সঙ্গে সঙ্গে আবার request যায়।
+  max_retries: 7                # সর্বোচ্চ ৭ বার চেষ্টা
   retry_base_delay: 0.5         # নেটওয়ার্ক/429-এ প্রথম অপেক্ষা (সেকেন্ড)
   retry_max_delay: 2.0          # ব্যাকঅফের সর্বোচ্চ (সেকেন্ড)
   retry_cap_delay: 2.0          # এক retry-তে কখনো এর বেশি নয়
@@ -100,22 +73,20 @@ gemini:
   timeout: 120                  # এক request-এর timeout (সেকেন্ড)
   max_output_tokens: 8192       # উত্তরে সর্বোচ্চ টোকেন
 
-# --- Text-to-Speech (বিল্ট-ইন বাংলা neural ভয়েস) ------------------------------
-# কোনো ক্লোনিং নেই — নমুনা, Hugging Face token বা অনুমতি কিছুই লাগে না।
+# --- Text-to-Speech (বিল্ট-ইন বাংলা neural ভয়েস) -----------------------------
 tts:
-  # — এক clip-এ পুরো বাক্য (prosody) — ছোট ছোট ক্লিপে কণ্ঠ বারবার থামে,
-  #   তাই পাশাপাশি segment জোড়া লাগিয়ে এক clip-এ পড়া হয়।
+  engine: "edge"
+
+  # — এক clip-এ পুরো বাক্য (prosody) —
   unit_max_seconds: 12.0      # এক clip-এ সর্বোচ্চ কত সেকেন্ড কথা
   unit_max_chars: 240         # এক clip-এ সর্বোচ্চ অক্ষর
   unit_max_gap: 0.6           # এই সেকেন্ডের কম বিরতি হলে দুই segment একসাথে
 
-  # কণ্ঠের লিঙ্গ — **male** (ডিফল্ট) | female | custom
-  # পুরোনো config-এ ভুল ভয়েস থাকলেও gender-ই প্রধান, তাই male-ই ব্যবহার হবে।
+  # কণ্ঠের লিঙ্গ — **male** (ডিফল্ট: bn-BD-PradeepNeural) | female | custom
   gender: "male"
-  # gender=custom হলেই কেবল এই ভয়েস ব্যবহার হয় (এখানে খালি রাখাই ভালো)
+  # gender=custom হলেই কেবল এই ভয়েস ব্যবহার হয়
   voice: ""
-  # TTS ক্লিপের দুই প্রান্তের নীরবতা ছাঁটা — না ছাঁটলে প্রতি বাক্যের পর
-  # অযথা বিরতি শোনায় ("এক লাইন বলে অনেকক্ষণ গ্যাপ")
+  # TTS ক্লিপের দুই প্রান্তের নীরবতা ছাঁটা
   trim_silence: true
   trim_pad_ms: 25
   rate: "+0%"
@@ -129,30 +100,26 @@ sync:
   # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
   min_tempo: 0.95           # সাধারণ slow-down-এর সীমা
   max_tempo: 1.25           # এর বেশি দ্রুত করলে কণ্ঠ বিকৃত হয় — hard cap
-  # ক্লিপ স্লটের চেয়ে ছোট হলে এতটা পর্যন্ত ধীর করে স্লট ভরা হয় (ফাঁক কমে)
-  fill_extension: 0.12
-  slow_down_short_clips: false   # ছোট ক্লিপ ধীর না করে নীরবতা রাখা হয়
+  fill_extension: 0.12      # ক্লিপ স্লটের চেয়ে ছোট হলে এতটা পর্যন্ত ধীর করে স্লট ভরা হয়
+  slow_down_short_clips: false
   slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
   borrow_silence_ms: 250    # পরের নীরবতা থেকে সর্বোচ্চ কতটুকু ধার নেওয়া যাবে
   prefer_rubberband: true   # ffmpeg-এ থাকলে rubberband (formant রক্ষা করে)
   workers: 4                # সমান্তরাল ffmpeg প্রসেস
-  sample_rate: 24000        # বাংলা neural ভয়েসের native sample rate
+  sample_rate: 24000
 
 # --- Runtime --------------------------------------------------------------------
 runtime:
   # true হলে কাজ শেষে সব মডেল আনলোড করে GPU (VRAM) ছেড়ে দেওয়া হয়।
   release_gpu_when_done: true
-  # অনুবাদ (Gemini API) ও TTS একসাথে চালানো হবে — ১০ মিনিটের ভিডিও
-  # ২–৩ মিনিটে শেষ করার জন্য এটি জরুরি (কোনো অডিও overlap হয় না)।
+  # অনুবাদ (Gemini API) ও TTS একসাথে চালানো হবে।
   enable_overlap: true
-  # ffmpeg এত সেকেন্ড ধরে কোনো অগ্রগতি না দেখালে "ঝুলে গেছে" ধরে থামিয়ে
-  # software decoding-এ আবার চেষ্টা করা হয় (তারপর স্পষ্ট error)।
   extract_stall_seconds: 90
 
 # --- Output ---------------------------------------------------------------------
 output:
   audio_bitrate: "160k"     # চূড়ান্ত MP4-এর AAC অডিও বিটরেট
-  use_hwaccel: true         # ffmpeg hardware acceleration (NVENC ইত্যাদি) চেষ্টা
+  use_hwaccel: true         # ffmpeg hardware acceleration চেষ্টা
   skip_existing: true       # output-এ ফাইল থাকলে আবার প্রসেস না করা (resume)
   save_srt: true            # output ফোল্ডারে _en.srt ও _bn.srt সাবটাইটেলও সেভ
   keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, TTS ক্লিপ) থেকে যাবে

@@ -1,11 +1,7 @@
-"""Built-in Bangla neural voice via edge-tts (no sample, token or license needed).
+"""Built-in Bangla neural voice via edge-tts.
 
-Microsoft edge-tts-এর ``bn-BD`` neural ভয়েস — **এটিই একমাত্র** কণ্ঠ,
-কোনো ক্লোনিং নেই। ব্যবহারকারীকে কিছু দিতে হয় না (না নমুনা, না টোকেন,
-না লাইসেন্স)।
-
-কনফিগে ভয়েস বদলানো যায় ``tts.gender`` দিয়ে (``male`` ডিফল্ট →
-``bn-BD-PradeepNeural``, ``female`` → ``bn-BD-NabanitaNeural``)।
+Microsoft edge-tts-এর ``bn-BD`` neural ভয়েস (ডিফল্ট পুরুষ কণ্ঠ
+``bn-BD-PradeepNeural``, নারী কণ্ঠ ``bn-BD-NabanitaNeural``)।
 """
 
 from __future__ import annotations
@@ -32,13 +28,13 @@ _VOICE_LIST: dict = {}
 
 
 class EdgeTTSEngine(BaseTTSEngine):
-    """Concurrent Bangla synthesis through edge-tts (no voice cloning)."""
+    """Concurrent Bangla synthesis through edge-tts."""
 
     name = "edge"
 
     def __init__(
         self,
-        voice: str = BANGLA_VOICE_FEMALE,
+        voice: str = BANGLA_VOICE_MALE,
         rate: str = "+0%",
         volume: str = "+0%",
         pitch: str = "+0Hz",
@@ -62,7 +58,7 @@ class EdgeTTSEngine(BaseTTSEngine):
 
     # ------------------------------------------------------------------
     def prepare(self) -> None:
-        """edge-tts-এর জন্য রেফারেন্স লাগে না — শুধু নেটওয়ার্ক দরকার।"""
+        """edge-tts ইনস্টল আছে কি না যাচাই করে।"""
         super().prepare()
         try:
             import edge_tts  # noqa: F401

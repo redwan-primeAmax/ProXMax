@@ -1,795 +1,253 @@
 # =============================================================================
-# ProXMax — Whisper hotwords (নাম-শব্দের তালিকা)
-#
-# এই ফাইলটি নিজে থেকেই পড়া হয় — কিছু ইনস্টল/টাইপ করতে হয় না।
-# এক লাইনে একটি নাম, `#` দিয়ে মন্তব্য, `[ ]` দিয়ে শুধু গোছানোর হেডার।
-#
-# ⚠️ Whisper-এর prompt সীমা ২২৪ টোকেন, তাই এই ফাইলের **উপরের অংশই** বেশি
-#    ব্যবহৃত হয়। নিজের ভিডিওর সবচেয়ে দরকারি নাম থাকলে সেটি উপরে যোগ করুন
-#    (অথবা `config.yaml` → `stt.hotwords`-এ সরাসরি লিখুন; সেটি সবচেয়ে আগে যায়)।
+# ProXMax — Whisper ও Gemini-র জন্য Hotwords তালিকা (FC Mobile ও Football)
+# =============================================================================
+# এই ফাইলের শব্দ ও নামগুলো স্বয়ংক্রিয়ভাবে লোড হয়, যাতে Whisper ট্রান্সক্রিপশনে
+# এবং Gemini অনুবাদে নাম, ইভেন্ট ও গেমের টার্মগুলোর বানান শতভাগ নির্ভুল থাকে।
+# আপনি চাইলে নিচে নতুন নাম বা শব্দ (কমা বা নতুন লাইনে) যোগ করতে পারেন।
+# '#' দিয়ে শুরু হওয়া লাইন মন্তব্য (comment) হিসেবে গণ্য হবে।
 # =============================================================================
 
-[FC Mobile / গেমের শব্দ]
-FC Mobile
-FC Mobile 24
-FC Mobile 25
-EA Sports FC
-EA FC
-Ultimate Team
-FIFA Mobile
-eFootball
-PES
-OVR
-Overall
-star pass
-Star Pass
-rank up
-rank up reward
-pack opening
-pack luck
-untradeable
-transfer market
-market value
-coins
-gems
-FC Points
-division rivals
-head to head
-H2H
-weekend league
-season pass
-event pass
-player pick
-skill move
-skill boost
-chemistry
-squad builder
-formation
-4-3-3
-4-2-3-1
-4-4-2
-goalkeeper
-defender
-midfielder
-winger
-striker
-centre-back
-full-back
-substitution
-training
-upgrade
-evolution
-hero
-icon
-legend
-GOAT
-meta
-gameplay
-patch
-update
-version
-tournament
-leaderboard
-reward
-mission
-objective
-token
-fut
-FUT
+# --- ১. FC Mobile / EA Sports FC মূল গেম টার্ম ও মেকানিক্স --------------------
+FC Mobile, EA Sports FC, EA Sports FC Mobile, FIFA Mobile, EA FC,
+OVR, Star Pass, Division Rivals, Head to Head, H2H, VS Attack, VSA, Manager Mode,
+League, League vs League, LvL, Market, Transfer Market, Coins, Gems, FC Points,
+Universal Rank Player, Mascherano, Dudek, Skill Boost, Training, Training Transfer,
+Rank Up, Green Rank, Blue Rank, Purple Rank, Red Rank, Gold Rank, Orange Rank,
+Base Card, Icon, Prime Icon, Heroes, Ultimate, Pioneer, Founder,
+Exchange, Pack Opening, Pack Luck, Walkout, Tunnel, Flare,
+Daily Quests, Weekly Quests, Challenge Mode, Live Events, Skill Games,
+Skill Moves, Lane Change, Heel to Heel, Roulette, Open Up Fake Shot,
+Finesse Shot, Power Shot, Chip Shot, Driven Pass, Through Ball, Cross Spam,
+Weak Foot, Stamina, Skill Move Stars, Work Rate, High High, High Medium, Medium High,
+Pace, Acceleration, Sprint Speed, Shooting, Positioning, Finishing, Shot Power,
+Long Shots, Volleys, Penalties, Passing, Vision, Crossing, Free Kick,
+Short Passing, Long Passing, Curve, Dribbling, Agility, Balance, Reactions,
+Ball Control, Composure, Defending, Interceptions, Heading, Marking,
+Standing Tackle, Sliding Tackle, Physical, Jumping, Strength, Aggression,
+Diving, Handling, Kicking, Reflexes, GK Positioning,
+Traits, PlayStyles, Finesse Shot Trait, Outside Foot Shot, Power Header,
+Speed Dribbler, Playmaker, Flair, Long Shot Taker, Second Wind, Solid Player,
+GK, CB, LB, RB, LWB, RWB, CDM, CM, CAM, LM, RM, LW, RW, CF, ST,
+Squad, Squad Builder, Theme Squad, Meta, Endgame, Cheap Beast,
+F2P, Free to Play, P2W, Pay to Win, Giveaway, Subscriber,
+Tradeable, Untradeable, Shards, Tokens, Tickets, Shard Exchange,
+RenderZ, FCMobileForum
 
-[প্রতিযোগিতা ও ইভেন্ট]
-FIFA World Cup
-World Cup
-FIFA Club World Cup
-Club World Cup
-UEFA Champions League
-Champions League
-UEFA Europa League
-Europa League
-UEFA Conference League
-UEFA Super Cup
-Copa America
-Copa Libertadores
-UEFA Euro
-Euro
-Africa Cup of Nations
-AFC Asian Cup
-Asian Cup
-Olympics
-Olympic Games
-Ballon d'Or
-The Best FIFA Football Awards
-FIFA Puskas Award
-Puskas Award
-Golden Boot
-Golden Glove
-Golden Ball
-Kopa Trophy
-Yashin Trophy
-La Liga
-Premier League
-Serie A
-Bundesliga
-Ligue 1
-Eredivisie
-Primeira Liga
-Saudi Pro League
-Major League Soccer
-MLS
-Brasileirao
-Copa del Rey
-FA Cup
-Carabao Cup
-Community Shield
-Supercopa
-Trophee des Champions
-Der Klassiker
-El Clasico
-Madrid derby
-Manchester derby
-Merseyside derby
-North London derby
+# --- ২. FC Mobile ইভেন্ট, টুর্নামেন্ট ও পুরস্কার (Events & Awards) ---------------
+Ballon d'Or, Golden Boy, Kopa Trophy, Yashin Trophy, Gerd Muller Trophy,
+FIFA The Best, Golden Boot, Golden Ball, Golden Glove, Puskas Award,
+TOTY, Team of the Year, UTOTY, Ultimate Team of the Year, Honorable Mentions,
+TOTS, Team of the Season, UTOTS, Ultimate Team of the Season,
+TOTW, Team of the Week, POTM, Player of the Month,
+UCL, UEFA Champions League, Road to the Final, RTTF, Team of the Tournament, TOTT,
+UEL, Europa League, UECL, Conference League, Super Cup,
+World Cup, FIFA World Cup, Euros, UEFA Euro, Copa America, AFCON, Asian Cup,
+Libertadores, Copa Libertadores, Sudamericana, Copa Sudamericana, Club World Cup,
+Hall of Legends, HOL, Trophy Titans, Retro Stars, Dynasties, Centurions,
+Anniversary, Founders, Welcome to FC Mobile, New Beginnings,
+Winter Wildcards, Freeze, Festive Fixtures, Boxing Day, New Year,
+Lunar New Year, LNY, Year of the Dragon, Year of the Snake,
+Ramadan, Eid, Spring Showdown, Easter, Songkran, Holi,
+Trick or Treat, Halloween, Dia de Muertos, Scream Team,
+Thunderstruck, Black Friday, Cyber Monday, Flash Sale,
+Rulebreakers, Shapeshifters, Out of Position, Future Stars, Next Generation,
+Fantasy FC, Fantasy Football, Grassroot Greats,
+Code Neon, Neon, Pitch Beats, Aqua vs Inferno, Ragnarok,
+Captains, National Valour, Mystery Signings,
+Icon Chronicles, Heroes Chronicles, Beckham Chronicles, Zlatan Chronicles,
+Defining Legacies, Top Transfers, Summer Vacation, Preseason, Kickoff,
+La Liga, Premier League, Serie A, Bundesliga, Ligue 1, MLS, Roshn Saudi League,
+El Clasico, Der Klassiker, Manchester Derby, Milan Derby, Madrid Derby
 
-[ক্লাব]
-Real Madrid
-Barcelona
-Atletico Madrid
-Sevilla
-Valencia
-Villarreal
-Athletic Bilbao
-Real Betis
-Manchester United
-Manchester City
-Liverpool
-Arsenal
-Chelsea
-Tottenham Hotspur
-Newcastle United
-Aston Villa
-Everton
-Leicester City
-Nottingham Forest
-West Ham United
-Crystal Palace
-Brighton
-Fulham
-Wolverhampton
-Bournemouth
-Brentford
-Leeds United
-Celtic
-Rangers
-Bayern Munich
-Borussia Dortmund
-RB Leipzig
-Bayer Leverkusen
-Eintracht Frankfurt
-VfB Stuttgart
-Borussia Monchengladbach
-Werder Bremen
-Wolfsburg
-Juventus
-Inter Milan
-AC Milan
-Napoli
-AS Roma
-Lazio
-Fiorentina
-Atalanta
-Torino
-Bologna
-Paris Saint-Germain
-PSG
-Marseille
-Monaco
-Lyon
-Lille
-Nice
-Ajax
-PSV Eindhoven
-Feyenoord
-Benfica
-Porto
-Sporting CP
-Al Nassr
-Al Hilal
-Al Ittihad
-Al Ahli
-Inter Miami
-LA Galaxy
-LAFC
-Flamengo
-Palmeiras
-Santos
-Corinthians
-Boca Juniors
-River Plate
-Galatasaray
-Fenerbahce
-Besiktas
-Fenerbahce
-Olympiacos
-Panathinaikos
-Shakhtar Donetsk
-Dynamo Kyiv
-Red Star Belgrade
-Dinamo Zagreb
-Copenhagen
-Malmo
-Rosenborg
-Zenit
-CSKA Moscow
-Al Sadd
-Al Duhail
-Kawasaki Frontale
-Ulsan Hyundai
-Pohang Steelers
+# --- ৩. ইতিহাসের সর্বকালের সেরা গোলরক্ষক (All-Time Goalkeepers) ----------------
+Lev Yashin, Yashin, Gianluigi Buffon, Buffon, Iker Casillas, Casillas,
+Manuel Neuer, Neuer, Peter Schmeichel, Schmeichel, Edwin van der Sar, Van der Sar,
+Petr Cech, Cech, Oliver Kahn, Kahn, Dino Zoff, Zoff, Gordon Banks, Banks,
+Sepp Maier, Maier, Walter Zenga, Zenga, Michel Preud'homme,
+Fabien Barthez, Barthez, Dida, Julio Cesar, Marcos, Rogerio Ceni,
+David Seaman, Seaman, Neville Southall, Pat Jennings, Peter Shilton, Shilton,
+Andoni Zubizarreta, Victor Valdes, Valdes, Santiago Canizares,
+Jens Lehmann, Lehmann, Bodo Illgner, Harald Schumacher,
+Jerzy Dudek, Dudek, Jorge Campos, Campos, Rene Higuita, Higuita,
+Jose Luis Chilavert, Chilavert, Oscar Cordoba, Roberto Abbondanzieri,
+Thibaut Courtois, Courtois, Alisson, Alisson Becker, Ederson,
+Emiliano Martinez, Dibu Martinez, Gianluigi Donnarumma, Donnarumma,
+Marc-Andre ter Stegen, Ter Stegen, Jan Oblak, Oblak, Mike Maignan, Maignan,
+Gregor Kobel, Kobel, Yann Sommer, Sommer, Unai Simon, David Raya, Raya,
+Wojciech Szczesny, Szczesny, Keylor Navas, Navas, Hugo Lloris, Lloris,
+Kasper Schmeichel, Samir Handanovic, Joe Hart, Brad Friedel, Tim Howard,
+Giorgi Mamardashvili, Mamardashvili, Diogo Costa, Andre Onana, Onana
 
-[খেলোয়াড় — ইতিহাসের সেরা]
-Pele
-Diego Maradona
-Maradona
-Johan Cruyff
-Cruyff
-Franz Beckenbauer
-Beckenbauer
-Michel Platini
-Platini
-Zinedine Zidane
-Zidane
-Ronaldo Nazario
-Ronaldo
-Ronaldinho
-Romario
-Rivaldo
-Roberto Carlos
-Cafu
-Kaka
-Ronaldo Fenomeno
-George Best
-Bobby Charlton
-Bobby Moore
-Gary Lineker
-Paul Gascoigne
-David Beckham
-Beckham
-Steven Gerrard
-Gerrard
-Frank Lampard
-Lampard
-Wayne Rooney
-Rooney
-Paul Scholes
-Ryan Giggs
-Thierry Henry
-Henry
-Dennis Bergkamp
-Bergkamp
-Patrick Vieira
-Vieira
-Vieira
-Alan Shearer
-Shearer
-Eric Cantona
-Cantona
-Roy Keane
-Keane
-Rio Ferdinand
-John Terry
-Ashley Cole
-Sol Campbell
-Peter Schmeichel
-Schmeichel
-Edwin van der Sar
-Petr Cech
-Oliver Kahn
-Kahn
-Gianluigi Buffon
-Buffon
-Iker Casillas
-Casillas
-Dino Zoff
-Lev Yashin
-Yashin
-Paolo Maldini
-Maldini
-Fabio Cannavaro
-Cannavaro
-Alessandro Nesta
-Nesta
-Javier Zanetti
-Zanetti
-Andrea Pirlo
-Pirlo
-Francesco Totti
-Totti
-Alessandro Del Piero
-Del Piero
-Gianfranco Zola
-Roberto Baggio
-Baggio
-Christian Vieri
-Filippo Inzaghi
-Inzaghi
-Clarence Seedorf
-Seedorf
-Ruud Gullit
-Gullit
-Marco van Basten
-Van Basten
-Frank Rijkaard
-Rijkaard
-Lothar Matthaus
-Matthaus
-Jurgen Klinsmann
-Klinsmann
-Oliver Bierhoff
-Bierhoff
-Michael Ballack
-Ballack
-Miroslav Klose
-Klose
-Thomas Muller
-Muller
-Lukas Podolski
-Podolski
-Karl-Heinz Rummenigge
-Gerd Muller
-Sepp Maier
-Luis Figo
-Figo
-Eusebio
-Cristiano Ronaldo
-Cristiano
-Ronaldo
-Lionel Messi
-Messi
-Neymar
-Neymar Jr
-Kylian Mbappe
-Mbappe
-Erling Haaland
-Haaland
-Kevin De Bruyne
-De Bruyne
-Mohamed Salah
-Salah
-Sadio Mane
-Mane
-Virgil van Dijk
-Van Dijk
-Karim Benzema
-Benzema
-Luka Modric
-Modric
-Toni Kroos
-Kroos
-Sergio Ramos
-Ramos
-Andres Iniesta
-Iniesta
-Xavi
-Xavi Hernandez
-Carles Puyol
-Puyol
-Gerard Pique
-Pique
-Dani Alves
-Alves
-Sergio Busquets
-Busquets
-Raul
-Raul Gonzalez
-Fernando Torres
-Torres
-David Villa
-Villa
-Iker Muniain
-Andres Iniesta
-Zico
-Socrates
-Romario
-Dunga
-Juninho
-Juninho Pernambucano
-Rivaldo
-Emmanuel Adebayor
-Adebayor
-Didier Drogba
-Drogba
-Samuel Eto'o
-Eto'o
-Yaya Toure
-Toure
-Michael Essien
-Essien
-Jay-Jay Okocha
-Okocha
-Nwankwo Kanu
-Kanu
-Riyad Mahrez
-Mahrez
-Pierre-Emerick Aubameyang
-Aubameyang
-George Weah
-Weah
-Abedi Pele
-Roger Milla
-Milla
-Robert Lewandowski
-Lewandowski
-Zlatan Ibrahimovic
-Ibrahimovic
-Zlatan
-Andriy Shevchenko
-Shevchenko
-Igor Akinfeev
-Aleksandr Golovin
-Artem Dzyuba
-Hulk
-Oscar
-Axel Witsel
-Son Heung-min
-Son
-Park Ji-sung
-Ji-sung
-Kim Min-jae
-Min-jae
-Takefusa Kubo
-Kubo
-Keisuke Honda
-Honda
-Shinji Kagawa
-Kagawa
-Mohamed Aboutrika
-Aboutrika
-Hossam Ghaly
-Essam El-Hadary
-El-Hadary
-Sardar Azmoun
-Mehdi Taremi
-Taremi
-Ali Daei
-Daei
-Sunil Chhetri
-Chhetri
+# --- ৪. ইতিহাসের সর্বকালের সেরা ডিফেন্ডার (All-Time Defenders) ------------------
+Paolo Maldini, Maldini, Franz Beckenbauer, Beckenbauer, Franco Baresi, Baresi,
+Bobby Moore, Moore, Giacinto Facchetti, Facchetti, Gaetano Scirea, Scirea,
+Alessandro Nesta, Nesta, Fabio Cannavaro, Cannavaro,
+Cafu, Roberto Carlos, Carlos Alberto, Djalma Santos, Nilton Santos,
+Carles Puyol, Puyol, Sergio Ramos, Ramos, Gerard Pique, Pique,
+Ronald Koeman, Koeman, Ruud Krol, Krol, Jaap Stam, Stam, Virgil van Dijk, Van Dijk,
+Lilian Thuram, Thuram, Marcel Desailly, Desailly, Laurent Blanc, Blanc,
+Bixente Lizarazu, Lizarazu, Marius Tresor, William Gallas, Patrice Evra, Evra,
+Philipp Lahm, Lahm, Jurgen Kohler, Kohler, Matthias Sammer, Sammer,
+Paul Breitner, Breitner, Andreas Brehme, Brehme, Berti Vogts, Mats Hummels, Hummels,
+Rio Ferdinand, Ferdinand, Nemanja Vidic, Vidic, John Terry, Terry,
+Sol Campbell, Campbell, Tony Adams, Adams, Ashley Cole, Gary Neville,
+Jamie Carragher, Carragher, Ledley King, Stuart Pearce, Kyle Walker, Walker,
+Gianluca Zambrotta, Zambrotta, Claudio Gentile, Giuseppe Bergomi, Bergomi,
+Giorgio Chiellini, Chiellini, Leonardo Bonucci, Bonucci, Andrea Barzagli,
+Marco Materazzi, Materazzi, Christian Panucci, Fabio Grosso,
+Javier Zanetti, Zanetti, Roberto Ayala, Ayala, Walter Samuel, Samuel,
+Daniel Passarella, Passarella, Oscar Ruggeri, Gabriel Heinze,
+Lucio, Maicon, Marcelo, Dani Alves, Thiago Silva, Marquinhos,
+David Luiz, Alex, Maxwell, Filipe Luis, Bremer, Eder Militao, Militao,
+Pepe, Ricardo Carvalho, Carvalho, Jorge Costa, Ruben Dias, Joao Cancelo, Cancelo,
+Nuno Mendes, Raphael Guerreiro,
+Diego Godin, Godin, Jose Maria Gimenez, Ronald Araujo, Araujo,
+Ivan Cordoba, Mario Yepes, Rafa Marquez, Marquez, Carlos Salcido,
+Fernando Hierro, Hierro, Michel Salgado, Joan Capdevila, Capdevila,
+Jordi Alba, Alba, Cesar Azpilicueta, Azpilicueta, Dani Carvajal, Carvajal,
+Alejandro Grimaldo, Grimaldo, Marc Cucurella, Cucurella, Pau Cubarsi, Cubarsi,
+Vincent Kompany, Kompany, Jan Vertonghen, Toby Alderweireld, Thomas Vermaelen,
+Antonio Rudiger, Rudiger, William Saliba, Saliba, Gabriel Magalhaes,
+Josko Gvardiol, Gvardiol, Achraf Hakimi, Hakimi, Theo Hernandez,
+Trent Alexander-Arnold, Alexander-Arnold, Alphonso Davies, Davies,
+Alessandro Bastoni, Bastoni, Federico Dimarco, Dimarco, Riccardo Calafiori,
+Jeremie Frimpong, Frimpong, Jules Kounde, Kounde, Dayot Upamecano,
+Ibrahima Konate, Konate, Micky van de Ven, Van de Ven, Cristian Romero, Romero,
+Lisandro Martinez, Kim Min-jae, Kalidou Koulibaly, Koulibaly, Medhi Benatia,
+Stefan de Vrij, De Vrij, Milan Skriniar, Skriniar, David Alaba, Alaba,
+Jerome Boateng, Boateng, Niklas Sule, Jonathan Tah, Nico Schlotterbeck,
+Sinisa Mihajlovic, Mihajlovic, Branislav Ivanovic, Ivanovic, Aleksandar Kolarov,
+Cristian Chivu, Chivu, Kolo Toure, John Arne Riise, Riise, Sami Hyypia, Hyypia,
+Steve Staunton, Denis Irwin, Irwin, Lucas Radebe
 
-[নতুন/সাম্প্রতিক তারকা]
-Jude Bellingham
-Bellingham
-Vinicius Junior
-Vinicius
-Rodrygo
-Raphinha
-Frenkie de Jong
-De Jong
-Gavi
-Pedri
-Lamine Yamal
-Yamal
-Ansu Fati
-Dani Olmo
-Olmo
-Pedro Gonzalez
-Osman Dembele
-Ousmane Dembele
-Dembele
-Antoine Griezmann
-Griezmann
-Olivier Giroud
-Giroud
-Kingsley Coman
-Coman
-Ousmane
-Aurelien Tchouameni
-Tchouameni
-Eduardo Camavinga
-Camavinga
-Federico Valverde
-Valverde
-Rodri
-Rodri Hernandez
-Phil Foden
-Foden
-Bukayo Saka
-Saka
-Declan Rice
-Rice
-Martin Odegaard
-Odegaard
-Kai Havertz
-Havertz
-Gabriel Jesus
-Gabriel Martinelli
-Martinelli
-Bruno Fernandes
-Bruno
-Marcus Rashford
-Rashford
-Jadon Sancho
-Sancho
-Mason Mount
-Mount
-Cole Palmer
-Palmer
-Enzo Fernandez
-Enzo
-Moises Caicedo
-Caicedo
-Alexander Isak
-Isak
-Anthony Gordon
-Gordon
-Darwin Nunez
-Nunez
-Luis Diaz
-Diaz
-Diogo Jota
-Jota
-Trent Alexander-Arnold
-Alexander-Arnold
-Andrew Robertson
-Robertson
-Alisson Becker
-Alisson
-Ederson
-Ruben Dias
-Dias
-Joao Cancelo
-Cancelo
-Bernardo Silva
-Bernardo
-Kyle Walker
-Walker
-Rodrygo Goes
-Rafael Leao
-Leao
-Theo Hernandez
-Theo
-Nicolo Barella
-Barella
-Lautaro Martinez
-Lautaro
-Romelu Lukaku
-Lukaku
-Victor Osimhen
-Osimhen
-Khvicha Kvaratskhelia
-Kvaratskhelia
-Federico Chiesa
-Chiesa
-Dusan Vlahovic
-Vlahovic
-Manuel Locatelli
-Sergej Milinkovic-Savic
-Paulo Dybala
-Dybala
-Lorenzo Insigne
-Insigne
-Ciro Immobile
-Immobile
-Jamal Musiala
-Musiala
-Florian Wirtz
-Wirtz
-Kai Havertz
-Leroy Sane
-Sane
-Serge Gnabry
-Gnabry
-Joshua Kimmich
-Kimmich
-Antonio Rudiger
-Rudiger
-Toni Rudiger
-Marc-Andre ter Stegen
-Ter Stegen
-Manuel Neuer
-Neuer
-Ilkay Gundogan
-Gundogan
-Thomas Muller
-Kylian
-Eduardo
-Joao Felix
-Felix
-Rafael
-Goncalo Ramos
-Ramos
-Bernardo
-Bruno Guimaraes
-Guimaraes
-Endrick
-Estevao
-Vitor Roque
-Savinho
-Rodrygo
-Gabriel Magalhaes
-Murillo
-Nico Williams
-Williams
-Mikel Merino
-Merino
-Fabian Ruiz
-Ruiz
-Dani Carvajal
-Carvajal
-Nacho Fernandez
-Ferran Torres
-Ferran
-Marcos Llorente
-Alvaro Morata
-Morata
-Diego Simeone
-Simeone
-Carlo Ancelotti
-Ancelotti
-Pep Guardiola
-Guardiola
-Jurgen Klopp
-Klopp
-Jose Mourinho
-Mourinho
-Arsene Wenger
-Wenger
-Sir Alex Ferguson
-Ferguson
-Zinedine
-Luis Enrique
-Enrique
-Xabi Alonso
-Alonso
-Mikel Arteta
-Arteta
-Thomas Tuchel
-Tuchel
-Hansi Flick
-Flick
-Roberto Mancini
-Mancini
-Didier Deschamps
-Deschamps
-Lionel Scaloni
-Scaloni
-Tite
-Dorival Junior
+# --- ৫. ইতিহাসের সর্বকালের সেরা মিডফিল্ডার (All-Time Midfielders) --------------
+Zinedine Zidane, Zidane, Diego Maradona, Maradona, Johan Cruyff, Cruyff,
+Ruud Gullit, Gullit, Lothar Matthaus, Matthaus, Michel Platini, Platini,
+Ronaldinho, Ronaldinho Gaucho, Zico, Socrates, Falcao, Rivelino, Didi, Gerson,
+Andres Iniesta, Iniesta, Xavi, Xavi Hernandez, Sergio Busquets, Busquets,
+Luka Modric, Modric, Toni Kroos, Kroos, Casemiro, Xabi Alonso,
+Kevin De Bruyne, De Bruyne, Jude Bellingham, Bellingham, Rodri,
+Andrea Pirlo, Pirlo, Ricardo Kaka, Kaka, Pavel Nedved, Nedved,
+Bobby Charlton, Charlton, Paul Gascoigne, Gascoigne, Bryan Robson,
+Steven Gerrard, Gerrard, Frank Lampard, Lampard, Paul Scholes, Scholes,
+David Beckham, Beckham, Roy Keane, Keane, Patrick Vieira, Vieira,
+Claude Makelele, Makelele, Emmanuel Petit, Petit, Robert Pires, Pires,
+Michael Ballack, Ballack, Bastian Schweinsteiger, Schweinsteiger,
+Wolfgang Overath, Günter Netzer, Bernd Schuster, Schuster, Thomas Hassler,
+Stefan Effenberg, Effenberg, Mehmet Scholl, Mesut Ozil, Ozil, Ilkay Gundogan, Gundogan,
+Clarence Seedorf, Seedorf, Edgar Davids, Davids, Frank Rijkaard, Rijkaard,
+Johan Neeskens, Neeskens, Wesley Sneijder, Sneijder, Rafael van der Vaart,
+Mark van Bommel, Frenkie de Jong, De Jong, Tijjani Reijnders, Reijnders,
+Luis Figo, Figo, Rui Costa, Deco, Maniche, Bruno Fernandes, Bernardo Silva,
+Vitinha, Joao Neves, Joao Palhinha,
+Rivaldo, Juninho, Juninho Pernambucano, Gilberto Silva, Dunga,
+Carlos Dunga, Mauro Silva, Emerson, Ze Roberto, Ramires, Kaka,
+Fernandinho, Fabinho, Paulinho, Coutinho, Philippe Coutinho, Lucas Paqueta,
+Bruno Guimaraes, Joelinton,
+Michael Laudrup, Laudrup, Gheorghe Hagi, Hagi, Juan Roman Riquelme, Riquelme,
+Carlos Valderrama, Valderrama, Enzo Francescoli, Francescoli,
+Fernando Redondo, Redondo, Juan Sebastian Veron, Veron, Esteban Cambiasso,
+Javier Mascherano, Mascherano, Pablo Aimar, Aimar, Angel Di Maria, Di Maria,
+Alexis Mac Allister, Mac Allister, Enzo Fernandez, Rodrigo De Paul, De Paul,
+Gianni Rivera, Rivera, Sandro Mazzola, Mazzola, Marco Tardelli, Tardelli,
+Roberto Donadoni, Gennaro Gattuso, Gattuso, Daniele De Rossi, De Rossi,
+Claudio Marchisio, Marchisio, Francesco Totti, Totti, Giancarlo Antognoni,
+Nicolo Barella, Barella, Sandro Tonali, Tonali, Jorginho, Marco Verratti, Verratti,
+N'Golo Kante, Kante, Paul Pogba, Pogba, Blaise Matuidi,
+Eduardo Camavinga, Camavinga, Aurelien Tchouameni, Tchouameni, Warren Zaire-Emery,
+Pedri, Gavi, Dani Olmo, Olmo, Fabian Ruiz, Mikel Merino, Martin Zubimendi,
+Cesc Fabregas, Fabregas, David Silva, Juan Mata, Santi Cazorla, Koke, Marcos Llorente,
+Pep Guardiola, Guardiola, Gaizka Mendieta, Luis Enrique, Guti, Isco,
+Federico Valverde, Valverde, Rodrigo Bentancur,
+Jamal Musiala, Musiala, Florian Wirtz, Wirtz, Joshua Kimmich, Kimmich, Leon Goretzka,
+Martin Odegaard, Odegaard, Declan Rice, Rice, Cole Palmer, Palmer,
+Phil Foden, Foden, Jude Bellingham, Bukayo Saka, Jack Grealish, James Maddison,
+Yaya Toure, Toure, Michael Essien, Essien, Jay-Jay Okocha, Okocha,
+Abedi Pele, Seydou Keita, Mohammed Kudus, Kudus, Thomas Partey,
+Ji-Sung Park, Park Ji-sung, Hidetoshi Nakata, Nakata, Shunsuke Nakamura,
+Shinji Kagawa, Keisuke Honda, Takefusa Kubo, Kubo, Kaoru Mitoma, Mitoma,
+Marek Hamsik, Hamsik, Dejan Stankovic, Stankovic, Zvonimir Boban, Boban,
+Robert Prosinecki, Ivan Rakitic, Rakitic, Marcelo Brozovic, Mateo Kovacic,
+Hakan Calhanoglu, Calhanoglu, Arda Guler, Guler,
+Arturo Vidal, Vidal, Alexis Sanchez, Tomas Rosicky, Rosicky,
+Fredrik Ljungberg, Ljungberg, Jari Litmanen, Litmanen,
+Clint Dempsey, Dempsey, Landon Donovan, Donovan, Tim Cahill, Cahill,
+Mostovoi, Valery Karpin, Pavel Nedved, Antonin Panenka
 
-[ফুটবল-সম্পর্কিত সাধারণ শব্দ]
-free kick
-penalty
-penalty shootout
-corner kick
-throw-in
-offside
-VAR
-Video Assistant Referee
-red card
-yellow card
-hat-trick
-hat trick
-own goal
-extra time
-injury time
-stoppage time
-half-time
-full-time
-kick-off
-clean sheet
-brace
-assist
-goalscorer
-golden generation
-transfer
-transfer window
-contract
-loan
-signing
-release clause
-buyout clause
-wages
-salary
-agent
-coach
-manager
-captain
-armband
-kit
-jersey
-boots
-stadium
-pitch
-turf
-crowd
-fans
-supporters
-chant
-tifo
-ultras
-academy
-youth team
-reserve team
-first team
-squad
-lineup
-starting eleven
-bench
-injury
-recovery
-fitness
-physio
-training session
-pre-season
-mid-season
-post-season
-promotion
-relegation
-title race
-top four
-bottom three
-points table
-goal difference
-away goals
-aggregate
-qualifier
-group stage
-knockout
-round of sixteen
-quarter-final
-semi-final
-final
-draw
-fixture
-derby
-rivalry
-legacy
-record
-statistics
-highlight
-matchday
-world ranking
-rating
-potential
-weak foot
-skill moves
-work rate
-stamina
-pace
-shooting
-passing
-dribbling
-defending
-physical
-position
-nationality
-league
-club
-nation
-jersey number
-season
-career
-debut
-retirement
-comeback
-injury comeback
-goal celebration
-celebration
-transfer news
-rumour
-rumor
-interview
-press conference
-documentary
-episode
-subscribe
-like
-share
-comment
-channel
-video
-youtube
-creator
-gameplay
-reaction
-live stream
-giveaway
+# --- ৬. ইতিহাসের সর্বকালের সেরা ফরোয়ার্ড ও স্ট্রাইকার (All-Time Forwards) -----
+Lionel Messi, Messi, Cristiano Ronaldo, Ronaldo, CR7,
+Pele, Ronaldo Nazario, R9, O Fenomeno,
+Garrincha, Romario, Jairzinho, Bebeto, Rivaldo, Careca, Tostao, Vava, Leonidas,
+Adriano, Robinho, Pato, Hulk, Roberto Firmino, Firmino, Gabriel Jesus,
+Neymar, Neymar Jr, Vinicius Junior, Vini Jr, Rodrygo, Endrick, Raphinha, Richarlison,
+Thierry Henry, Henry, Kylian Mbappe, Mbappe, Karim Benzema, Benzema,
+Antoine Griezmann, Griezmann, Ousmane Dembele, Dembele, Olivier Giroud, Giroud,
+Eric Cantona, Cantona, David Trezeguet, Trezeguet, Jean-Pierre Papin, Papin,
+Just Fontaine, Fontaine, Raymond Kopa, Kopa, Nicolas Anelka, Anelka,
+Franck Ribery, Ribery, David Ginola, Ginola, Ludovic Giuly, Sylvain Wiltord,
+Christopher Nkunku, Nkunku, Marcus Thuram, Randal Kolo Muani, Bradley Barcola,
+Marco van Basten, Van Basten, Dennis Bergkamp, Bergkamp,
+Ruud van Nistelrooy, Van Nistelrooy, Robin van Persie, Van Persie,
+Arjen Robben, Robben, Patrick Kluivert, Kluivert, Roy Makaay, Dirk Kuyt, Kuyt,
+Johnny Rep, Rob Rensenbrink, Memphis Depay, Cody Gakpo, Gakpo,
+Eusebio, Ferenc Puskas, Puskas, Alfredo Di Stefano, Di Stefano,
+Gerd Muller, Muller, Karl-Heinz Rummenigge, Rummenigge, Uwe Seeler, Seeler,
+Rudi Voller, Voller, Jurgen Klinsmann, Klinsmann, Oliver Bierhoff,
+Miroslav Klose, Klose, Lukas Podolski, Podolski, Mario Gomez, Gomez,
+Thomas Muller, Kai Havertz, Havertz, Leroy Sane, Sane, Serge Gnabry,
+Erling Haaland, Haaland, Zlatan Ibrahimovic, Ibrahimovic, Zlatan,
+Henrik Larsson, Larsson, Alexander Isak, Isak, Viktor Gyokeres, Gyokeres,
+Dejan Kulusevski, Tomas Brolin,
+Robert Lewandowski, Lewandowski, Zbigniew Boniek, Boniek,
+Luis Suarez, Suarez, Edinson Cavani, Cavani, Diego Forlan, Forlan,
+Enzo Francescoli, Darwin Nunez, Nunez, Alvaro Recoba,
+Gabriel Batistuta, Batistuta, Sergio Aguero, Aguero, Hernan Crespo, Crespo,
+Carlos Tevez, Tevez, Gonzalo Higuain, Higuain, Diego Milito, Milito,
+Mario Kempes, Kempes, Jorge Valdano, Claudio Caniggia, Ezequiel Lavezzi,
+Lautaro Martinez, Lautaro, Julian Alvarez, Alvarez, Paulo Dybala, Dybala,
+Alejandro Garnacho, Garnacho,
+Roberto Baggio, Baggio, Alessandro Del Piero, Del Piero,
+Paolo Rossi, Rossi, Luigi Riva, Riva, Giuseppe Meazza, Silvio Piola,
+Filippo Inzaghi, Inzaghi, Christian Vieri, Vieri, Gianfranco Zola, Zola,
+Antonio Di Natale, Di Natale, Luca Toni, Gianluca Vialli, Vialli,
+Roberto Mancini, Mancini, Enrico Chiesa, Federico Chiesa, Chiesa,
+Ciro Immobile, Mario Balotelli, Balotelli, Mateo Retegui,
+Raul, Raul Gonzalez, David Villa, Villa, Fernando Torres, Torres,
+Emilio Butragueno, Butragueno, Fernando Morientes, Morientes,
+Francisco Gento, Gento, Luis Suarez Miramontes, Telmo Zarra, Quini,
+Pedro, Alvaro Morata, Morata, Lamine Yamal, Yamal, Nico Williams,
+Ferran Torres, Mikel Oyarzabal, Joselu,
+Wayne Rooney, Rooney, Alan Shearer, Shearer, Harry Kane, Kane,
+Gary Lineker, Lineker, Michael Owen, Owen, Jimmy Greaves,
+Ian Wright, Wright, Robbie Fowler, Fowler, Andy Cole, Teddy Sheringham,
+Les Ferdinand, Peter Crouch, Crouch, Jermain Defoe, Jamie Vardy, Vardy,
+Marcus Rashford, Rashford, Raheem Sterling, Ollie Watkins, Ivan Toney,
+George Best, Best, Kenny Dalglish, Dalglish, Denis Law, Law,
+Ian Rush, Rush, Gareth Bale, Bale, Ryan Giggs, Giggs, Mark Hughes,
+Craig Bellamy, Robbie Keane,
+Didier Drogba, Drogba, Samuel Eto'o, Eto'o, George Weah, Weah,
+Mohamed Salah, Salah, Sadio Mane, Mane, Riyad Mahrez, Mahrez,
+Pierre-Emerick Aubameyang, Aubameyang, Victor Osimhen, Osimhen,
+Ademola Lookman, Lookman, Nwankwo Kanu, Kanu, Roger Milla,
+Gervinho, Emmanuel Adebayor, Adebayor, Benni McCarthy,
+Serhou Guirassy, Nicolas Jackson, Bryan Mbeumo,
+Andriy Shevchenko, Shevchenko, Oleg Blokhin, Blokhin, Igor Belanov,
+Hristo Stoichkov, Stoichkov, Dimitar Berbatov, Berbatov,
+Davor Suker, Suker, Mario Mandzukic, Mandzukic, Edin Dzeko, Dzeko,
+Goran Pandev, Stevan Jovetic, Dušan Vlahovic, Vlahovic,
+Eden Hazard, Hazard, Romelu Lukaku, Lukaku, Dries Mertens,
+Jeremy Doku, Doku, Leandro Trossard, Lois Openda,
+Hugo Sanchez, Sanchez, Javier Hernandez, Chicharito, Cuauhtemoc Blanco,
+Hirving Lozano, Raul Jimenez, Santiago Gimenez,
+Radamel Falcao, Faustino Asprilla, Luis Diaz, Diaz, James Rodriguez,
+Ivan Zamorano, Zamorano, Marcelo Salas, Salas,
+Claudio Pizarro, Paolo Guerrero, Jefferson Farfan,
+Roque Santa Cruz, Salvador Cabanas,
+Son Heung-min, Son, Cha Bum-kun, Hwang Hee-chan,
+Ali Daei, Mehdi Taremi, Sardar Azmoun,
+Saeed Al-Owairan, Al-Owairan, Sami Al-Jaber, Al-Jaber, Salem Al-Dawsari,
+Harry Kewell, Kewell, Mark Viduka,
+Paulo Futre, Futre, Pedro Pauleta, Pauleta, Ricardo Quaresma, Quaresma,
+Diogo Jota, Jota, Rafael Leao, Leao, Goncalo Ramos, Joao Felix, Cristiano,
+Khvicha Kvaratskhelia, Kvaratskhelia, Georges Mikautadze,
+Benjamin Sesko, Sesko, Jonathan David, Christian Pulisic, Pulisic

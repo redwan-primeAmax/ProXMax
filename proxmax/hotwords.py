@@ -1,155 +1,198 @@
-"""Hotwords: নাম-শব্দের আলাদা ফাইল, যা Whisper-এর নির্ভুলতা বাড়ায়।
+"""Hotwords loader, Whisper prompt selector, and transcript repair utilities.
 
-কেন দরকার
------------
-Whisper মাঝে মাঝে চেনা নাম ভুল লেখে ("Bellon d'Or" → "Bale on the door",
-"Ronaldinho" → "Ronaldo in yo")। অথচ এই শব্দগুলোই ভিডিওতে বারবার আসে।
-সমাধান: নামগুলোর একটি তালিকা Whisper-এর prompt-এ (``hotwords``) দেওয়া,
-যাতে সে জানে কোন শব্দগুলো আশা করা যায়।
-
-ব্যবহারকারীকে কিছু টাইপ করতে হয় না — রিপোর রুটে ``hotwords.txt`` ফাইলটাই
-ডিফল্টে পড়া হয় (:mod:`proxmax.config` দেখুন)।
-
-ফাইলের নিয়ম
-------------
-* এক লাইনে একটি নাম/শব্দ (কমা দিয়ে একাধিকও চলবে)।
-* ``#`` দিয়ে শুরু হলে পুরো লাইন মন্তব্য।
-* ``[ফুটবল]`` ধাঁচের ``[ ]`` হেডার লাইন বাদ দেওয়া হয় (শুধু গোছানোর জন্য)।
-* ডুপ্লিকেট (case-insensitive) সরানো হয়।
-* ক্রমই অগ্রাধিকার — Whisper-এর prompt সীমিত, তাই **উপরের লাইনগুলোই
-  সবচেয়ে বেশি ব্যবহৃত হবে**; নিজের নাম তালিকার শুরুতে যোগ করলে সেটি বরাবর যাবে।
+``hotwords.txt`` ফাইলে FC Mobile টার্ম, ইভেন্টের নাম এবং ইতিহাসের ও বর্তমানের
+সব প্রধান ফুটবল খেলোয়াড়ের নাম রাখা আছে। এই মডিউলটি:
+1. ``hotwords.txt`` এবং ইউজারের অতিরিক্ত ``stt_hotwords`` একসাথে লোড করে।
+2. Whisper-এর জন্য সবচেয়ে গুরুত্বপূর্ণ hotwords নির্বাচন করে (টোকেন সীমার ভেতরে)।
+3. ট্রান্সক্রিপশনের পর সাধারণ ভুল উচ্চারণ/বানান (যেমন "toty" → "TOTY",
+   "over" → "OVR" যখন রেটিংয়ের পাশে থাকে, খেলোয়াড়ের নামের কেসিং) ঠিক করে।
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional, Sequence
 
-#: কমা/সেমিকোলন/নতুন লাইন — যেকোনোটা দিয়ে একাধিক শব্দ আলাদা করা যায়
-_SPLIT_RE = re.compile(r"[,;\n]+|\s{2,}")
-#: ``[ফুটবল]`` / ``[players]`` ধাঁচের হেডার
-_HEADER_RE = re.compile(r"^\[.*\]$")
-#: ফাইলের ভেতরে মন্তব্য
-_COMMENT_RE = re.compile(r"(?:^|\s)#.*$")
+DEFAULT_HOTWORDS_FILENAME = "hotwords.txt"
+
+#: রেটিং/ইভেন্ট ও সাধারণ ভুল শোনা শব্দগুলো ঠিক করার নিয়ম
+_ALIAS_PATTERNS: Sequence[tuple[re.Pattern[str], str]] = (
+    (re.compile(r"\b(9\d|1[0-2]\d)\s+over\b", re.IGNORECASE), r"\1 OVR"),
+    (re.compile(r"\bu\s*toty\b", re.IGNORECASE), "UTOTY"),
+    (re.compile(r"\bu\s*tots\b", re.IGNORECASE), "UTOTS"),
+    (re.compile(r"\btoty\b", re.IGNORECASE), "TOTY"),
+    (re.compile(r"\btots\b", re.IGNORECASE), "TOTS"),
+    (re.compile(r"\bvsa\b", re.IGNORECASE), "VSA"),
+    (re.compile(r"\bh2h\b", re.IGNORECASE), "H2H"),
+    (re.compile(r"\bsbc\b", re.IGNORECASE), "SBC"),
+    (re.compile(r"\bf2p\b", re.IGNORECASE), "F2P"),
+    (re.compile(r"\bp2w\b", re.IGNORECASE), "P2W"),
+    (re.compile(r"\bea\s+fc\s+mobile\b", re.IGNORECASE), "EA FC Mobile"),
+    (re.compile(r"\bfc\s+mobile\b", re.IGNORECASE), "FC Mobile"),
+    (re.compile(r"\bballon\s+d'?or\b", re.IGNORECASE), "Ballon d'Or"),
+    (re.compile(r"\bmascheranos?\b", re.IGNORECASE), "Mascherano"),
+    (re.compile(r"\bskill\s+boosts?\b", re.IGNORECASE), "Skill Boost"),
+    (re.compile(r"\bstar\s+pass\b", re.IGNORECASE), "Star Pass"),
+    (re.compile(r"\bdivision\s+rivals\b", re.IGNORECASE), "Division Rivals"),
+    (re.compile(r"\bwinter\s+wildcards?\b", re.IGNORECASE), "Winter Wildcards"),
+    (re.compile(r"\brule\s*breakers?\b", re.IGNORECASE), "Rulebreakers"),
+    (re.compile(r"\bthunder\s*struck\b", re.IGNORECASE), "Thunderstruck"),
+    (re.compile(r"\bdynasties\b", re.IGNORECASE), "Dynasties"),
+    (re.compile(r"\banniversary\s+event\b", re.IGNORECASE), "Anniversary"),
+    (re.compile(r"\bhall\s+of\s+legends\b", re.IGNORECASE), "Hall of Legends"),
+    (re.compile(r"\btitan\s+trophies\b", re.IGNORECASE), "Trophy Titans"),
+    (re.compile(r"\btrophy\s+titans\b", re.IGNORECASE), "Trophy Titans"),
+    (re.compile(r"\bkvara(?:tskhelia)?\b", re.IGNORECASE), "Kvaratskhelia"),
+    (re.compile(r"\bmbapp[eé]\b", re.IGNORECASE), "Mbappe"),
+    (re.compile(r"\bhaaland\b", re.IGNORECASE), "Haaland"),
+    (re.compile(r"\bbelling\s*ham\b", re.IGNORECASE), "Bellingham"),
+    (re.compile(r"\bvinicius\s+jr\.?\b", re.IGNORECASE), "Vinicius Junior"),
+    (re.compile(r"\blamine\s+yamal\b", re.IGNORECASE), "Lamine Yamal"),
+    (re.compile(r"\bde\s+bruyne\b", re.IGNORECASE), "De Bruyne"),
+    (re.compile(r"\bcristiano\s+ronaldo\b", re.IGNORECASE), "Cristiano Ronaldo"),
+    (re.compile(r"\blionel\s+messi\b", re.IGNORECASE), "Lionel Messi"),
+    (re.compile(r"\bronaldinho\b", re.IGNORECASE), "Ronaldinho"),
+    (re.compile(r"\bmaldini\b", re.IGNORECASE), "Maldini"),
+    (re.compile(r"\bcruyff\b", re.IGNORECASE), "Cruyff"),
+    (re.compile(r"\bzidane\b", re.IGNORECASE), "Zidane"),
+    (re.compile(r"\bgullit\b", re.IGNORECASE), "Gullit"),
+    (re.compile(r"\bvan\s+basten\b", re.IGNORECASE), "Van Basten"),
+    (re.compile(r"\brijskaard\b|\brijkaard\b", re.IGNORECASE), "Rijkaard"),
+    (re.compile(r"\bbeckenbauer\b", re.IGNORECASE), "Beckenbauer"),
+    (re.compile(r"\bpuskas\b", re.IGNORECASE), "Puskas"),
+    (re.compile(r"\byashin\b", re.IGNORECASE), "Yashin"),
+    (re.compile(r"\beusebio\b", re.IGNORECASE), "Eusebio"),
+    (re.compile(r"\bgarrincha\b", re.IGNORECASE), "Garrincha"),
+    (re.compile(r"\broberto\s+carlos\b", re.IGNORECASE), "Roberto Carlos"),
+)
 
 
-def clean_entry(text: str) -> str:
-    """একটি naam/শব্দ পরিষ্কার করে (বাড়তি স্পেস/উদ্ধৃতি বাদ)।
-
-    Args:
-        text: কাঁচা এন্ট্রি।
-
-    Returns:
-        পরিষ্কার শব্দ; খালি হলে খালি স্ট্রিং।
-    """
-    entry = str(text or "").strip().strip("\"'").strip()
-    entry = re.sub(r"\s+", " ", entry)
-    return entry
+def default_hotwords_path() -> Path:
+    """Return the repository-level ``hotwords.txt`` path."""
+    return Path(__file__).resolve().parent.parent / DEFAULT_HOTWORDS_FILENAME
 
 
-def split_hotwords(text: str) -> List[str]:
-    """এক লাইন/এক স্ট্রিং থেকে একাধিক hotword আলাদা করে।
+def resolve_hotwords_path(path: Optional[str | Path] = None) -> Path:
+    """Resolve a user-supplied hotwords file path, falling back to repo ``hotwords.txt``."""
+    if path is None or not str(path).strip():
+        return default_hotwords_path()
+    candidate = Path(str(path).strip()).expanduser()
+    if candidate.is_file():
+        return candidate
+    repo_relative = Path(__file__).resolve().parent.parent / candidate
+    if repo_relative.is_file():
+        return repo_relative
+    return candidate
 
-    Args:
-        text: কমা, সেমিকোলন বা নতুন লাইনে লেখা শব্দের তালিকা।
 
-    Returns:
-        পরিষ্কার করার পর ডুপ্লিকেট-মুক্ত তালিকা (ক্রম অপরিবর্তিত)।
-    """
-    entries: List[str] = []
+def parse_hotwords_text(raw: str) -> List[str]:
+    """Parse newline- or comma-separated hotwords, ignoring ``#`` comments and duplicates."""
     seen: set[str] = set()
-    for chunk in _SPLIT_RE.split(str(text or "")):
-        entry = clean_entry(chunk)
-        if not entry or _HEADER_RE.match(entry):
-            continue
-        key = entry.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        entries.append(entry)
-    return entries
-
-
-def load_hotword_file(path: Path | str) -> List[str]:
-    """``hotwords.txt`` ফাইল পড়ে শব্দের তালিকা ফেরত দেয়।
-
-    ফাইল না থাকলে বা পড়া না গেলে খালি তালিকা — কোনো error নয় (ডাবিং কখনো
-    এতে থামবে না)।
-
-    Args:
-        path: ফাইলের পাথ।
-
-    Returns:
-        ডুপ্লিকেট-মুক্ত hotword তালিকা, ফাইলের ক্রমে।
-    """
-    file_path = Path(path)
-    if not file_path.is_file():
-        return []
-    entries: List[str] = []
-    seen: set[str] = set()
-    text = file_path.read_text(encoding="utf-8", errors="replace")
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or _HEADER_RE.match(line):
-            continue
-        line = _COMMENT_RE.sub("", line).strip()
+    terms: List[str] = []
+    for raw_line in (raw or "").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
-        line = re.sub(r"^[-*•\d.)\s]+", "", line).strip()
-        for entry in split_hotwords(line):
-            key = entry.casefold()
-            if key in seen or _HEADER_RE.match(entry):
+        for part in line.split(","):
+            term = " ".join(part.split()).strip()
+            if not term:
                 continue
-            seen.add(key)
-            entries.append(entry)
-    return entries
+            key = term.lower()
+            if key not in seen:
+                seen.add(key)
+                terms.append(term)
+    return terms
 
 
-def join_hotwords(entries: Iterable[str]) -> str:
-    """তালিকাকে Whisper-এ দেওয়ার মতো এক স্ট্রিং-এ জোড়া লাগায়।
+def load_hotwords(
+    hotwords_file: Optional[str | Path] = None,
+    extra_hotwords: Optional[str | Iterable[str]] = None,
+) -> List[str]:
+    """Load deduplicated hotwords from ``hotwords.txt`` plus any inline ``extra_hotwords``."""
+    combined: List[str] = []
+    seen: set[str] = set()
 
-    Args:
-        entries: hotword তালিকা।
+    def _add_many(items: Iterable[str]) -> None:
+        for item in items:
+            cleaned = " ".join(str(item).split()).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key not in seen:
+                seen.add(key)
+                combined.append(cleaned)
 
-    Returns:
-        কমা দিয়ে আলাদা করা স্ট্রিং।
-    """
-    return ", ".join(clean_entry(e) for e in entries if clean_entry(e))
+    if extra_hotwords:
+        if isinstance(extra_hotwords, str):
+            _add_many(parse_hotwords_text(extra_hotwords))
+        else:
+            _add_many(extra_hotwords)
+
+    file_path = resolve_hotwords_path(hotwords_file)
+    if file_path.is_file():
+        try:
+            _add_many(parse_hotwords_text(file_path.read_text(encoding="utf-8")))
+        except OSError:
+            pass
+
+    return combined
 
 
-def build_hotword_slices(entries: Iterable[str], max_chars: int = 480) -> List[str]:
-    """তালিকাকে ছোট ছোট ভাগে ভাগ করে (Whisper-এর prompt সীমা মেনে)।
+def select_whisper_hotwords(
+    hotwords: Sequence[str],
+    max_chars: int = 1600,
+) -> str:
+    """Build a compact comma-separated hotword string for faster-whisper."""
+    if not hotwords or max_chars <= 0:
+        return ""
+    selected: List[str] = []
+    current_len = 0
+    for term in hotwords:
+        addition = len(term) + (2 if selected else 0)
+        if current_len + addition > max_chars:
+            break
+        selected.append(term)
+        current_len += addition
+    return ", ".join(selected)
 
-    কেন ভাগ করা হয়: Whisper-এর প্রসঙ্গ সীমা ২২৪ টোকেন, তাই ৭০০+ নাম একসাথে
-    দেওয়া যায় না। পুরো তালিকাকে পরপর ভাগ করে **প্রতিটি chunk-এ আলাদা ভাগ**
-    দেওয়া হয় — এতে পুরো ভিডিও জুড়ে সব নামই একবার প্রাইম হয়, কোনো নাম বাদ
-    পড়ে না।
 
-    Args:
-        entries: hotword তালিকা।
-        max_chars: প্রতি ভাগে সর্বোচ্চ অক্ষর।
+def repair_transcript_hotwords(text: str, hotwords: Optional[Sequence[str]] = None) -> str:
+    """Fix common Whisper mishearings and casing for FC Mobile terms, events, and players."""
+    if not text:
+        return ""
+    fixed = text
+    for pattern, replacement in _ALIAS_PATTERNS:
+        fixed = pattern.sub(replacement, fixed)
 
-    Returns:
-        কমা-জোড়া স্ট্রিংয়ের তালিকা (খালি তালিকা = hotwords নেই)।
-    """
-    limit = max(40, int(max_chars))
-    slices: List[str] = []
-    current: List[str] = []
-    used = 0
-    for entry in entries:
-        entry = clean_entry(entry)
-        if not entry:
+    if hotwords:
+        for term in hotwords:
+            if len(term) < 4:
+                continue
+            if term.lower() in fixed.lower() and term not in fixed:
+                pat = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+                fixed = pat.sub(term, fixed)
+    return fixed
+
+
+def matched_hotwords_for_texts(
+    texts: Sequence[str],
+    hotwords: Sequence[str],
+    max_matches: int = 40,
+) -> List[str]:
+    """Return hotwords that actually appear in ``texts`` (for Gemini translation context)."""
+    if not texts or not hotwords:
+        return []
+    blob = " ".join(t for t in texts if t).lower()
+    if not blob:
+        return []
+    matches: List[str] = []
+    for term in hotwords:
+        t_low = term.lower()
+        if len(t_low) < 3:
             continue
-        extra = len(entry) + (2 if current else 0)
-        if current and used + extra > limit:
-            slices.append(", ".join(current))
-            current, used = [], 0
-            extra = len(entry)
-        if extra > limit:  # খুব লম্বা একক এন্ট্রি — বাদ
-            continue
-        current.append(entry)
-        used += extra
-    if current:
-        slices.append(", ".join(current))
-    return slices
+        if t_low in blob:
+            matches.append(term)
+            if len(matches) >= max_matches:
+                break
+    return matches

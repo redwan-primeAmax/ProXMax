@@ -2,10 +2,10 @@
 
 চালানো:  ``python -m unittest discover -s tests -v``
 
-ভারী মডেল (Whisper), Gemini API ও edge-tts ছোঁয়া হয় না — শুধু
+ভারী মডেল (Whisper, IndicF5), Gemini API ও edge-tts ছোঁয়া হয় না — শুধু
 নিজেদের লজিক পরীক্ষা করা হয়: config, chunking, sentence building,
 ভয়েস প্রোফাইল, sync-এর non-overlap হিসাব, translation batching/retry,
-TTS ইঞ্জিন এবং পুরো pipeline-এর সংযোগ। ffmpeg থাকলে শেষে একটি আসল
+TTS governor এবং পুরো pipeline-এর সংযোগ। ffmpeg থাকলে শেষে একটি আসল
 ছোট্ট ভিডিও বানিয়ে end-to-end ডাবিংও পরীক্ষা করা হয়।
 """
 
@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -40,13 +41,6 @@ from proxmax.config import (                                          # noqa: E4
     AppConfig,
 )
 from proxmax.discovery import discover_videos                          # noqa: E402
-from proxmax.hotwords import build_hotword_slices, load_hotword_file   # noqa: E402
-from proxmax.model_cache import (                                      # noqa: E402
-    cached_model_path,
-    model_is_cached,
-    prefetch_whisper,
-    repo_id_for,
-)
 from proxmax.models import Segment, StageTimings                       # noqa: E402
 from proxmax.segmenter import build_sentences                          # noqa: E402
 from proxmax.stt import (                                              # noqa: E402
@@ -75,10 +69,16 @@ from proxmax.translator import (                                       # noqa: E
     GeminiTranslator,
     TranslationError,
     create_translator,
+    parse_numbered_lines,
     parse_translations,
     salvage_translations,
+    verify_gemini_api,
 )
-from proxmax.tts import EdgeTTSEngine, build_tts_engine                 # noqa: E402
+from proxmax.tts import (                                              # noqa: E402
+    TTSError,
+    EdgeTTSEngine,
+    resolve_tts_engine,
+)
 from proxmax.utils import (                                            # noqa: E402
     format_srt_timestamp,
     output_filename_for,
@@ -98,8 +98,8 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.translator_backend, "gemini")
         self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
         self.assertEqual(cfg.gemini_max_retries, 7)
-        self.assertEqual(cfg.resolved_tts_voice, "bn-BD-PradeepNeural")
-        self.assertTrue(cfg.tts_trim_silence)
+        self.assertEqual(cfg.tts_engine, "edge")
+        self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.95, 1.25))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
         self.assertLessEqual(cfg.chunk_max_seconds, 29.5)
@@ -116,10 +116,10 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
         self.assertEqual(cfg.gemini_max_retries, 7)
-        self.assertEqual(cfg.resolved_tts_voice, "bn-BD-PradeepNeural")
+        self.assertEqual(cfg.tts_engine, "edge")
+        self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertAlmostEqual(cfg.max_tempo, 1.25)
         self.assertAlmostEqual(cfg.min_tempo, 0.95)
-        self.assertTrue(cfg.tts_trim_silence)
         self.assertGreaterEqual(cfg.carry_context_chars, 100)
         self.assertTrue(cfg.seam_repair)
         self.assertGreater(cfg.chunk_min_seconds, 10)
@@ -128,22 +128,22 @@ class TestConfig(unittest.TestCase):
         cfg = AppConfig()
         cfg._apply_mapping(
             {
-                "stt": {"model": "medium", "chunk_min_seconds": 20.0},
+                "stt": {"model": "medium", "chunk_min_seconds": 20.0, "hotwords_file": "custom_hw.txt"},
                 "translation": {"backend": "gemini", "max_retries": 6},
                 "gemini": {"model": "gemini-test-model", "api_key": "test-key"},
-                "tts": {"voice": "bn-BD-PradeepNeural", "max_retries": 2},
-                "audio": {"highpass_hz": 80},
+                "tts": {"voice": "bn-BD-PradeepNeural", "max_retries": 2, "engine": "edge"},
                 "sync": {"max_tempo": 1.3, "workers": 2},
                 "runtime": {"release_gpu_when_done": False, "enable_overlap": False},
             }
         )
         self.assertEqual(cfg.whisper_model, "medium")
         self.assertEqual(cfg.chunk_min_seconds, 20.0)
+        self.assertEqual(cfg.stt_hotwords_file, "custom_hw.txt")
         self.assertEqual(cfg.gemini_model, "gemini-test-model")
         self.assertEqual(cfg.gemini_max_retries, 6)
         self.assertEqual(cfg.tts_max_retries, 2)
+        self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.tts_voice, "bn-BD-PradeepNeural")
-        self.assertEqual(cfg.audio_highpass_hz, 80)
         self.assertEqual(cfg.sync_workers, 2)
         self.assertAlmostEqual(cfg.max_tempo, 1.3)
         self.assertFalse(cfg.release_gpu_when_done)
@@ -157,10 +157,10 @@ class TestConfig(unittest.TestCase):
 
     def test_overrides_ignore_none(self):
         cfg = AppConfig().apply_overrides(
-            {"whisper_model": "medium", "tts_voice": None, "tts_gender": None}
+            {"whisper_model": "medium", "tts_voice": None, "tts_engine": "edge"}
         )
         self.assertEqual(cfg.whisper_model, "medium")
-        self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
+        self.assertEqual(cfg.tts_engine, "edge")
         self.assertTrue(cfg.resolved_tts_voice.startswith("bn-BD-"))
 
     def test_invalid_settings_are_rejected(self):
@@ -170,12 +170,11 @@ class TestConfig(unittest.TestCase):
             {"gemini_max_retries": 0},
             {"translator_backend": "google"},
             {"translator_backend": "deepl"},
-            {"tts_gender": "robot"},
-            {"stt_hotwords_max_chars": 5},
+            {"tts_engine": "siri"},
+            {"tts_engine": "indicf5"},
             {"chunk_max_seconds": 45.0},
             {"chunk_min_seconds": 40.0},
             {"min_tempo": 1.2, "max_tempo": 1.2},
-            {"fill_extension": 0.9},
             {"sync_sample_rate": 4000},
         ]
         for kwargs in cases:
@@ -186,7 +185,6 @@ class TestConfig(unittest.TestCase):
     def test_work_dir_resolution(self):
         cfg = AppConfig(work_dir="/tmp/proxmax-test-work")
         self.assertEqual(str(cfg.resolved_work_dir), "/tmp/proxmax-test-work")
-        self.assertTrue(str(cfg.resolved_work_dir).endswith("proxmax-test-work"))
 
 
 # ===========================================================================
@@ -445,7 +443,7 @@ class TestSegmenter(unittest.TestCase):
 
 
 # ===========================================================================
-# Voice profile (helpers only — মডেল ছাড়া)
+# STT helpers — seam repair ও rolling prompt
 # ===========================================================================
 class TestSttHelpers(unittest.TestCase):
     def test_tail_context(self):
@@ -497,8 +495,7 @@ class TestSttHelpers(unittest.TestCase):
             def _load(self):  # মডেল ছাড়াই
                 self.device, self.compute_type = "cpu", "int8"
 
-            def _decode_words(self, samples, offset=0.0, initial_prompt=None,
-                              language="en", hotwords=""):
+            def _decode_words(self, samples, offset=0.0, initial_prompt=None, language="en"):
                 prompts.append(initial_prompt)
                 base = offset + 0.2
                 words = [
@@ -560,8 +557,7 @@ class TestSttHelpers(unittest.TestCase):
             def _load(self):
                 self.device, self.compute_type = "cpu", "int8"
 
-            def _decode_words(self, samples, offset=0.0, initial_prompt=None,
-                              language="en", hotwords=""):
+            def _decode_words(self, samples, offset=0.0, initial_prompt=None, language="en"):
                 prompts.append(initial_prompt)
                 base = offset + 0.2
                 return (
@@ -601,8 +597,32 @@ class TestSttHelpers(unittest.TestCase):
 
 
 # ===========================================================================
-# TTS — ইঞ্জিনের নিরাপত্তা ও নিরবতা ছাঁটা
+# TTS — ইঞ্জিনের নিরাপত্তা
 # ===========================================================================
+class TestTTSResolution(unittest.TestCase):
+    def test_resolve_uses_builtin_voice(self):
+        self.assertEqual(resolve_tts_engine(AppConfig()), "edge")
+        self.assertEqual(resolve_tts_engine(AppConfig(tts_engine="auto")), "edge")
+
+    def test_edge_is_the_repo_default(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:  # pragma: no cover
+            self.skipTest("PyYAML not installed")
+        cfg = AppConfig.from_yaml(REPO_ROOT / "config.yaml")
+        self.assertEqual(cfg.tts_engine, "edge")
+
+    def test_build_targets_builtin_engine(self):
+        from proxmax.tts import build_tts_engine
+
+        try:
+            engine = build_tts_engine(AppConfig(tts_engine="edge"))
+        except TTSError as exc:
+            self.assertIn("edge-tts", str(exc))
+            return
+        self.assertIsInstance(engine, EdgeTTSEngine)
+
+
 class TestMaleVoiceAndGaps(unittest.TestCase):
     """পুরুষ কণ্ঠ জোর করে নিশ্চিত করা + বাক্যের পরে অযথা ফাঁক বন্ধ।"""
 
@@ -978,26 +998,6 @@ class TestFFmpegSafety(unittest.TestCase):
             self.assertIn("অগ্রগতি", str(ctx.exception))
 
 
-class TestTTSEngines(unittest.TestCase):
-    def test_postprocess_fades_edges(self):
-        engine = EdgeTTSEngine(voice="bn-BD-PradeepNeural")
-        audio = np.ones(24000, dtype=np.float32) * 0.8
-        processed = engine._postprocess(audio)
-        self.assertLess(abs(float(processed[0])), 0.1)
-        self.assertLess(abs(float(processed[-1])), 0.1)
-        self.assertLessEqual(float(np.max(np.abs(processed))), 1.0)
-
-    def test_build_engine_always_returns_edge(self):
-        from unittest import mock as _mock
-
-        cfg = AppConfig()
-        with _mock.patch.object(EdgeTTSEngine, "prepare", return_value=None):
-            engine = build_tts_engine(cfg)
-        self.assertIsInstance(engine, EdgeTTSEngine)
-        self.assertEqual(engine.voice, "bn-BD-PradeepNeural")
-        self.assertTrue(engine.trim_silence)
-
-
 # ===========================================================================
 # Gemini translator (fake client — কোনো নেটওয়ার্ক নেই)
 # ===========================================================================
@@ -1289,14 +1289,55 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertTrue(segments[1].text_bn in ("", "বাংলা: BROKEN line."))
         self.assertTrue(segments[2].text_bn.startswith("বাংলা:"))
 
-    def test_thinking_is_disabled_for_translation(self):
-        """thinking বন্ধ না করলে output token খরচ হয়ে উত্তর কেটে যেত।"""
+    def test_thinking_config_is_not_sent_by_default_to_avoid_http_400(self):
+        """নতুন Gemini মডেলে thinking_budget=0 পাঠালে 400 INVALID_ARGUMENT আসে — তাই ডিফল্টে বন্ধ।"""
         client = _FakeClient(lambda c, n: json.dumps({"translations": ["বাংলা"]}))
         translator = _make_translator(client)
         translator.translate_text("Hello")
         thinking = getattr(client.calls[0]["config"], "thinking_config", None)
-        self.assertIsNotNone(thinking)
-        self.assertEqual(getattr(thinking, "thinking_budget", None), 0)
+        self.assertIsNone(thinking)
+
+    def test_http_400_on_schema_falls_back_to_plain_json_without_failing(self):
+        """HTTP 400 INVALID_ARGUMENT এলে response_schema বন্ধ করে সাধারণ JSON-এ সফল হয়।"""
+        class _Http400SchemaClient(_FakeClient):
+            def generate_content(self, *, model, contents, config):
+                self.calls.append({"model": model, "contents": contents, "config": config})
+                if getattr(config, "response_schema", None) is not None:
+                    err = RuntimeError("400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'Invalid argument'}}")
+                    err.code = 400  # type: ignore[attr-defined]
+                    raise err
+                return _FakeResponse(json.dumps({"translations": ["বাংলা অনুবাদ।"]}))
+
+        client = _Http400SchemaClient(lambda c, n: "")
+        translator = _make_translator(client, max_retries=3, requests_per_minute=1_000_000)
+        self.assertEqual(translator.translate_text("Hello"), "বাংলা অনুবাদ।")
+        self.assertFalse(translator._use_schema)
+        self.assertEqual(len(client.calls), 2)
+
+    def test_http_400_or_404_on_model_switches_to_fallback_model(self):
+        """প্রাথমিক মডেল 400/404 দিলে স্বয়ংক্রিয়ভাবে ব্যাকআপ মডেলে সুইচ করে।"""
+        class _ModelFallbackClient(_FakeClient):
+            def generate_content(self, *, model, contents, config):
+                self.calls.append({"model": model, "contents": contents, "config": config})
+                if model == "gemini-3.5-flash-lite":
+                    err = RuntimeError("400 INVALID_ARGUMENT: model gemini-3.5-flash-lite not supported")
+                    err.code = 400  # type: ignore[attr-defined]
+                    raise err
+                return _FakeResponse(json.dumps({"translations": ["স্বাগতম।"]}))
+
+        client = _ModelFallbackClient(lambda c, n: "")
+        translator = _make_translator(client, model="gemini-3.5-flash-lite", max_retries=5)
+        result = translator.translate_text("Welcome.")
+        self.assertEqual(result, "স্বাগতম।")
+        self.assertNotEqual(translator.model, "gemini-3.5-flash-lite")
+
+    def test_verify_api_checks_live_translation(self):
+        client = _FakeClient(lambda c, n: json.dumps({"translations": ["এফসি মোবাইলে স্বাগতম।"]}))
+        translator = _make_translator(client, model="gemini-3.5-flash-lite")
+        info = translator.verify_api()
+        self.assertTrue(info["ok"])
+        self.assertEqual(info["active_model"], "gemini-3.5-flash-lite")
+        self.assertIn("স্বাগতম", info["sample_reply"])
 
     def test_output_budget_grows_with_batch_size(self):
         translator = _make_translator(_FakeClient(lambda c, n: "{}"))
@@ -1407,165 +1448,6 @@ class TestTranslatorExpandPass(unittest.TestCase):
         seg = Segment(index=0, start=0.0, end=5.0, text_en="x", text_bn="  ")
         self.assertEqual(translator.expand_to_fit([seg], [5.0]), 0)
         self.assertEqual(client.calls, [])
-
-
-class TestHotwords(unittest.TestCase):
-    """নাম-শব্দের আলাদা ফাইল: পড়া, ডুপ্লিকেট বাদ, ছোট ভাগে ভাগ (Whisper সীমা)।"""
-
-    def test_file_is_shipped_and_big(self):
-        path = REPO_ROOT / "hotwords.txt"
-        self.assertTrue(path.is_file())
-        entries = load_hotword_file(path)
-        self.assertGreater(len(entries), 300)
-        for expected in (
-            "FC Mobile", "Ballon d'Or", "Lionel Messi", "Cristiano Ronaldo",
-            "Kylian Mbappe", "Ronaldinho", "Lev Yashin", "Champions League",
-        ):
-            self.assertIn(expected, entries)
-
-    def test_comments_headers_and_duplicates(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "hw.txt"
-            path.write_text(
-                "# মন্তব্য\n[ফুটবল]\nMessi\nmessi\n  Mbappe, Benzema  # পাশে মন্তব্য\n",
-                encoding="utf-8",
-            )
-            entries = load_hotword_file(path)
-        self.assertEqual(entries, ["Messi", "Mbappe", "Benzema"])
-
-    def test_missing_file_is_empty_not_error(self):
-        self.assertEqual(load_hotword_file(Path("/nonexistent/hw.txt")), [])
-
-    def test_slices_cover_everything_and_respect_limit(self):
-        entries = [f"Player Name {i}" for i in range(120)]
-        slices = build_hotword_slices(entries, max_chars=200)
-        self.assertGreater(len(slices), 1)
-        for piece in slices:
-            self.assertLessEqual(len(piece), 200)
-        covered = [e for piece in slices for e in piece.split(", ")]
-        self.assertEqual(covered, entries)
-
-    def test_config_prefers_explicit_hotwords(self):
-        cfg = AppConfig(stt_hotwords=" minha, custom ")
-        self.assertEqual(cfg.hotword_entries(), ["minha", "custom"])
-        self.assertEqual(cfg.resolved_hotwords(), "minha, custom")
-
-    def test_config_reads_default_file(self):
-        cfg = AppConfig()
-        self.assertEqual(cfg.hotwords_path, REPO_ROOT / "hotwords.txt")
-        self.assertGreater(len(cfg.hotword_entries()), 300)
-
-    def test_stt_rotates_slices_across_chunks(self):
-        stt = SpeechToText(
-            model_size="tiny",
-            hotwords=", ".join(f"Name {i}" for i in range(60)),
-            hotwords_max_chars=100,
-        )
-        self.assertGreater(len(stt.hotword_slices), 1)
-        self.assertEqual(stt.hotwords, stt.hotword_slices[0])
-
-
-class TestModelCache(unittest.TestCase):
-    """Whisper মডেল আগেই নামানো — প্রসেসিংয়ের সময় আর ডাউনলোড নয়।"""
-
-    def test_repo_mapping(self):
-        self.assertEqual(repo_id_for("large-v3"), "Systran/faster-whisper-large-v3")
-        self.assertEqual(repo_id_for("medium"), "Systran/faster-whisper-medium")
-        self.assertEqual(repo_id_for("org/custom-model"), "org/custom-model")
-        self.assertIsNone(repo_id_for("nonsense"))
-
-    def test_cache_detection(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cache = Path(tmp) / "hub" / "models--Systran--faster-whisper-large-v3"
-            snapshot = cache / "snapshots" / "abc123"
-            snapshot.mkdir(parents=True)
-            with mock.patch.dict("os.environ", {"HF_HOME": tmp}):
-                self.assertFalse(model_is_cached("large-v3"))       # ফাইল নেই
-                for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt"):
-                    (snapshot / name).write_bytes(b"x")
-                self.assertTrue(model_is_cached("large-v3"))
-                self.assertEqual(cached_model_path("large-v3"), str(snapshot))
-
-    def test_prefetch_skips_download_when_cached(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cache = Path(tmp) / "hub" / "models--Systran--faster-whisper-large-v3"
-            snapshot = cache / "snapshots" / "abc123"
-            snapshot.mkdir(parents=True)
-            for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt"):
-                (snapshot / name).write_bytes(b"x")
-            with mock.patch.dict("os.environ", {"HF_HOME": tmp}):
-                ok, seconds = prefetch_whisper("large-v3", show_progress=False)
-            self.assertTrue(ok)
-            self.assertEqual(seconds, 0.0)
-
-
-class TestTranslatorResilience(unittest.TestCase):
-    """400 / অনিবার্য ব্যর্থতায়ও ভিডিও নষ্ট হয় না।"""
-
-    class _BadRequest(Exception):
-        code = 400
-
-    def test_400_drops_schema_and_retries_immediately(self):
-        calls = []
-
-        def responder(contents, n):
-            calls.append(n)
-            if n == 1:
-                raise TestTranslatorResilience._BadRequest("400 INVALID_ARGUMENT")
-            return json.dumps({"translations": ["বাংলা"]})
-
-        client = _FakeClient(responder)
-        translator = _make_translator(client)
-        with mock.patch("proxmax.translator.time.sleep"):
-            result = translator.translate_text("Hello")
-        self.assertEqual(result, "বাংলা")
-        self.assertEqual(len(calls), 2)
-        self.assertFalse(translator._use_schema)      # schema বাদ পড়েছে
-        # দ্বিতীয় request-এ response_schema নেই
-        self.assertIsNone(getattr(client.calls[1]["config"], "response_schema", None))
-
-    def test_400_ladder_walks_down_to_plain_lines(self):
-        def responder(contents, n):
-            if n <= 3:
-                raise TestTranslatorResilience._BadRequest("400 INVALID_ARGUMENT")
-            return "1. বাংলা"
-
-        client = _FakeClient(responder)
-        translator = _make_translator(client)
-        with mock.patch("proxmax.translator.time.sleep"):
-            result = translator.translate_text("Hello")
-        self.assertEqual(result, "বাংলা")
-        self.assertFalse(translator._use_schema)
-        self.assertFalse(translator._use_thinking)
-        self.assertFalse(translator._use_system_instruction)
-
-    def test_one_bad_batch_does_not_kill_the_video(self):
-        def responder(contents, n):
-            if n == 1:
-                raise TestTranslatorResilience._BadRequest("400 INVALID_ARGUMENT")
-            return "still broken"
-
-        client = _FakeClient(responder)
-        translator = _make_translator(client, batch_size=2, max_retries=2)
-        segments = _segments(["One.", "Two.", "Three."])
-        with mock.patch("proxmax.translator.time.sleep"):
-            translator.translate_segments(segments)     # exception নয়
-        self.assertTrue(any((s.text_bn or "") == "" for s in segments))
-
-    def test_verify_returns_sample(self):
-        client = _FakeClient(lambda c, n: json.dumps({"translations": ["ম্যাচ সাতটায় শুরু।"]}))
-        translator = _make_translator(client)
-        result = translator.verify()
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["sample"], "ম্যাচ সাতটায় শুরু।")
-        self.assertIn("gemini-test", result["model"])
-
-    def test_verify_reports_failure(self):
-        client = _FakeClient(lambda c, n: "not bangla at all")
-        translator = _make_translator(client, max_retries=1)
-        with mock.patch("proxmax.translator.time.sleep"):
-            with self.assertRaises(TranslationError):
-                translator.verify()
 
 
 class TestTranslatorFactory(unittest.TestCase):
@@ -1827,6 +1709,7 @@ class _FakeTTS:
         self.closed = True
 
 
+@unittest.skipUnless(FFMPEG, "ffmpeg not installed")
 class TestGapFilling(unittest.TestCase):
     """বড় ফাঁক ভরানোর ধাপ: ছোট লাইন ভরাট করে শুধু সেগুলোরই আবার TTS।"""
 
@@ -2027,6 +1910,98 @@ class TestPipelineEndToEnd(unittest.TestCase):
             pipeline.config = cfg
             summary = pipeline.run_batch()
             self.assertEqual(summary.results, [])
+
+
+class TestHotwords(unittest.TestCase):
+    """আলাদা hotwords.txt ফাইল ও FC Mobile / খেলোয়াড় / ইভেন্ট হটওয়ার্ড পরীক্ষা।"""
+
+    def test_hotwords_file_contains_fc_mobile_terms_events_and_players(self):
+        from proxmax.hotwords import load_hotwords
+
+        terms = load_hotwords(REPO_ROOT / "hotwords.txt")
+        self.assertGreater(len(terms), 400)
+        joined = " | ".join(terms)
+        # FC Mobile game terms
+        for term in ("FC Mobile", "OVR", "Star Pass", "Mascherano", "Skill Boost", "VSA", "H2H"):
+            self.assertIn(term, joined)
+        # Events
+        for event in ("TOTY", "UTOTY", "TOTS", "UTOTS", "Ballon d'Or", "Winter Wildcards", "Rulebreakers"):
+            self.assertIn(event, joined)
+        # Legends & current players
+        for player in ("Pele", "Maradona", "Lionel Messi", "Cristiano Ronaldo", "Cruyff", "Zidane",
+                       "Ronaldinho", "Maldini", "Kylian Mbappe", "Erling Haaland", "Jude Bellingham",
+                       "Vinicius Junior", "Lamine Yamal"):
+            self.assertIn(player, joined)
+
+    def test_repair_transcript_hotwords_fixes_common_mishearings(self):
+        from proxmax.hotwords import repair_transcript_hotwords
+
+        raw = "We packed a 105 over card in the toty event with belling ham and mbappe!"
+        fixed = repair_transcript_hotwords(raw)
+        self.assertIn("105 OVR", fixed)
+        self.assertIn("TOTY", fixed)
+        self.assertIn("Bellingham", fixed)
+        self.assertIn("Mbappe", fixed)
+
+    def test_matched_hotwords_for_texts_extracts_relevant_terms(self):
+        from proxmax.hotwords import load_hotwords, matched_hotwords_for_texts
+
+        terms = load_hotwords(REPO_ROOT / "hotwords.txt")
+        matched = matched_hotwords_for_texts(
+            ["Ronaldinho and Gullit are insane in H2H during TOTY!"], terms
+        )
+        self.assertIn("Ronaldinho", matched)
+        self.assertIn("Gullit", matched)
+        self.assertIn("H2H", matched)
+        self.assertIn("TOTY", matched)
+
+
+class TestWhisperModelPreCache(unittest.TestCase):
+    """সেটআপ ধাপে Whisper large-v3 ক্যাশ হলে ডাবিংয়ের সময় আর ডাউনলোড হয় না।"""
+
+    def test_ensure_whisper_model_caches_and_sets_env(self):
+        from proxmax.stt import _resolve_cached_model_path, ensure_whisper_model
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "faster-whisper-large-v3"
+            model_dir.mkdir()
+            (model_dir / "model.bin").write_bytes(b"weights")
+            with mock.patch.dict("os.environ", {}, clear=False):
+                resolved = ensure_whisper_model(str(model_dir))
+                self.assertEqual(Path(resolved), model_dir.resolve())
+                self.assertEqual(
+                    Path(_resolve_cached_model_path("large-v3")),
+                    model_dir.resolve(),
+                )
+
+
+class TestNotebookRequirements(unittest.TestCase):
+    """নোটবুকের কাঠামো যাচাই (ব্যাজ, GPU ধাপ, ভয়েস ক্লোনিং, প্রি-লোড, API যাচাই)।"""
+
+    def test_notebook_meets_all_user_constraints(self):
+        nb_path = REPO_ROOT / "notebook" / "ProXMax_Colab.ipynb"
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        cells = nb["cells"]
+        full_source = "\n".join("".join(c.get("source", [])) for c in cells)
+
+        # ১. নোটবুকের ভেতরে উপরে অতিরিক্ত "Open in Colab" বাটন নেই
+        header_source = "".join(cells[0].get("source", []))
+        self.assertNotIn("colab-badge.svg", header_source)
+        self.assertNotIn("Open In Colab", header_source)
+
+        # ২. GPU যাচাই ধাপ (!nvidia-smi) নেই
+        self.assertNotIn("nvidia-smi", full_source)
+        self.assertNotIn("GPU যাচাই", full_source)
+
+        # ৩. ভয়েস ক্লোনিং / IndicF5 ধাপ নেই
+        self.assertNotIn("IndicF5", full_source)
+        self.assertNotIn("কণ্ঠ ক্লোন", full_source)
+
+        # ৪. ডিপেন্ডেন্সি ধাপেই Whisper মডেল প্রি-ডাউনলোড হয়
+        self.assertIn("ensure_whisper_model", full_source)
+
+        # ৫. Gemini API key সেলেই লাইভ API যাচাই হয়
+        self.assertIn("verify_gemini_api", full_source)
 
 
 if __name__ == "__main__":

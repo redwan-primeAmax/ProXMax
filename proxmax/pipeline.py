@@ -2,28 +2,15 @@
 
 একটি ভিডিওর পুরো যাত্রা::
 
-    video ─► [1] Audio Extract ─► [2] STT (faster-whisper, silence-aware chunking)
-          ─► [3] অনুবাদ (Gemini) + TTS (বিল্ট-ইন বাংলা ভয়েস)
+    video ─► [1] Audio Extract
+          ─► [2] STT (faster-whisper, silence-aware chunking + hotwords.txt)
+          ─► [3] অনুবাদ (Gemini) + TTS (বিল্ট-ইন বাংলা neural ভয়েস)
           ─► [4] Sync (non-overlap, tempo ≤ 1.25) ─► [5] Mux ─► *_bn.mp4
           ─► [6] SRT
 
 ``run_batch()`` input ফোল্ডারের সব ভিডিও একটার পর একটা প্রসেস করে।
-Whisper, Gemini client আর TTS ইঞ্জিন একবারই তৈরি হয় এবং ব্যাচের সব ভিডিওতে
+Whisper, Gemini client ও TTS ইঞ্জিন একবারই তৈরি হয় এবং ব্যাচের সব ভিডিওতে
 পুনরায় ব্যবহার হয় — বড় speed সাশ্রয়।
-
-গুরুত্বপূর্ণ সিদ্ধান্ত:
-
-* **কোনো overlap নেই** — চূড়ান্ত ট্র্যাকে দুই কণ্ঠ কখনো একসাথে কথা বলে না;
-  ``SyncEngine`` কঠোরভাবে ক্রমিক উইন্ডো বানায়।
-* **অনুবাদ ও TTS একসাথে চলে** (``runtime.enable_overlap``) — Gemini API
-  নেটওয়ার্ক-বাউন্ড, তাই ব্যাচে অনুবাদ হওয়ার সাথে সাথেই TTS শুরু হয়।
-  এতে ১০ মিনিটের ভিডিওর মোট সময় উল্লেখযোগ্যভাবে কমে।
-* **ব্যর্থতা কখনো ক্র্যাশ নয়** — একটি ভিডিও ব্যর্থ হলে পুরো ব্যাচ থামে না;
-  error টার্মিনালে লেখা হয়, পরের ভিডিও চলতে থাকে, শেষে সারসংক্ষেপ।
-* কাজ শেষে GPU/VRAM ছেড়ে দেওয়া হয় (``runtime.release_gpu_when_done``)।
-
-সব সাময়িক ফাইল Colab-এর লোকাল ডিস্কে (``work_dir``) থাকে — Drive-এ
-শুধু চূড়ান্ত ``*_bn.mp4`` ও SRT ফাইল কপি হয় (Drive/FUSE ধীর বলে)।
 """
 
 from __future__ import annotations
@@ -35,7 +22,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Callable, Iterator, List, Optional
 
 from .audio_extraction import AudioExtractor
 from .config import AppConfig
@@ -47,7 +34,12 @@ from .speech_rate import calibrate as calibrate_speech_rate
 from .stt import SpeechToText
 from .sync_engine import SyncEngine
 from .translator import create_translator
-from .tts import BaseTTSEngine, EdgeTTSEngine, build_tts_engine
+from .tts import (
+    BaseTTSEngine,
+    EdgeTTSEngine,
+    build_tts_engine,
+    resolve_tts_engine,
+)
 from .utils import (
     format_duration,
     get_logger,
@@ -63,6 +55,7 @@ def _clock(seconds: float) -> str:
     """সেকেন্ডকে ``MM:SS`` আকারে দেখায় (লগে সময় বোঝার জন্য)।"""
     total = max(0, int(round(float(seconds or 0.0))))
     return f"{total // 60:02d}:{total % 60:02d}"
+
 
 _TOTAL_STEPS = 6
 
@@ -80,19 +73,7 @@ _MIN_USABLE_OUTPUT_SECONDS = 0.5
 
 
 def existing_output_is_usable(path: Path, min_bytes: int = _MIN_USABLE_OUTPUT_BYTES) -> bool:
-    """আগের আউটপুট ফাইলটি সত্যিই ব্যবহারযোগ্য কি না (skip করার যোগ্য)।
-
-    শুধু ``exists()`` দেখলে পুরোনো/অসম্পূর্ণ ফাইলও "সম্পন্ন" ধরে নেওয়া হয় —
-    তখন ব্যবহারকারী নতুন করে চালালেও কিছু হয় না (``⏭️ বাদ দেওয়া হলো``)।
-    তাই আকার ও duration দুটোই যাচাই করা হয়।
-
-    Args:
-        path: সম্ভাব্য আউটপুট MP4।
-        min_bytes: এর চেয়ে ছোট ফাইল অসম্পূর্ণ ধরা হবে।
-
-    Returns:
-        ``True`` যদি ফাইলটি বৈধ ও পূর্ণ মনে হয়।
-    """
+    """আগের আউটপুট ফাইলটি সত্যিই ব্যবহারযোগ্য কি না (skip করার যোগ্য)।"""
     path = Path(path)
     try:
         if not path.is_file() or path.stat().st_size < min_bytes:
@@ -117,7 +98,7 @@ class DubbingPipeline:
         self.config = config.validate()
         cfg = self.config
         self.extractor = AudioExtractor(
-            use_hwaccel=False,  # অডিও extraction-এ GPU decode দরকার নেই, ঝুঁকি কেবল
+            use_hwaccel=False,
             stall_timeout=cfg.extract_stall_seconds,
         )
         self.stt = SpeechToText(
@@ -137,8 +118,8 @@ class DubbingPipeline:
             no_speech_threshold=cfg.no_speech_threshold,
             compression_ratio_threshold=cfg.compression_ratio_threshold,
             log_prob_threshold=cfg.log_prob_threshold,
-            hotwords=cfg.resolved_hotwords(),
-            hotwords_max_chars=cfg.stt_hotwords_max_chars,
+            hotwords=cfg.stt_hotwords,
+            hotwords_file=cfg.stt_hotwords_file,
         )
         self.translator = create_translator(
             cfg.translator_backend,
@@ -156,6 +137,8 @@ class DubbingPipeline:
             gemini_max_output_tokens=cfg.gemini_max_output_tokens,
             char_rate=cfg.translation_char_rate,
             indictrans2_model=cfg.indictrans2_model,
+            hotwords=cfg.stt_hotwords,
+            hotwords_file=cfg.stt_hotwords_file,
         )
         self.sync_engine = SyncEngine(
             min_tempo=cfg.min_tempo,
@@ -175,11 +158,7 @@ class DubbingPipeline:
 
     # ------------------------------------------------------------------
     def release_gpu(self) -> None:
-        """সব মডেল আনলোড করে GPU (VRAM) ও API client ছেড়ে দেয়।
-
-        কাজ শেষে (বা নোটবুক থেকে) ডাকলে GPU ব্যবহার কমে যায়। বারবার ডাকা
-        নিরাপদ (idempotent); পরের রানে মডেল আবার নিজে থেকেই লোড হবে।
-        """
+        """সব মডেল আনলোড করে GPU (VRAM) ও API client ছেড়ে দেয়।"""
         for name, closer in (
             ("TTS", getattr(self._tts, "close", None)),
             ("Whisper", getattr(self.stt, "release", None)),
@@ -200,28 +179,29 @@ class DubbingPipeline:
     # ------------------------------------------------------------------
     # TTS engine (ব্যাচ জুড়ে একবার)
     # ------------------------------------------------------------------
-    def _ensure_tts(self, total_speech_seconds: float = 0.0) -> BaseTTSEngine:
-        """TTS ইঞ্জিন তৈরি (বা পুনঃব্যবহার) — ব্যাচ জুড়ে একবারই।"""
+    def _ensure_tts(self, total_speech_seconds: float) -> BaseTTSEngine:
+        """TTS ইঞ্জিন তৈরি (বা পুনঃব্যবহার) করে।"""
+        cfg = self.config
+        total_speech_seconds = max(1.0, float(total_speech_seconds))
+
         if self._tts is None:
-            self._tts = build_tts_engine(self.config)
+            self._tts = build_tts_engine(
+                cfg,
+                total_audio_seconds=total_speech_seconds,
+            )
             self._calibrate_speech_rate()
+        else:
+            self._tts.set_budget(None, total_speech_seconds)
         return self._tts
 
     # ------------------------------------------------------------------
     def _calibrate_speech_rate(self) -> None:
-        """আসল কণ্ঠ দিয়ে বাংলা বলার গতি মেপে অনুবাদের বাজেট ঠিক করে।
-
-        এই ধাপ না থাকলে অনুবাদ "অনুমানকৃত" গতি (ডিফল্ট ১২ অক্ষর/সেকেন্ড)
-        ধরে সময় হিসাব করে; কণ্ঠ ধীরে বললে অডিও লম্বা হয়ে ১.২৫× দ্রুত
-        করতে হয় এবং শেষটা কেটে যায় — তাই এখানে একবার (প্রতি ব্যাচে)
-        সত্যিকারের গতি মাপা হয়। ব্যর্থ হলেও কিছু ভাঙে না।
-        """
+        """আসল কণ্ঠ দিয়ে বাংলা বলার গতি মেপে অনুবাদের বাজেট ঠিক করে।"""
         cfg = self.config
         if not cfg.translation_calibrate_speech_rate:
             return
         if self._tts is None or not hasattr(self._tts, "synthesize"):
             return
-        # শুধু আসল TTS ইঞ্জিনে (টেস্টের ডামি ইঞ্জিনে নয়)
         if not isinstance(self._tts, EdgeTTSEngine):
             return
         try:
@@ -230,7 +210,7 @@ class DubbingPipeline:
                 fallback=cfg.translation_char_rate,
                 sample_rate=cfg.sync_sample_rate,
             )
-        except Exception as exc:  # ক্যালিব্রেশন ব্যর্থ হলেও ডাবিং চলবে
+        except Exception as exc:
             logger.info("কণ্ঠের গতি মাপা যায়নি (%s) — অনুমানকৃত হার ব্যবহার হবে।", exc)
             return
         setter = getattr(self.translator, "set_char_rate", None)
@@ -270,7 +250,7 @@ class DubbingPipeline:
                 logger.info(
                     "⏭️  আগের আউটপুট পাওয়া গেছে (%.1f MB), তাই বাদ দেওয়া হলো: %s\n"
                     "   নতুন করে (নতুন কোড/কণ্ঠ দিয়ে) ডাবিং করতে চাইলে চালান: "
-                    "python main.py --force  (নোটবুকে ধাপ ৪-এ FORCE_REPROCESS = True)",
+                    "python main.py --force",
                     size_mb, output_path.name,
                 )
                 return VideoResult(
@@ -316,11 +296,14 @@ class DubbingPipeline:
             if not self.config.keep_temp_files and work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
 
+    # Alias for callers using process_video
+    process_video = process_one
+
     # ------------------------------------------------------------------
     def _run_steps(
         self, video_path: Path, work_dir: Path, output_path: Path
     ) -> tuple[List[Segment], StageTimings, dict]:
-        """Execute steps 1–7 for one video (raises on unrecoverable error)."""
+        """Execute steps 1–6 for one video (raises on unrecoverable error)."""
         cfg = self.config
         timings = StageTimings()
         stats: dict = {}
@@ -328,7 +311,6 @@ class DubbingPipeline:
         # 1) Audio extraction (16 kHz mono WAV — Whisper-এর ইনপুট) -----------
         marker = time.perf_counter()
         with self._step(1, "অডিও extract করা (ffmpeg)"):
-            # আগেই duration বের করা হয় — progress শতাংশ ও পরের ধাপে কাজে লাগে
             total_duration = 0.0
             try:
                 total_duration = get_media_duration(video_path)
@@ -356,20 +338,10 @@ class DubbingPipeline:
 
         # 2) Speech-to-Text -----------------------------------------------------
         marker = time.perf_counter()
-        with self._step(2, "Speech-to-Text (faster-whisper, silence-aware)"):
-            # ভিডিওর নাম/শিরোনাম প্রথম chunk-এ প্রসঙ্গ হিসেবে দেওয়া হয় —
-            # গেম/ব্র্যান্ডের নাম Whisper ঠিকভাবে লেখার সম্ভাবনা বাড়ে
-            # (ব্যবহারকারীকে কিছু টাইপ করতে হয় না)
+        with self._step(2, "Speech-to-Text (faster-whisper, silence-aware + hotwords)"):
             setter = getattr(self.stt, "set_context_hint", None)
             if callable(setter):
                 setter(video_path.stem)
-            hints = getattr(self.stt, "hotword_slices", None)
-            if hints:
-                logger.info(
-                    "🏷️ hotwords: %dটি নাম, %d ভাগে (প্রতি chunk-এ এক ভাগ) — "
-                    "নাম/গেম-টার্ম ঠিক লিখতে সাহায্য করে",
-                    sum(len(h.split(", ")) for h in hints), len(hints),
-                )
             segments = self.stt.transcribe(audio_wav)
             if not segments:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
@@ -380,9 +352,6 @@ class DubbingPipeline:
         timings.stt = time.perf_counter() - marker
 
         # 2.5) Speech units: পুরো বাক্য একসাথে — TTS-এ মাঝপথে থামা বন্ধ ------
-        #      ছোট ছোট segment আলাদা ক্লিপ হলে কণ্ঠ বারবার থামে ("আমি একটি"…
-        #      থেমে… "স্টার পাস দিবো")। তাই পাশাপাশি segment জোড়া লাগিয়ে
-        #      বাক্য-ভিত্তিক unit বানানো হয়; unit-ই অনুবাদ/TTS/sync পায়।
         units = build_units(
             segments,
             max_seconds=cfg.tts_unit_max_seconds,
@@ -397,7 +366,6 @@ class DubbingPipeline:
             )
             segments = units
 
-        # Whisper আর দরকার নেই — VRAM/মেমরি ছেড়ে দেওয়া হয় (কণ্ঠ তৈরি দ্রুত হয়)
         if cfg.unload_stt_before_tts:
             logger.info("TTS-এর আগে Whisper আনলোড করা হচ্ছে (VRAM খালি রাখতে)…")
             self.stt.release()
@@ -406,7 +374,10 @@ class DubbingPipeline:
         spoken = sum(float(s.duration) for s in segments)
         tts_dir = work_dir / "tts"
         engine = self._ensure_tts(spoken)
-        logger.info("TTS ইঞ্জিন: %s | মোট কথা ≈ %.0fs", engine.describe(), spoken)
+        logger.info(
+            "TTS ইঞ্জিন: %s | মোট কথা ≈ %.0fs",
+            engine.describe(), spoken,
+        )
 
         marker = time.perf_counter()
         with self._step(3, "অনুবাদ (Gemini) + Bangla TTS (ভয়েস)"):
@@ -431,10 +402,10 @@ class DubbingPipeline:
             synthesized = [s for s in translated if s.tts_audio_path]
             if not synthesized:
                 raise RuntimeError(
-                    "একটি segment-এরও Bangla অডিও তৈরি হয়নি — TTS ইঞ্জিন/GPU যাচাই করুন।"
+                    "একটি segment-এরও Bangla অডিও তৈরি হয়নি — TTS ইঞ্জিন যাচাই করুন।"
                 )
 
-            # 4.5) বড় ফাঁক ভরানো: স্লটের চেয়ে অনেক ছোট লাইন আরও ভরাট করে লেখানো
+            # 3.5) বড় ফাঁক ভরানো: স্লটের চেয়ে অনেক ছোট লাইন আরও ভরাট করে লেখানো
             filled = self._fill_short_slots(synthesized, tts_dir, total_duration)
             if filled:
                 logger.info("✅ %dটি লাইন ভরাট করে আবার কণ্ঠ দেওয়া হলো (ফাঁক কমল)।", filled)
@@ -476,7 +447,7 @@ class DubbingPipeline:
             logger.info("আউটপুট সেভ হয়েছে: %s", output_path)
         timings.mux = time.perf_counter() - marker
 
-        # 7) Subtitles (যাচাই ও পুনঃব্যবহারের জন্য) -----------------------------
+        # 6) Subtitles (যাচাই ও পুনঃব্যবহারের জন্য) -----------------------------
         if cfg.save_srt:
             with self._step(6, "সাবটাইটেল (SRT) সেভ করা"):
                 try:
@@ -518,12 +489,7 @@ class DubbingPipeline:
     def _translate_and_synthesize(
         self, segments: List[Segment], tts_dir: Path
     ) -> tuple[float, float]:
-        """Translate then synthesize, overlapping the two when possible.
-
-        Returns:
-            ``(translate_seconds, tts_seconds)`` — দুটোই নিজ নিজ কাজে ব্যয়
-            হওয়া সময়; overlap থাকলে যোগফল মোট সময়ের চেয়ে বেশি হতে পারে।
-        """
+        """Translate then synthesize, overlapping the two when possible."""
         cfg = self.config
         todo = _usable(segments)
         if not todo:
@@ -532,7 +498,6 @@ class DubbingPipeline:
         group_size = max(4, int(cfg.gemini_batch_size))
         groups = [todo[i:i + group_size] for i in range(0, len(todo), group_size)]
 
-        # একই সাথে অনুবাদ+TTS মানে Gemini আর GPU আলাদা কাজে ব্যস্ত থাকা
         overlap = bool(cfg.enable_overlap) and len(groups) > 1
 
         if not overlap:
@@ -559,14 +524,13 @@ class DubbingPipeline:
                         break
                     self.translator.translate_segments(group)
                     if pending is not None:
-                        # এখন পরের গ্রুপের প্রথম segment-ও অনূদিত → সময় হিসাব নির্ভুল
                         self._shorten(pending, anchor=group[0])
                         outbox.put(pending)
                     pending = group
                 if pending is not None and not stop.is_set():
                     self._shorten(pending)
                     outbox.put(pending)
-            except BaseException as exc:  # নেটওয়ার্ক/ফরম্যাট সমস্যা
+            except BaseException as exc:
                 errors.append(exc)
             finally:
                 produced_seconds[0] = time.perf_counter() - started
@@ -581,7 +545,7 @@ class DubbingPipeline:
                 item = outbox.get()
                 if item is sentinel:
                     break
-                if errors:  # অনুবাদ ব্যর্থ — বাকি গ্রুপ synthesize করার দরকার নেই
+                if errors:
                     break
                 self._synthesize(list(item), tts_dir)  # type: ignore[arg-type]
         except BaseException:
@@ -589,7 +553,7 @@ class DubbingPipeline:
             raise
         finally:
             stop.set()
-            worker.join(timeout=60)  # daemon thread — ঝুলে গেলেও প্রোগ্রাম আটকাবে না
+            worker.join(timeout=60)
         tts_seconds = time.perf_counter() - tts_started
 
         if errors:
@@ -607,8 +571,6 @@ class DubbingPipeline:
             return
         target = list(group)
         if anchor is not None:
-            # শেষ segment-এর হাতে থাকা সময় বের করতে পরের segment-এর start দরকার।
-            # অস্থায়ী anchor-এর text বাদ যায়, শুধু সময়ের হিসাব নেওয়া হয়।
             target.append(
                 Segment(index=-1, start=float(anchor.start), end=float(anchor.end), text_bn="।")
             )
@@ -619,26 +581,14 @@ class DubbingPipeline:
                 slot_gap=cfg.slot_gap_ms / 1000.0,
                 borrow=cfg.borrow_silence_ms / 1000.0,
             )
-        except Exception as exc:  # ছোট করা ব্যর্থ হলেও ডাবিং চলবে
+        except Exception as exc:
             logger.warning("অনুবাদ ছোট করার ধাপ ব্যর্থ (%s) — মূল অনুবাদ রাখা হচ্ছে।", exc)
 
     # ------------------------------------------------------------------
     def _fill_short_slots(
         self, segments: List[Segment], tts_dir: Path, total_duration: float
     ) -> int:
-        """স্লটের তুলনায় অনেক ছোট ক্লিপಗಳ টেক্সট ভরাট করে আবার TTS করে।
-
-        কেন: বাংলা অনুবাদ ইংরেজি স্লটের চেয়ে অনেক ছোট হলে (যেমন ১২.৬s
-        স্লটে ৭s কথা) ওই লাইনের পরে কয়েক সেকেন্ডের নীরবতা শোনায় —
-        ব্যবহারকারীর অভিযোগ ছিল ঠিক এটাই ("এক লাইন বলে বলার পরে অনেকক্ষণ
-        গ্যাপ")। শুধু ধীর করে (fill_extension) এসব বড় ফাঁক ভরে না, তাই
-        Gemini-কে একবার বলা হয় লাইনটি **আরও ভরাট করে** লিখতে (তথ্য না
-        বাড়িয়ে, স্বাভাবিক কথ্য শব্দ যোগ করে); তারপর শুধু ওই ক্লিপগুলো
-        আবার সিন্থেসাইজ করা হয়।
-
-        Returns:
-            কতটি লাইন ভরাট করে আবার সিন্থেসাইজ হলো।
-        """
+        """স্লটের তুলনায় অনেক ছোট ক্লিপগুলোর টেক্সট ভরাট করে আবার TTS করে।"""
         cfg = self.config
         if not cfg.translation_expand_pass:
             return 0
@@ -670,7 +620,7 @@ class DubbingPipeline:
         )
         try:
             changed = expander(offenders, targets)
-        except Exception as exc:  # ভরাট করা ব্যর্থ হলেও ডাবিং চলবে
+        except Exception as exc:
             logger.warning("লাইন ভরাট করা যায়নি (%s) — আগের টেক্সটই রাখা হচ্ছে।", exc)
             return 0
         updated = [seg for seg in offenders if (seg.text_bn or "").strip()]
@@ -689,8 +639,9 @@ class DubbingPipeline:
         usable = [s for s in group if (s.text_bn or "").strip()]
         if not usable:
             return
-        if self._tts is None:  # pragma: no cover - _ensure_tts আগে ডাকা হয়
-            raise RuntimeError("TTS ইঞ্জিন প্রস্তুত নয়।")
+        if self._tts is None:
+            self._ensure_tts(sum(float(s.duration) for s in usable))
+        assert self._tts is not None
         self._tts.synthesize(usable, tts_dir)
 
     # ------------------------------------------------------------------
@@ -723,9 +674,9 @@ class DubbingPipeline:
         cfg = self.config
         logger.info("=" * 70)
         logger.info(
-            "ব্যাচ শুরু: %dটি ভিডিও | STT=%s | অনুবাদ=%s | কণ্ঠ=%s | tempo %.2f–%.2f",
+            "ব্যাচ শুরু: %dটি ভিডিও | STT=%s | অনুবাদ=%s | কণ্ঠ=বিল্ট-ইন %s (%s) | tempo %.2f–%.2f",
             len(videos), cfg.whisper_model, self.translator.describe(),
-            f"বিল্ট-ইন {cfg.resolved_tts_voice} ({cfg.tts_gender})",
+            cfg.resolved_tts_voice, cfg.tts_gender,
             cfg.min_tempo, cfg.max_tempo,
         )
         logger.info("=" * 70)
@@ -739,7 +690,6 @@ class DubbingPipeline:
         summary.total_elapsed_seconds = time.perf_counter() - batch_started
         self._log_summary(summary, output_folder)
 
-        # কাজ শেষ — সব মডেল আনলোড করে GPU (VRAM) ছেড়ে দেওয়া হয়
         if cfg.release_gpu_when_done:
             logger.info("GPU মেমরি ছেড়ে দেওয়া হচ্ছে (মডেল আনলোড)…")
             self.release_gpu()
@@ -769,3 +719,27 @@ class DubbingPipeline:
                 logger.info("     ⏱️  %s", result.timings.as_text())
         logger.info("সব আউটপুট এখানে আছে: %s", output_folder)
         logger.info("=" * 70)
+
+
+def run_Single_or_batch(
+    config: AppConfig,
+    single_video: Optional[Path | str] = None,
+    progress: Optional[Callable[[VideoResult], None]] = None,
+) -> BatchSummary:
+    """Convenience runner used by both CLI and Colab notebook."""
+    pipeline = DubbingPipeline(config)
+    if single_video is not None:
+        started = time.perf_counter()
+        summary = BatchSummary()
+        try:
+            res = pipeline.process_one(single_video, Path(config.output_dir))
+            summary.results.append(res)
+            if progress:
+                progress(res)
+        finally:
+            summary.total_elapsed_seconds = time.perf_counter() - started
+            if config.release_gpu_when_done:
+                pipeline.release_gpu()
+            pipeline._log_summary(summary, Path(config.output_dir))
+        return summary
+    return pipeline.run_batch()

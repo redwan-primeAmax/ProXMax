@@ -1,15 +1,8 @@
-"""TTS subpackage: the built-in Bangla neural voice (edge-tts).
+"""TTS subpackage: built-in Bangla neural voice (edge-tts).
 
-**কোনো ক্লোনিং নেই।** কণ্ঠের জন্য ব্যবহারকারীকে কিছু দিতে হয় না — না
-রেকর্ডিং, না Hugging Face token, না লাইসেন্স সম্মতি। ডিফল্ট **পুরুষ**
-বাংলা neural ভয়েস (``bn-BD-PradeepNeural``) সবসময় নিজে থেকেই কাজ করে।
-
-ব্যবহার::
-
-    from proxmax.tts import build_tts_engine
-
-    engine = build_tts_engine(config)
-    engine.synthesize(segments, work_dir / "tts")
+বিল্ট-ইন বাংলা neural ভয়েস (ডিফল্ট পুরুষ কণ্ঠ ``bn-BD-PradeepNeural``,
+নারী কণ্ঠ ``bn-BD-NabanitaNeural``) ব্যবহার করে অডিও তৈরি হয় — কোনো
+রেকর্ডিং, টোকেন বা আলাদা মডেল ডাউনলোড লাগে না।
 """
 
 from __future__ import annotations
@@ -28,29 +21,23 @@ __all__ = [
     "TTSError",
     "EdgeTTSEngine",
     "build_tts_engine",
+    "resolve_tts_engine",
     "BANGLA_VOICE_FEMALE",
     "BANGLA_VOICE_MALE",
 ]
 
 
+def resolve_tts_engine(config: AppConfig) -> str:
+    """Return the concrete engine name (``"edge"``)."""
+    return "edge"
+
+
 def build_tts_engine(
     config: AppConfig,
-    time_budget_seconds: Optional[float] = None,  # noqa: ARG001 - সংগতির জন্য রাখা
-    total_audio_seconds: float = 0.0,  # noqa: ARG001 - সংগতির জন্য রাখা
+    time_budget_seconds: Optional[float] = None,
+    total_audio_seconds: float = 0.0,
 ) -> BaseTTSEngine:
-    """Build and prepare the built-in Bangla voice engine.
-
-    Args:
-        config: অ্যাপ্লিকেশন কনফিগ।
-        time_budget_seconds: আর ব্যবহার হয় না (সংগতি রক্ষার জন্য রাখা)।
-        total_audio_seconds: আর ব্যবহার হয় না (সংগতি রক্ষার জন্য রাখা)।
-
-    Returns:
-        প্রস্তুত :class:`BaseTTSEngine` (``prepare()`` আগেই ডাকা হয়েছে)।
-
-    Raises:
-        TTSError: edge-tts ইনস্টল না থাকলে বা ভয়েস প্রস্তুত করা না গেলে।
-    """
+    """Configure and prepare the built-in Bangla neural TTS engine."""
     edge = EdgeTTSEngine(
         voice=config.resolved_tts_voice,
         rate=config.tts_rate,

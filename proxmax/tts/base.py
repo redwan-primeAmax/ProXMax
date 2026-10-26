@@ -1,8 +1,8 @@
 """TTS engine interface shared by every speech backend.
 
-সব ইঞ্জিনকে একই কাজ করতে হয়, তাই ঠিকানা এক: ``prepare()`` →
-``synthesize()`` → ``close()``। এতে pipeline-এর কোড ভেতরের ইঞ্জিন নিয়ে
-চিন্তা করে না — পরীক্ষার সময় সহজে fake ইঞ্জিন বসানো যায়।
+সব ইঞ্জিনকে একই তিনটি কাজ করতে হয়, তাই ঠিকানা এক: ``prepare()`` →
+``synthesize()`` → ``close()``। এতে pipeline-এর কোড জানে না ভেতরে
+কোন TTS ইঞ্জিন চলছে — পরীক্ষার সময় সহজে fake ইঞ্জিন বসানো যায়।
 """
 
 from __future__ import annotations
@@ -41,11 +41,12 @@ class BaseTTSEngine(ABC):
 
     # ------------------------------------------------------------------
     def prepare(self) -> None:
-        """Engine প্রস্তুত করা (ভয়েস/নেটওয়ার্ক যাচাই)।
+        """Engine প্রস্তুত করা।
 
         Raises:
             TTSError: ইঞ্জিন চালু করা না গেলে।
         """
+        return None
 
     @abstractmethod
     def synthesize(self, segments: List[Segment], output_dir: Path | str) -> List[Segment]:
