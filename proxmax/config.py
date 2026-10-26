@@ -55,10 +55,14 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_TTS_MODEL = "ai4bharat/IndicF5"
 
 #: বিল্ট-ইন Bangla neural ভয়েস (কোনো নমুনা/টোকেন ছাড়াই কাজ করে)
+#: ডিফল্ট **পুরুষ** কণ্ঠ (Pradeep) — ব্যবহারকারীর নির্দেশ; নারী কণ্ঠ চাইলে
+#: ``tts.voice: bn-BD-NabanitaNeural`` দিতে হবে।
 BANGLA_VOICES = {
-    "female": "bn-BD-NabanitaNeural",
     "male": "bn-BD-PradeepNeural",
+    "female": "bn-BD-NabanitaNeural",
 }
+#: ডিফল্ট কণ্ঠ (পুরুষ)
+DEFAULT_TTS_VOICE = BANGLA_VOICES["male"]
 
 
 @dataclass
@@ -111,8 +115,11 @@ class AppConfig:
     gemini_batch_size: int = 25             # এক request-এ কত লাইন
     gemini_max_chars_per_request: int = 12000
     gemini_max_retries: int = 7             # সর্বোচ্চ ৭ বার চেষ্টা
-    gemini_retry_base_delay: float = 4.0
-    gemini_retry_max_delay: float = 90.0
+    #: retry-এর আগে অপেক্ষা — ব্যবহারকারীর নির্দেশ: সর্বোচ্চ ২ সেকেন্ড,
+    #: দ্বিগুণ করে বাড়ানো যাবে না (ফরম্যাট ভুল হলে অপেক্ষাই নেই)
+    gemini_retry_base_delay: float = 0.5
+    gemini_retry_max_delay: float = 2.0
+    gemini_retry_cap_delay: float = 2.0
     gemini_requests_per_minute: int = 15
     gemini_temperature: float = 0.2
     gemini_timeout: int = 120
@@ -149,7 +156,7 @@ class AppConfig:
     tts_time_budget_factor: float = 0.35
     tts_fallback_to_edge: bool = True        # IndicF5 চালু না হলে ভিডিও নষ্ট না করতে
     # বিল্ট-ইন edge-tts ভয়েসের সেটিংস (ডিফল্ট পথ)
-    tts_voice: str = BANGLA_VOICES["female"]
+    tts_voice: str = DEFAULT_TTS_VOICE
     tts_rate: str = "+0%"
     tts_volume: str = "+0%"
     tts_pitch: str = "+0Hz"
@@ -278,6 +285,7 @@ class AppConfig:
                 "max_retries": "gemini_max_retries",
                 "retry_base_delay": "gemini_retry_base_delay",
                 "retry_max_delay": "gemini_retry_max_delay",
+                "retry_cap_delay": "gemini_retry_cap_delay",
                 "requests_per_minute": "gemini_requests_per_minute",
                 "temperature": "gemini_temperature",
                 "timeout": "gemini_timeout",
@@ -405,6 +413,11 @@ class AppConfig:
             raise ValueError("gemini_temperature 0.0–2.0 এর মধ্যে হতে হবে।")
         if self.gemini_timeout < 10:
             raise ValueError("gemini_timeout অন্তত 10 সেকেন্ড হতে হবে।")
+        if not 0.0 <= float(self.gemini_retry_cap_delay) <= 5.0:
+            raise ValueError(
+                "gemini_retry_cap_delay ০–৫ সেকেন্ডের মধ্যে হতে হবে "
+                f"(পাওয়া গেছে: {self.gemini_retry_cap_delay})"
+            )
         if self.gemini_retry_base_delay <= 0 or self.gemini_retry_max_delay < self.gemini_retry_base_delay:
             raise ValueError(
                 "retry delay অবৈধ: gemini_retry_base_delay > 0 এবং "
