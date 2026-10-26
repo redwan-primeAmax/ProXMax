@@ -1,13 +1,7 @@
-"""Built-in Bangla neural voice via edge-tts (no sample, token or license needed).
+"""Built-in Bangla neural voice via edge-tts.
 
-Microsoft edge-tts-এর ``bn-BD`` neural ভয়েস। ``tts.engine: auto`` (ডিফল্ট)
-এবং কণ্ঠের নমুনা না থাকলে **এটিই ব্যবহৃত হয়** — ব্যবহারকারীকে কিছু দিতে
-হয় না। ভয়েস ক্লোনিং (IndicF5) চালু করা না গেলেও এখানেই ফিরে আসা হয়,
-যাতে ভিডিওটা নষ্ট না হয়।
-
-কনফিগে ভয়েস বদলানো যায়: ``tts.voice`` (``bn-BD-NabanitaNeural`` /
-``bn-BD-PradeepNeural``), আর ক্লোনিং-ব্যর্থতায় ফিরে আসা বন্ধ করতে
-``tts → fallback_to_edge: false``।
+Microsoft edge-tts-এর ``bn-BD`` neural ভয়েস (ডিফল্ট পুরুষ কণ্ঠ
+``bn-BD-PradeepNeural``, নারী কণ্ঠ ``bn-BD-NabanitaNeural``)।
 """
 
 from __future__ import annotations
@@ -22,7 +16,6 @@ from .. import audio_fx
 from ..models import Segment
 from ..text_utils import prepare_for_speech
 from ..utils import FFmpegError, ensure_tool, get_logger, run_ffmpeg
-from ..voice_profile import VoiceProfile
 from .base import BaseTTSEngine, TTSError
 
 logger = get_logger(__name__)
@@ -35,13 +28,13 @@ _VOICE_LIST: dict = {}
 
 
 class EdgeTTSEngine(BaseTTSEngine):
-    """Concurrent Bangla synthesis through edge-tts (no voice cloning)."""
+    """Concurrent Bangla synthesis through edge-tts."""
 
     name = "edge"
 
     def __init__(
         self,
-        voice: str = BANGLA_VOICE_FEMALE,
+        voice: str = BANGLA_VOICE_MALE,
         rate: str = "+0%",
         volume: str = "+0%",
         pitch: str = "+0Hz",
@@ -64,9 +57,9 @@ class EdgeTTSEngine(BaseTTSEngine):
         self.sample_rate = sample_rate
 
     # ------------------------------------------------------------------
-    def prepare(self, profile: VoiceProfile | None = None) -> None:
-        """edge-tts-এর জন্য রেফারেন্স লাগে না — শুধু নেটওয়ার্ক দরকার।"""
-        super().prepare(profile)
+    def prepare(self) -> None:
+        """edge-tts ইনস্টল আছে কি না যাচাই করে।"""
+        super().prepare()
         try:
             import edge_tts  # noqa: F401
         except ImportError as exc:

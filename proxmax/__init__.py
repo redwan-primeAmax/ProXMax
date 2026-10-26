@@ -1,11 +1,33 @@
 """ProXMax — English-to-Bangla video dubbing package.
 
-English ভিডিও থেকে **আপনার নিজের কণ্ঠে** Bangla ডাবিং তৈরি করার সম্পূর্ণ
-pipeline এই প্যাকেজে রয়েছে: নীরবতা-সচেতন chunking → faster-whisper STT →
-duration-aware Gemini অনুবাদ → IndicF5 ভয়েস ক্লোনিং → non-overlap sync → mux।
+English ভিডিও থেকে স্বয়ংক্রিয়ভাবে Bangla ডাবিং তৈরি করার সম্পূর্ণ
+pipeline এই প্যাকেজে রয়েছে: নীরবতা-সচেতন chunking → faster-whisper STT
+(hotwords.txt সহ) → duration-aware Gemini অনুবাদ → বিল্ট-ইন বাংলা neural
+ভয়েস (edge-tts) → non-overlap sync → mux।
 """
 
 from __future__ import annotations
 
-__version__ = "3.0.0"
-__all__ = ["__version__"]
+from .config import AppConfig
+from .hotwords import load_hotwords, resolve_hotwords_path
+from .models import BatchSummary, Segment, StageTimings, VideoResult, Word
+from .pipeline import DubbingPipeline, run_Single_or_batch
+from .stt import ensure_whisper_model
+from .translator import verify_gemini_api
+
+__version__ = "3.1.0"
+__all__ = [
+    "AppConfig",
+    "DubbingPipeline",
+    "run_Single_or_batch",
+    "Segment",
+    "Word",
+    "VideoResult",
+    "BatchSummary",
+    "StageTimings",
+    "ensure_whisper_model",
+    "verify_gemini_api",
+    "load_hotwords",
+    "resolve_hotwords_path",
+    "__version__",
+]

@@ -1,41 +1,20 @@
 # =============================================================================
-# ProXMax — Python dependencies (সব version pin করা, যাতে conflict না হয়)
-# Google Colab (T4 GPU) পরিবেশের জন্য যাচাই করা সংমিশ্রণ।
-# ইনস্টল:  pip install -r requirements.txt
+# ProXMax — দ্রুততম ইনস্টলের জন্য অপ্টিমাইজড ডিপেন্ডেন্সি (Google Colab)
+# Colab-এ আগে থেকেই থাকা প্যাকেজগুলো (numpy, PyYAML, tqdm, huggingface-hub,
+# tokenizers, google-genai, CUDA libs) পুনরায় ডাউনলোড না করে সরাসরি ব্যবহার হয়।
 # =============================================================================
 
-# --- Speech-to-Text: faster-whisper (CTranslate2 backend) -------------------
-faster-whisper==1.2.1
-ctranslate2==4.6.0
-huggingface-hub==0.30.2
-tokenizers==0.21.1
-onnxruntime==1.20.1        # VAD (Silero) মডেল চালানোর জন্য faster-whisper-এর লাগে
-av==14.2.0                 # অডিও decode করার জন্য faster-whisper-এর লাগে
+# --- Speech-to-Text (faster-whisper + CTranslate2) ---
+faster-whisper>=1.1.1
+ctranslate2>=4.5.0
 
-# --- CUDA runtime লাইব্রেরি (শুধু Linux) -------------------------------------
-# Colab-এ CTranslate2 মাঝে মাঝে libcudnn/libcublas খুঁজে পায় না;
-# এই দুটি প্যাকেজ থাকলে GPU নির্বিঘ্নে কাজ করে।
-nvidia-cublas-cu12==12.6.4.1 ; sys_platform == "linux"
-nvidia-cudnn-cu12==9.5.1.17  ; sys_platform == "linux"
+# --- Translation: Google Gemini API (official SDK) ---
+google-genai>=1.0.0
 
-# --- Translation: English → Bangla (Google Gemini API) ------------------------
-google-genai==2.33.0       # Gemini API SDK (ডিফল্ট অনুবাদ backend)
-requests==2.32.3           # google-genai / huggingface-hub-এর নির্ভরতা
+# --- Text-to-Speech (বিল্ট-ইন বাংলা neural ভয়েস) ---
+edge-tts>=7.0.0
 
-# --- Text-to-Speech: Bangla neural voices -------------------------------------
-edge-tts==7.3.1            # bn-BD-NabanitaNeural / bn-BD-PradeepNeural
-
-# --- Audio প্রসেসিং ও ইউটিলিটি -------------------------------------------------
-# অডিও decode/write/assemble সবই numpy + ffmpeg দিয়ে করা হয় (audio_fx.py) —
-# তাই pydub আর দরকার নেই।
-PyYAML==6.0.2              # config.yaml পড়া
-tqdm==4.67.1               # progress bar
-soundfile==0.13.1          # IndicF5-এর WAV I/O path (numpy-এর সাথে)
-
-# দ্রষ্টব্য: torch এখানে ইচ্ছাকৃতভাবে রাখা হয়নি — Colab-এ CUDA-সহ torch আগে
-# থেকেই ইনস্টল থাকে (pin করলে ~১ GB ডাউনলোড ও CUDA mismatch ঝুঁকি)।
-# ভয়েস ক্লোনিং (IndicF5) চালাতে:  pip install -r requirements-indicf5.txt
-# IndicTrans2 বিকল্প চাইলে:        pip install -r requirements-indictrans2.txt
-# numpy-ও pin করা হয়নি — Colab-এর preinstalled সংস্করণই সবচেয়ে নিরাপদ।
-# ffmpeg পাইথন প্যাকেজ নয়: Colab-এ সাধারণত আগে থেকেই থাকে; না থাকলে:
-#   apt-get update -qq && apt-get install -y -qq ffmpeg
+# --- Audio, config & progress utilities ---
+numpy>=1.24.0
+PyYAML>=6.0
+tqdm>=4.66.0

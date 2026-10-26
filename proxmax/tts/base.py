@@ -1,8 +1,8 @@
 """TTS engine interface shared by every speech backend.
 
-সব ইঞ্জিনকে একই পাঁচটি কাজ করতে হয়, তাই ঠিকানা এক: ``prepare()`` →
+সব ইঞ্জিনকে একই তিনটি কাজ করতে হয়, তাই ঠিকানা এক: ``prepare()`` →
 ``synthesize()`` → ``close()``। এতে pipeline-এর কোড জানে না ভেতরে
-IndicF5 নাকি অন্য কিছু — পরীক্ষার সময় সহজে fake ইঞ্জিন বসানো যায়।
+কোন TTS ইঞ্জিন চলছে — পরীক্ষার সময় সহজে fake ইঞ্জিন বসানো যায়।
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import numpy as np
 from .. import audio_fx
 from ..models import Segment
 from ..utils import get_logger
-from ..voice_profile import VoiceProfile
 
 logger = get_logger(__name__)
 
@@ -28,13 +27,12 @@ class TTSError(RuntimeError):
 class BaseTTSEngine(ABC):
     """Common interface for Bangla speech synthesis engines."""
 
-    #: লগে দেখানোর নাম (``indicf5`` / ``edge``)
+    #: লগে দেখানোর নাম (``edge``)
     name: str = "base"
     #: আউটপুট WAV-এর sample rate
     sample_rate: int = 24000
 
     def __init__(self, trim_silence: bool = True, trim_pad_ms: int = 25) -> None:
-        self.profile: Optional[VoiceProfile] = None
         #: ক্লিপের শুরু/শেষের নীরবতা ছাঁটবে কি না — TTS মডেলগুলো সাধারণত
         #: ০.৫–০.৮ সেকেন্ড নীরবতা জুড়ে দেয়; না ছাঁটলে প্রতিটি বাক্যের পরে
         #: অযথা বিরতি শোনায় আর ক্যালিব্রেশনও ভুল হার মাপে।
@@ -42,16 +40,13 @@ class BaseTTSEngine(ABC):
         self.trim_pad_ms = max(0, int(trim_pad_ms))
 
     # ------------------------------------------------------------------
-    def prepare(self, profile: Optional[VoiceProfile] = None) -> None:
-        """Engine প্রস্তুত করা (মডেল লোড/ভয়েস প্রোফাইল যাচাই)।
-
-        Args:
-            profile: ভয়েস ক্লোনিংয়ের রেফারেন্স প্রোফাইল।
+    def prepare(self) -> None:
+        """Engine প্রস্তুত করা।
 
         Raises:
             TTSError: ইঞ্জিন চালু করা না গেলে।
         """
-        self.profile = profile
+        return None
 
     @abstractmethod
     def synthesize(self, segments: List[Segment], output_dir: Path | str) -> List[Segment]:

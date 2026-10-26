@@ -72,24 +72,17 @@ from proxmax.translator import (                                       # noqa: E
     parse_numbered_lines,
     parse_translations,
     salvage_translations,
+    verify_gemini_api,
 )
 from proxmax.tts import (                                              # noqa: E402
     TTSError,
     EdgeTTSEngine,
-    IndicF5Engine,
-    SpeedGovernor,
     resolve_tts_engine,
 )
-from proxmax.tts.governor import SpeedGovernor as _Governor            # noqa: E402
 from proxmax.utils import (                                            # noqa: E402
     format_srt_timestamp,
     output_filename_for,
     release_cuda_memory,
-)
-from proxmax.voice_profile import (                                    # noqa: E402
-    VoiceProfileBuilder,
-    discover_reference_audio,
-    select_reference_window,
 )
 
 FFMPEG = shutil.which("ffmpeg")
@@ -105,7 +98,8 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.translator_backend, "gemini")
         self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
         self.assertEqual(cfg.gemini_max_retries, 7)
-        self.assertEqual(cfg.tts_engine, "auto")
+        self.assertEqual(cfg.tts_engine, "edge")
+        self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.95, 1.25))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
         self.assertLessEqual(cfg.chunk_max_seconds, 29.5)
@@ -122,11 +116,10 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
         self.assertEqual(cfg.gemini_max_retries, 7)
-        self.assertEqual(cfg.tts_engine, "auto")
-        self.assertEqual(cfg.tts_indicf5_model, "ai4bharat/IndicF5")
+        self.assertEqual(cfg.tts_engine, "edge")
+        self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertAlmostEqual(cfg.max_tempo, 1.25)
         self.assertAlmostEqual(cfg.min_tempo, 0.95)
-        self.assertTrue(cfg.tts_fallback_to_edge)
         self.assertGreaterEqual(cfg.carry_context_chars, 100)
         self.assertTrue(cfg.seam_repair)
         self.assertGreater(cfg.chunk_min_seconds, 10)
@@ -135,23 +128,22 @@ class TestConfig(unittest.TestCase):
         cfg = AppConfig()
         cfg._apply_mapping(
             {
-                "stt": {"model": "medium", "chunk_min_seconds": 20.0},
+                "stt": {"model": "medium", "chunk_min_seconds": 20.0, "hotwords_file": "custom_hw.txt"},
                 "translation": {"backend": "gemini", "max_retries": 6},
                 "gemini": {"model": "gemini-test-model", "api_key": "test-key"},
                 "tts": {"voice": "bn-BD-PradeepNeural", "max_retries": 2, "engine": "edge"},
-                "voice": {"target_seconds": 12.0, "highpass_hz": 80},
                 "sync": {"max_tempo": 1.3, "workers": 2},
                 "runtime": {"release_gpu_when_done": False, "enable_overlap": False},
             }
         )
         self.assertEqual(cfg.whisper_model, "medium")
         self.assertEqual(cfg.chunk_min_seconds, 20.0)
+        self.assertEqual(cfg.stt_hotwords_file, "custom_hw.txt")
         self.assertEqual(cfg.gemini_model, "gemini-test-model")
         self.assertEqual(cfg.gemini_max_retries, 6)
         self.assertEqual(cfg.tts_max_retries, 2)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.tts_voice, "bn-BD-PradeepNeural")
-        self.assertEqual(cfg.voice_target_seconds, 12.0)
         self.assertEqual(cfg.sync_workers, 2)
         self.assertAlmostEqual(cfg.max_tempo, 1.3)
         self.assertFalse(cfg.release_gpu_when_done)
@@ -179,11 +171,10 @@ class TestConfig(unittest.TestCase):
             {"translator_backend": "google"},
             {"translator_backend": "deepl"},
             {"tts_engine": "siri"},
+            {"tts_engine": "indicf5"},
             {"chunk_max_seconds": 45.0},
             {"chunk_min_seconds": 40.0},
             {"min_tempo": 1.2, "max_tempo": 1.2},
-            {"tts_nfe_steps": 8, "tts_min_nfe_steps": 16},
-            {"voice_target_seconds": 2.0},
             {"sync_sample_rate": 4000},
         ]
         for kwargs in cases:
@@ -194,7 +185,6 @@ class TestConfig(unittest.TestCase):
     def test_work_dir_resolution(self):
         cfg = AppConfig(work_dir="/tmp/proxmax-test-work")
         self.assertEqual(str(cfg.resolved_work_dir), "/tmp/proxmax-test-work")
-        self.assertTrue(str(cfg.voice_profile_dir).endswith("voice_profile"))
 
 
 # ===========================================================================
@@ -453,56 +443,6 @@ class TestSegmenter(unittest.TestCase):
 
 
 # ===========================================================================
-# Voice profile (helpers only — মডেল ছাড়া)
-# ===========================================================================
-class TestVoiceProfileHelpers(unittest.TestCase):
-    def test_discover_reference_audio(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            bigger = root / "voice.mp3"
-            bigger.write_bytes(b"x" * 500)
-            (root / "smaller.wav").write_bytes(b"x" * 10)
-            (root / "clip.mp4").write_bytes(b"x" * 9999)
-            found = discover_reference_audio(root)
-            self.assertEqual(found, bigger)
-            explicit = root / "smaller.wav"
-            self.assertEqual(discover_reference_audio(root, explicit=explicit), explicit)
-
-    def test_discover_reference_audio_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(discover_reference_audio(tmp))
-
-    def test_select_reference_window_prefers_contiguous_speech(self):
-        regions = [(0.0, 2.0), (2.5, 4.0), (20.0, 26.0), (30.0, 32.0)]
-        first, last, speech = select_reference_window(
-            regions, target_seconds=8.0, min_seconds=3.0, max_seconds=20.0
-        )
-        self.assertLessEqual(first, last)
-        span = regions[last][1] - regions[first][0]
-        self.assertGreaterEqual(speech, 3.0)
-        self.assertLessEqual(speech, span + 1e-6)
-        self.assertAlmostEqual(
-            speech, sum(regions[k][1] - regions[k][0] for k in range(first, last + 1)),
-            places=3,
-        )
-
-    def test_builder_params_include_audio_cleanup(self):
-        builder = VoiceProfileBuilder(
-            cache_dir="/tmp/x", highpass_hz=70, loudnorm_i=-16.0
-        )
-        params = builder._params()
-        self.assertEqual(params["hp"], 70)
-        self.assertAlmostEqual(params["ln"], -16.0)
-        self.assertIn("v", params)
-        self.assertIn("highpass=f=70", builder._decode_filters())
-        self.assertIn("loudnorm", builder._decode_filters())
-
-    def test_builder_without_cleanup_has_no_filters(self):
-        builder = VoiceProfileBuilder(cache_dir="/tmp/x")
-        self.assertIsNone(builder._decode_filters())
-
-
-# ===========================================================================
 # STT helpers — seam repair ও rolling prompt
 # ===========================================================================
 class TestSttHelpers(unittest.TestCase):
@@ -657,151 +597,30 @@ class TestSttHelpers(unittest.TestCase):
 
 
 # ===========================================================================
-# TTS — governor ও ইঞ্জিনের নিরাপত্তা
+# TTS — ইঞ্জিনের নিরাপত্তা
 # ===========================================================================
-class _ProfileStub:
-    """Minimal stand-in for :class:`VoiceProfile` (no audio file needed)."""
-
-    def __init__(self, valid=True):
-        self._valid = valid
-
-    def is_valid(self):
-        return self._valid
-
-
 class TestTTSResolution(unittest.TestCase):
-    def test_auto_without_reference_uses_builtin_voice(self):
-        self.assertEqual(resolve_tts_engine(AppConfig(), None), "edge")
+    def test_resolve_uses_builtin_voice(self):
+        self.assertEqual(resolve_tts_engine(AppConfig()), "edge")
+        self.assertEqual(resolve_tts_engine(AppConfig(tts_engine="auto")), "edge")
 
-    def test_auto_with_invalid_reference_uses_builtin_voice(self):
-        profile = _ProfileStub(valid=False)
-        self.assertEqual(resolve_tts_engine(AppConfig(), profile), "edge")
-
-    def test_auto_with_reference_clones(self):
-        profile = _ProfileStub(valid=True)
-        self.assertEqual(resolve_tts_engine(AppConfig(), profile), "indicf5")
-
-    def test_explicit_engines_win(self):
-        self.assertEqual(
-            resolve_tts_engine(AppConfig(tts_engine="edge"), _ProfileStub()), "edge"
-        )
-        self.assertEqual(
-            resolve_tts_engine(AppConfig(tts_engine="indicf5"), None), "indicf5"
-        )
-
-    def test_hf_token_available_reads_environment(self):
-        from proxmax.tts import hf_token_available
-
-        fake_hub = types.ModuleType("huggingface_hub")
-        fake_hub.get_token = lambda: None  # type: ignore[attr-defined]
-        with mock.patch.dict("os.environ", {}, clear=True), \
-                mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
-            self.assertFalse(hf_token_available())
-        with mock.patch.dict("os.environ", {"HF_TOKEN": "hf_test"}, clear=True):
-            self.assertTrue(hf_token_available())
-
-    def test_explicit_indicf5_without_profile_falls_back(self):
-        from proxmax.tts import build_tts_engine
-
-        try:
-            engine = build_tts_engine(
-                AppConfig(tts_engine="indicf5"), profile=None
-            )
-        except TTSError as exc:
-            # edge-tts ইনস্টল না থাকলে এখানেই থামবে (IndicF5 নয়)
-            self.assertIn("edge-tts", str(exc))
-            return
-        self.assertIsInstance(engine, EdgeTTSEngine)
-
-    def test_auto_is_the_repo_default(self):
+    def test_edge_is_the_repo_default(self):
         try:
             import yaml  # noqa: F401
         except ImportError:  # pragma: no cover
             self.skipTest("PyYAML not installed")
         cfg = AppConfig.from_yaml(REPO_ROOT / "config.yaml")
-        self.assertEqual(cfg.tts_engine, "auto")
+        self.assertEqual(cfg.tts_engine, "edge")
 
-    def test_build_auto_without_reference_targets_builtin_engine(self):
+    def test_build_targets_builtin_engine(self):
         from proxmax.tts import build_tts_engine
 
         try:
-            engine = build_tts_engine(AppConfig(tts_engine="auto"), profile=None)
+            engine = build_tts_engine(AppConfig(tts_engine="edge"))
         except TTSError as exc:
-            # edge-tts ইনস্টল না থাকলে ঠিক এই path-এই ব্যর্থ হবে (IndicF5 নয়)
             self.assertIn("edge-tts", str(exc))
             return
         self.assertIsInstance(engine, EdgeTTSEngine)
-
-    def test_auto_mode_still_looks_for_a_reference_sample(self):
-        # auto = নমুনা থাকলে ক্লোনিং; তাই নমুনা খোঁজা বন্ধ করা যাবে না
-        from proxmax.pipeline import DubbingPipeline
-
-        with tempfile.TemporaryDirectory() as tmp:
-            in_dir = Path(tmp) / "in"
-            out_dir = Path(tmp) / "out"
-            in_dir.mkdir()
-            out_dir.mkdir()
-            pipeline = DubbingPipeline(
-                AppConfig(input_dir=in_dir, output_dir=out_dir, gemini_api_key="test-key")
-            )
-            try:
-                with mock.patch(
-                    "proxmax.pipeline.hf_token_available", return_value=True
-                ), mock.patch(
-                    "proxmax.pipeline.discover_reference_audio", return_value=None
-                ) as finder:
-                    self.assertIsNone(pipeline._ensure_profile())
-                self.assertEqual(finder.call_count, 1)
-            finally:
-                pipeline.close()
-
-    def test_explicit_edge_skips_the_reference_lookup(self):
-        from proxmax.pipeline import DubbingPipeline
-
-        with tempfile.TemporaryDirectory() as tmp:
-            in_dir = Path(tmp) / "in"
-            out_dir = Path(tmp) / "out"
-            in_dir.mkdir()
-            out_dir.mkdir()
-            pipeline = DubbingPipeline(
-                AppConfig(
-                    input_dir=in_dir,
-                    output_dir=out_dir,
-                    gemini_api_key="test-key",
-                    tts_engine="edge",
-                )
-            )
-            try:
-                with mock.patch(
-                    "proxmax.pipeline.discover_reference_audio", return_value=None
-                ) as finder:
-                    self.assertIsNone(pipeline._ensure_profile())
-                self.assertEqual(finder.call_count, 0)
-            finally:
-                pipeline.close()
-
-    def test_missing_hf_token_skips_cloning_and_keeps_going(self):
-        # টোকেন না দিলে = ব্যবহারকারী ক্লোনিং চান না → নমুনা খোঁজাও বন্ধ, কাজ চলবে
-        from proxmax.pipeline import DubbingPipeline
-
-        with tempfile.TemporaryDirectory() as tmp:
-            in_dir = Path(tmp) / "in"
-            out_dir = Path(tmp) / "out"
-            in_dir.mkdir()
-            out_dir.mkdir()
-            pipeline = DubbingPipeline(
-                AppConfig(input_dir=in_dir, output_dir=out_dir, gemini_api_key="test-key")
-            )
-            try:
-                with mock.patch(
-                    "proxmax.pipeline.hf_token_available", return_value=False
-                ), mock.patch(
-                    "proxmax.pipeline.discover_reference_audio", return_value=None
-                ) as finder:
-                    self.assertIsNone(pipeline._ensure_profile())
-                self.assertEqual(finder.call_count, 0)
-            finally:
-                pipeline.close()
 
 
 class TestMaleVoiceAndGaps(unittest.TestCase):
@@ -1179,59 +998,6 @@ class TestFFmpegSafety(unittest.TestCase):
             self.assertIn("অগ্রগতি", str(ctx.exception))
 
 
-class TestTTSGovernor(unittest.TestCase):
-    def test_downgrades_when_over_budget(self):
-        gov = _Governor(nfe_steps=16, min_nfe_steps=8, time_budget_seconds=5.0,
-                        total_audio_seconds=60.0)
-        self.assertEqual(gov.current_nfe, 16)
-        gov.observe(audio_seconds=2.0, elapsed_seconds=2.0)   # warm-up
-        self.assertEqual(gov.current_nfe, 16)
-        gov.observe(audio_seconds=2.0, elapsed_seconds=4.0)
-        self.assertLess(gov.current_nfe, 16)
-        self.assertIn("nfe=", gov.summary())
-
-    def test_without_budget_nfe_stays(self):
-        gov = _Governor(nfe_steps=16, min_nfe_steps=8, time_budget_seconds=None)
-        for _ in range(5):
-            gov.observe(audio_seconds=1.0, elapsed_seconds=10.0)
-        self.assertEqual(gov.current_nfe, 16)
-
-    def test_new_budget_resets_counters_but_keeps_learning(self):
-        gov = _Governor(nfe_steps=16, min_nfe_steps=8, time_budget_seconds=1.0,
-                        total_audio_seconds=50.0)
-        gov.observe(2.0, 2.0)
-        gov.observe(2.0, 4.0)
-        lowered = gov.current_nfe
-        gov.set_budget(100.0, 20.0)
-        self.assertEqual(gov.synthesized_seconds, 0.0)
-        self.assertEqual(gov.current_nfe, lowered)
-
-    def test_speed_governor_exported(self):
-        self.assertIs(SpeedGovernor, _Governor)
-
-
-class TestTTSEngines(unittest.TestCase):
-    def test_indicf5_requires_reference(self):
-        engine = IndicF5Engine()
-        with self.assertRaises(TTSError):
-            engine.prepare(None)
-        engine.close()
-
-    def test_set_budget_is_safe(self):
-        engine = IndicF5Engine()
-        engine.set_budget(100.0, 50.0)          # মডেল লোড না করেই
-        self.assertEqual(engine.governor.time_budget_seconds, 100.0)
-        engine.close()
-
-    def test_postprocess_fades_edges(self):
-        engine = IndicF5Engine()
-        audio = np.ones(24000, dtype=np.float32) * 0.8
-        processed = engine._postprocess(audio)
-        self.assertLess(abs(float(processed[0])), 0.1)
-        self.assertLess(abs(float(processed[-1])), 0.1)
-        self.assertLessEqual(float(np.max(np.abs(processed))), 1.0)
-
-
 # ===========================================================================
 # Gemini translator (fake client — কোনো নেটওয়ার্ক নেই)
 # ===========================================================================
@@ -1523,14 +1289,55 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertTrue(segments[1].text_bn in ("", "বাংলা: BROKEN line."))
         self.assertTrue(segments[2].text_bn.startswith("বাংলা:"))
 
-    def test_thinking_is_disabled_for_translation(self):
-        """thinking বন্ধ না করলে output token খরচ হয়ে উত্তর কেটে যেত।"""
+    def test_thinking_config_is_not_sent_by_default_to_avoid_http_400(self):
+        """নতুন Gemini মডেলে thinking_budget=0 পাঠালে 400 INVALID_ARGUMENT আসে — তাই ডিফল্টে বন্ধ।"""
         client = _FakeClient(lambda c, n: json.dumps({"translations": ["বাংলা"]}))
         translator = _make_translator(client)
         translator.translate_text("Hello")
         thinking = getattr(client.calls[0]["config"], "thinking_config", None)
-        self.assertIsNotNone(thinking)
-        self.assertEqual(getattr(thinking, "thinking_budget", None), 0)
+        self.assertIsNone(thinking)
+
+    def test_http_400_on_schema_falls_back_to_plain_json_without_failing(self):
+        """HTTP 400 INVALID_ARGUMENT এলে response_schema বন্ধ করে সাধারণ JSON-এ সফল হয়।"""
+        class _Http400SchemaClient(_FakeClient):
+            def generate_content(self, *, model, contents, config):
+                self.calls.append({"model": model, "contents": contents, "config": config})
+                if getattr(config, "response_schema", None) is not None:
+                    err = RuntimeError("400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'Invalid argument'}}")
+                    err.code = 400  # type: ignore[attr-defined]
+                    raise err
+                return _FakeResponse(json.dumps({"translations": ["বাংলা অনুবাদ।"]}))
+
+        client = _Http400SchemaClient(lambda c, n: "")
+        translator = _make_translator(client, max_retries=3, requests_per_minute=1_000_000)
+        self.assertEqual(translator.translate_text("Hello"), "বাংলা অনুবাদ।")
+        self.assertFalse(translator._use_schema)
+        self.assertEqual(len(client.calls), 2)
+
+    def test_http_400_or_404_on_model_switches_to_fallback_model(self):
+        """প্রাথমিক মডেল 400/404 দিলে স্বয়ংক্রিয়ভাবে ব্যাকআপ মডেলে সুইচ করে।"""
+        class _ModelFallbackClient(_FakeClient):
+            def generate_content(self, *, model, contents, config):
+                self.calls.append({"model": model, "contents": contents, "config": config})
+                if model == "gemini-3.5-flash-lite":
+                    err = RuntimeError("400 INVALID_ARGUMENT: model gemini-3.5-flash-lite not supported")
+                    err.code = 400  # type: ignore[attr-defined]
+                    raise err
+                return _FakeResponse(json.dumps({"translations": ["স্বাগতম।"]}))
+
+        client = _ModelFallbackClient(lambda c, n: "")
+        translator = _make_translator(client, model="gemini-3.5-flash-lite", max_retries=5)
+        result = translator.translate_text("Welcome.")
+        self.assertEqual(result, "স্বাগতম।")
+        self.assertNotEqual(translator.model, "gemini-3.5-flash-lite")
+
+    def test_verify_api_checks_live_translation(self):
+        client = _FakeClient(lambda c, n: json.dumps({"translations": ["এফসি মোবাইলে স্বাগতম।"]}))
+        translator = _make_translator(client, model="gemini-3.5-flash-lite")
+        info = translator.verify_api()
+        self.assertTrue(info["ok"])
+        self.assertEqual(info["active_model"], "gemini-3.5-flash-lite")
+        self.assertIn("স্বাগতম", info["sample_reply"])
 
     def test_output_budget_grows_with_batch_size(self):
         translator = _make_translator(_FakeClient(lambda c, n: "{}"))
@@ -1902,6 +1709,7 @@ class _FakeTTS:
         self.closed = True
 
 
+@unittest.skipUnless(FFMPEG, "ffmpeg not installed")
 class TestGapFilling(unittest.TestCase):
     """বড় ফাঁক ভরানোর ধাপ: ছোট লাইন ভরাট করে শুধু সেগুলোরই আবার TTS।"""
 
@@ -2102,6 +1910,98 @@ class TestPipelineEndToEnd(unittest.TestCase):
             pipeline.config = cfg
             summary = pipeline.run_batch()
             self.assertEqual(summary.results, [])
+
+
+class TestHotwords(unittest.TestCase):
+    """আলাদা hotwords.txt ফাইল ও FC Mobile / খেলোয়াড় / ইভেন্ট হটওয়ার্ড পরীক্ষা।"""
+
+    def test_hotwords_file_contains_fc_mobile_terms_events_and_players(self):
+        from proxmax.hotwords import load_hotwords
+
+        terms = load_hotwords(REPO_ROOT / "hotwords.txt")
+        self.assertGreater(len(terms), 400)
+        joined = " | ".join(terms)
+        # FC Mobile game terms
+        for term in ("FC Mobile", "OVR", "Star Pass", "Mascherano", "Skill Boost", "VSA", "H2H"):
+            self.assertIn(term, joined)
+        # Events
+        for event in ("TOTY", "UTOTY", "TOTS", "UTOTS", "Ballon d'Or", "Winter Wildcards", "Rulebreakers"):
+            self.assertIn(event, joined)
+        # Legends & current players
+        for player in ("Pele", "Maradona", "Lionel Messi", "Cristiano Ronaldo", "Cruyff", "Zidane",
+                       "Ronaldinho", "Maldini", "Kylian Mbappe", "Erling Haaland", "Jude Bellingham",
+                       "Vinicius Junior", "Lamine Yamal"):
+            self.assertIn(player, joined)
+
+    def test_repair_transcript_hotwords_fixes_common_mishearings(self):
+        from proxmax.hotwords import repair_transcript_hotwords
+
+        raw = "We packed a 105 over card in the toty event with belling ham and mbappe!"
+        fixed = repair_transcript_hotwords(raw)
+        self.assertIn("105 OVR", fixed)
+        self.assertIn("TOTY", fixed)
+        self.assertIn("Bellingham", fixed)
+        self.assertIn("Mbappe", fixed)
+
+    def test_matched_hotwords_for_texts_extracts_relevant_terms(self):
+        from proxmax.hotwords import load_hotwords, matched_hotwords_for_texts
+
+        terms = load_hotwords(REPO_ROOT / "hotwords.txt")
+        matched = matched_hotwords_for_texts(
+            ["Ronaldinho and Gullit are insane in H2H during TOTY!"], terms
+        )
+        self.assertIn("Ronaldinho", matched)
+        self.assertIn("Gullit", matched)
+        self.assertIn("H2H", matched)
+        self.assertIn("TOTY", matched)
+
+
+class TestWhisperModelPreCache(unittest.TestCase):
+    """সেটআপ ধাপে Whisper large-v3 ক্যাশ হলে ডাবিংয়ের সময় আর ডাউনলোড হয় না।"""
+
+    def test_ensure_whisper_model_caches_and_sets_env(self):
+        from proxmax.stt import _resolve_cached_model_path, ensure_whisper_model
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "faster-whisper-large-v3"
+            model_dir.mkdir()
+            (model_dir / "model.bin").write_bytes(b"weights")
+            with mock.patch.dict("os.environ", {}, clear=False):
+                resolved = ensure_whisper_model(str(model_dir))
+                self.assertEqual(Path(resolved), model_dir.resolve())
+                self.assertEqual(
+                    Path(_resolve_cached_model_path("large-v3")),
+                    model_dir.resolve(),
+                )
+
+
+class TestNotebookRequirements(unittest.TestCase):
+    """নোটবুকের কাঠামো যাচাই (ব্যাজ, GPU ধাপ, ভয়েস ক্লোনিং, প্রি-লোড, API যাচাই)।"""
+
+    def test_notebook_meets_all_user_constraints(self):
+        nb_path = REPO_ROOT / "notebook" / "ProXMax_Colab.ipynb"
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        cells = nb["cells"]
+        full_source = "\n".join("".join(c.get("source", [])) for c in cells)
+
+        # ১. নোটবুকের ভেতরে উপরে অতিরিক্ত "Open in Colab" বাটন নেই
+        header_source = "".join(cells[0].get("source", []))
+        self.assertNotIn("colab-badge.svg", header_source)
+        self.assertNotIn("Open In Colab", header_source)
+
+        # ২. GPU যাচাই ধাপ (!nvidia-smi) নেই
+        self.assertNotIn("nvidia-smi", full_source)
+        self.assertNotIn("GPU যাচাই", full_source)
+
+        # ৩. ভয়েস ক্লোনিং / IndicF5 ধাপ নেই
+        self.assertNotIn("IndicF5", full_source)
+        self.assertNotIn("কণ্ঠ ক্লোন", full_source)
+
+        # ৪. ডিপেন্ডেন্সি ধাপেই Whisper মডেল প্রি-ডাউনলোড হয়
+        self.assertIn("ensure_whisper_model", full_source)
+
+        # ৫. Gemini API key সেলেই লাইভ API যাচাই হয়
+        self.assertIn("verify_gemini_api", full_source)
 
 
 if __name__ == "__main__":
