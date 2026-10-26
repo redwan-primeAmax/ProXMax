@@ -1,7 +1,7 @@
 """Application configuration: defaults, YAML loading, validation.
 
-সব সেটিংস (Drive-এর পাথ, Whisper মডেল, chunking, Gemini, IndicF5, sync
-ইত্যাদি) একটাই ``AppConfig`` dataclass-এ থাকে। ``config.yaml`` থেকে
+সব সেটিংস (Drive-এর পাথ, Whisper মডেল, hotwords ফাইল, chunking, Gemini,
+বিল্ট-ইন বাংলা কণ্ঠ, sync ইত্যাদি) একটাই ``AppConfig`` dataclass-এ থাকে। ``config.yaml`` থেকে
 লোড হয়, চাইলে CLI আর্গুমেন্ট দিয়েও override করা যায়।
 
 নীতিগুলো:
@@ -10,8 +10,8 @@
   হয় না; ডিফল্ট মানগুলোই সর্বোচ্চ মানের সেটিং।
 * **নীরবতায় কাটা** — STT chunk সীমা এমনভাবে রাখা হয়েছে যাতে Whisper
   কখনো শব্দের মাঝখানে না কাটে।
-* **কণ্ঠ যেন রোবট না লাগে** — tempo সীমা ১.২৫, লম্বা রেফারেন্স সমর্থন,
-  ভয়েস ক্লোনিংয়ের জন্য IndicF5।
+* **কণ্ঠ যেন রোবট না লাগে** — tempo সীমা ১.২৫, ক্লিপের দুই প্রান্তের
+  নীরবতা ছাঁটা, স্লট ভরাতে সামান্য ধীর করা।
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from .hotwords import load_hotword_file, split_hotwords
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -47,12 +48,14 @@ SUPPORTED_WHISPER_MODELS = (
 )
 
 SUPPORTED_TRANSLATORS = ("gemini", "indictrans2")
-SUPPORTED_TTS_ENGINES = ("auto", "indicf5", "edge")
 
 #: ডিফল্ট অনুবাদ মডেল (ব্যবহারকারীর নির্দেশ অনুযায়ী) — নোটবুক/CLI দিয়ে বদলানো যায়
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
-#: ঐচ্ছিক ভয়েস ক্লোনিং মডেল (auto মোডে কণ্ঠের নমুনা থাকলে ব্যবহৃত হয়)
-DEFAULT_TTS_MODEL = "ai4bharat/IndicF5"
+
+#: রিপোর রুট (``hotwords.txt`` ইত্যাদি ডিফল্ট ফাইল খুঁজতে লাগে)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+#: ডিফল্ট hotwords ফাইল — ফুটবল/FC Mobile-এর নাম-শব্দের তালিকা
+DEFAULT_HOTWORDS_FILE = "hotwords.txt"
 
 #: বিল্ট-ইন Bangla neural ভয়েস (কোনো নমুনা/টোকেন ছাড়াই কাজ করে)
 #: ডিফল্ট **পুরুষ** কণ্ঠ (Pradeep) — ব্যবহারকারীর নির্দেশ; নারী কণ্ঠ চাইলে
@@ -98,11 +101,16 @@ class AppConfig:
     no_speech_threshold: float = 0.6
     compression_ratio_threshold: float = 2.4
     log_prob_threshold: float = -1.0
-    #: TTS শুরু করার আগে Whisper আনলোড করা (VRAM বাঁচে) — IndicF5 + Whisper একসাথে ভারী
+    #: TTS শুরুর আগে Whisper আনলোড করা (VRAM বাঁচে, কণ্ঠ তৈরি দ্রুত হয়)
     unload_stt_before_tts: bool = True
-    #: ভিডিও-নির্দিষ্ট নাম/শব্দ (কমা দিয়ে) — Whisper-কে এগুলো চিনতে সাহায্য করে
+    #: হাতে লেখা নাম/শব্দ (কমা দিয়ে) — খালি থাকলে ``hotwords.txt`` ফাইল ব্যবহৃত হয়
     #: যেমন ``"FC Mobile, Ballon d'Or, OVR, star pass, Yashin"``। খালি = বন্ধ।
     stt_hotwords: str = ""
+    #: নাম-শব্দের আলাদা ফাইল (রিপো রুট থেকে আপেক্ষিক বা পূর্ণ পাথ)।
+    #: ফাইলে এক লাইনে একটি নাম, ``#`` দিয়ে মন্তব্য। ব্যবহারকারীকে কিছু টাইপ করতে হয় না।
+    stt_hotwords_file: str = DEFAULT_HOTWORDS_FILE
+    #: Whisper-এর prompt সীমা (২২৪ টোকেন) মেনে hotwords কত অক্ষর পর্যন্ত যাবে
+    stt_hotwords_max_chars: int = 620
 
     # --- audio preprocessing (0 GPU) -----------------------------------------
     audio_preprocess: bool = True
@@ -140,28 +148,8 @@ class AppConfig:
     translation_expand_min_gap: float = 0.9
     indictrans2_model: str = "ai4bharat/indictrans2-en-indic-1B"
 
-    # --- voice reference (আপনার গলার নমুনা) -------------------------------------
-    voice_reference: str = ""               # খালি = ইনপুট ফোল্ডার থেকে নিজে খুঁজে নেবে
-    voice_min_seconds: float = 5.0
-    voice_target_seconds: float = 16.0
-    voice_max_seconds: float = 40.0
-    voice_language: str = "bn"
-    voice_max_internal_pause_ms: int = 800   # লম্বা বিরতি এই সীমায় ছেঁটে আনা হয়
-    voice_cache: bool = True
-
-    # --- text-to-speech ------------------------------------------------------
-    #: "auto" = নমুনা থাকলে IndicF5 ক্লোনিং, না থাকলে বিল্ট-ইন edge ভয়েস
-    #: "edge" = সবসময় বিল্ট-ইন ভয়েস | "indicf5" = সবসময় ক্লোনিং (নমুনা লাগবে)
-    tts_engine: str = "auto"
-    tts_indicf5_model: str = DEFAULT_TTS_MODEL
-    tts_nfe_steps: int = 16                  # diffusion ধাপ (বেশি = ভালো, ধীর)
-    tts_min_nfe_steps: int = 8               # governor এর নিচে নামবে না
-    tts_fp16: bool = True                    # GPU-তে half precision (দ্রুত, কম VRAM)
-    tts_max_attempts: int = 2
-    #: TTS-এর জন্য বরাদ্দ সময় = মোট কথা × এই গুণক (governor বাজেট রাখে)
-    tts_time_budget_factor: float = 0.35
-    tts_fallback_to_edge: bool = True        # IndicF5 চালু না হলে ভিডিও নষ্ট না করতে
-    # বিল্ট-ইন edge-tts ভয়েসের সেটিংস (ডিফল্ট পথ)
+    # --- text-to-speech (বিল্ট-ইন বাংলা neural ভয়েস) -------------------------
+    # কোনো ক্লোনিং নেই — কিছু দিতে হয় না, কিছু ইনস্টল করতে হয় না।
     #: কণ্ঠের লিঙ্গ — ``male`` (ডিফল্ট) | ``female`` | ``custom``।
     #: ``voice`` খালি থাকলে এখান থেকেই ভয়েস বাছা হয়; তাই পুরোনো/config-এ ভুল
     #: ভয়েস থাকলেও পুরুষ কণ্ঠই ব্যবহার হবে (ব্যবহারকারীর নির্দেশ)।
@@ -196,7 +184,7 @@ class AppConfig:
     borrow_silence_ms: int = 250            # পরের নীরবতা থেকে সর্বোচ্চ ধার
     prefer_rubberband: bool = True          # থাকলে rubberband (formant রক্ষা করে)
     sync_workers: int = 4
-    sync_sample_rate: int = 24000           # IndicF5-এর native rate
+    sync_sample_rate: int = 24000           # বাংলা neural ভয়েসের native rate
 
     # --- runtime -------------------------------------------------------------
     release_gpu_when_done: bool = True      # কাজ শেষে মডেল আনলোড → VRAM খালি
@@ -239,10 +227,56 @@ class AppConfig:
             return BANGLA_VOICES[gender]
         return voice or BANGLA_VOICES[DEFAULT_TTS_GENDER]
 
+    # ------------------------------------------------------------------
     @property
-    def voice_profile_dir(self) -> Path:
-        """ভয়েস প্রোফাইল cache কোথায় থাকবে।"""
-        return self.resolved_work_dir / "voice_profile"
+    def hotwords_path(self) -> Path | None:
+        """hotwords ফাইলের পূর্ণ পাথ (না পেলে ``None``)।"""
+        raw = (self.stt_hotwords_file or "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return path if path.is_file() else None
+        for base in (Path.cwd(), REPO_ROOT):
+            candidate = base / path
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def hotword_entries(self) -> list[str]:
+        """hotwords-এর সব এন্ট্রি (কোনো কাটছাঁট ছাড়া)।
+
+        অগ্রাধিকার: ``stt.hotwords`` (হাতে লেখা) → ``hotwords.txt`` ফাইল →
+        কিছুই নয়। ফাইলে এক লাইনে একটি নাম/শব্দ, ``#`` দিয়ে মন্তব্য;
+        কমা দিয়ে একাধিকও লেখা যায়।
+
+        Returns:
+            ডুপ্লিকেট-মুক্ত নামের তালিকা (ফাইল/লেখার ক্রমে)।
+        """
+        explicit = (self.stt_hotwords or "").strip()
+        entries = split_hotwords(explicit) if explicit else []
+        if not entries:
+            path = self.hotwords_path
+            if path is not None:
+                try:
+                    entries = load_hotword_file(path)
+                except Exception as exc:  # ফাইল পড়া না গেলেও ডাবিং চলবে
+                    logger.warning("hotwords ফাইল পড়া যায়নি (%s): %s", path, exc)
+                    entries = []
+        return entries
+
+    def resolved_hotwords(self) -> str:
+        """Whisper-এ দেওয়ার জন্য পুরো নাম-শব্দের তালিকা (এক স্ট্রিং)।
+
+        Whisper-এর prompt সীমা ২২৪ টোকেন, তাই :class:`~proxmax.stt.SpeechToText`
+        এই তালিকাকে ছোট ছোট ভাগে ভেঙে প্রতি chunk-এ আলাদা ভাগ দেয়
+        (:func:`proxmax.hotwords.build_hotword_slices`)। এতে ফাইলের প্রতিটি
+        নামই একবার প্রাইম হয় — কোনো নাম বাদ পড়ে না।
+
+        Returns:
+            কমা দিয়ে আলাদা করা শব্দের স্ট্রিং (খালি হতে পারে)।
+        """
+        return ", ".join(self.hotword_entries())
 
     def resolved_gemini_api_key(self) -> str:
         """Return the Gemini API key from config or environment (may be empty)."""
@@ -298,6 +332,8 @@ class AppConfig:
                 "max_seam_repairs": "max_seam_repairs",
                 "unload_before_tts": "unload_stt_before_tts",
                 "hotwords": "stt_hotwords",
+                "hotwords_file": "stt_hotwords_file",
+                "hotwords_max_chars": "stt_hotwords_max_chars",
             },
             "audio": {
                 "preprocess": "audio_preprocess",
@@ -328,24 +364,9 @@ class AppConfig:
                 "timeout": "gemini_timeout",
                 "max_output_tokens": "gemini_max_output_tokens",
             },
-            "voice": {
-                "reference": "voice_reference",
-                "min_seconds": "voice_min_seconds",
-                "target_seconds": "voice_target_seconds",
-                "max_seconds": "voice_max_seconds",
-                "language": "voice_language",
-                "max_internal_pause_ms": "voice_max_internal_pause_ms",
-                "cache": "voice_cache",
-            },
             "tts": {
-                "engine": "tts_engine",
-                "indicf5_model": "tts_indicf5_model",
-                "nfe_steps": "tts_nfe_steps",
-                "min_nfe_steps": "tts_min_nfe_steps",
-                "fp16": "tts_fp16",
-                "max_attempts": "tts_max_attempts",
-                "time_budget_factor": "tts_time_budget_factor",
-                "fallback_to_edge": "tts_fallback_to_edge",
+                # পুরোনো config-এ থাকা ক্লোনিং কী-গুলো আর ব্যবহার হয় না
+                "engine": "_ignored_tts_engine",
                 "gender": "tts_gender",
                 "voice": "tts_voice", "rate": "tts_rate", "volume": "tts_volume",
                 "trim_silence": "tts_trim_silence", "trim_pad_ms": "tts_trim_pad_ms",
@@ -378,7 +399,7 @@ class AppConfig:
         }
         sections = (
             "paths", "stt", "audio", "translation", "gemini",
-            "voice", "tts", "sync", "runtime", "output",
+            "tts", "sync", "runtime", "output",
         )
         known = set(vars(self).keys())
 
@@ -489,29 +510,16 @@ class AppConfig:
                 f"পাওয়া গেছে: {self.translation_char_rate}"
             )
 
-        if self.tts_engine not in SUPPORTED_TTS_ENGINES:
+        if not 100 <= int(self.stt_hotwords_max_chars) <= 2000:
             raise ValueError(
-                f"tts_engine হতে হবে {SUPPORTED_TTS_ENGINES}, পাওয়া গেছে: '{self.tts_engine}'"
+                "stt.hotwords_max_chars ১০০–২০০০ অক্ষরের মধ্যে হতে হবে "
+                f"(পাওয়া গেছে: {self.stt_hotwords_max_chars})"
             )
-        if not 1 <= self.tts_nfe_steps <= 64:
-            raise ValueError("tts_nfe_steps ১–৬৪ এর মধ্যে হতে হবে।")
-        if not 1 <= self.tts_min_nfe_steps <= self.tts_nfe_steps:
-            raise ValueError(
-                f"tts_min_nfe_steps অবৈধ: ১ থেকে tts_nfe_steps ({self.tts_nfe_steps})-এর মধ্যে হতে হবে।"
+        if (self.stt_hotwords_file or "").strip() and self.hotwords_path is None:
+            logger.warning(
+                "hotwords ফাইল পাওয়া যায়নি: %s — শুধু stt.hotwords ব্যবহার হবে।",
+                self.stt_hotwords_file,
             )
-        if self.tts_max_attempts < 1:
-            raise ValueError("tts_max_attempts অন্তত ১ হতে হবে।")
-        if self.tts_time_budget_factor <= 0:
-            raise ValueError("tts_time_budget_factor ধনাত্মক হতে হবে।")
-
-        if self.voice_min_seconds < 2:
-            raise ValueError("voice_min_seconds অন্তত ২ সেকেন্ড হতে হবে।")
-        if self.voice_target_seconds < self.voice_min_seconds:
-            raise ValueError("voice_target_seconds অবশ্যই voice_min_seconds-এর চেয়ে বড় হতে হবে।")
-        if self.voice_max_seconds < self.voice_target_seconds:
-            raise ValueError("voice_max_seconds অবশ্যই voice_target_seconds-এর চেয়ে বড় হতে হবে।")
-        if self.voice_max_internal_pause_ms < 100:
-            raise ValueError("voice_max_internal_pause_ms অন্তত ১০০ হতে হবে।")
 
         if not (0.5 <= self.min_tempo <= 1.0 < self.max_tempo <= 2.0):
             raise ValueError(
@@ -535,7 +543,7 @@ class AppConfig:
                 f"tts.gender={self.tts_gender} অনুযায়ী ভয়েস পাওয়া গেল না "
                 f"(tts_voice={self.tts_voice!r})।"
             )
-        if self.tts_engine in ("edge", "auto") and not self.resolved_tts_voice.startswith("bn-"):
+        if not self.resolved_tts_voice.startswith("bn-"):
             logger.warning(
                 "TTS ভয়েস '%s' Bangla (bn-*) নয় — ডাবিংয়ের জন্য bn-BD ভয়েস সুপারিশ করা হয়।",
                 self.resolved_tts_voice,
