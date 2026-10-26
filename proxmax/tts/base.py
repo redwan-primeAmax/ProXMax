@@ -33,8 +33,13 @@ class BaseTTSEngine(ABC):
     #: আউটপুট WAV-এর sample rate
     sample_rate: int = 24000
 
-    def __init__(self) -> None:
+    def __init__(self, trim_silence: bool = True, trim_pad_ms: int = 25) -> None:
         self.profile: Optional[VoiceProfile] = None
+        #: ক্লিপের শুরু/শেষের নীরবতা ছাঁটবে কি না — TTS মডেলগুলো সাধারণত
+        #: ০.৫–০.৮ সেকেন্ড নীরবতা জুড়ে দেয়; না ছাঁটলে প্রতিটি বাক্যের পরে
+        #: অযথা বিরতি শোনায় আর ক্যালিব্রেশনও ভুল হার মাপে।
+        self.trim_silence = bool(trim_silence)
+        self.trim_pad_ms = max(0, int(trim_pad_ms))
 
     # ------------------------------------------------------------------
     def prepare(self, profile: Optional[VoiceProfile] = None) -> None:
@@ -98,10 +103,30 @@ class BaseTTSEngine(ABC):
             self.sample_rate, in_ms=8, out_ms=50,
         )
 
+    def _finalize(self, audio: np.ndarray) -> np.ndarray:
+        """নীরবতা ছেঁটে + লাউডনেস ঠিক করে চূড়ান্ত ক্লিপ বানায়।
+
+        TTS মডেলের দেওয়া ক্লিপে সাধারণত শুরুতে ~০.১s আর শেষে ~০.৫–০.৮s
+        নীরবতা থাকে। ওটা রেখে দিলে প্রতিটি বাক্যের পর অকারণ বিরতি শোনায়
+        (ব্যবহারকারীর অভিযোগ: "এক লাইন বলে বলার পরে অনেকক্ষণ গ্যাপ")।
+        """
+        if audio.size == 0:
+            return audio
+        trimmed = audio
+        if self.trim_silence:
+            trimmed = audio_fx.trim_silence(
+                audio, self.sample_rate,
+                threshold_dbfs=-45.0, pad_ms=self.trim_pad_ms,
+            )
+        if trimmed.size < int(0.05 * self.sample_rate):  # প্রায় ফাঁকা — মূলটাই রাখা
+            trimmed = audio
+        return self._postprocess(trimmed)
+
     def _write_clip(self, seg: Segment, audio: np.ndarray, output_dir: Path) -> Path:
         """ক্লিপ WAV হিসেবে লিখে segment-এ পাথ/দৈর্ঘ্য বসায়।"""
         path = output_dir / f"seg_{seg.index:04d}.wav"
-        audio_fx.write_wav(path, self._postprocess(audio), self.sample_rate)
+        final = self._finalize(audio)
+        audio_fx.write_wav(path, final, self.sample_rate)
         seg.tts_audio_path = path
-        seg.tts_duration = audio.size / float(self.sample_rate)
+        seg.tts_duration = final.size / float(self.sample_rate)
         return path

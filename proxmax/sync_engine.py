@@ -98,18 +98,31 @@ def compute_tempo(
     min_tempo: float = 0.95,
     max_tempo: float = 1.25,
     slow_down_short_clips: bool = False,
+    fill_extension: float = 0.0,
+    fill_gap_seconds: float = 0.05,
 ) -> float:
     """Tempo ratio to fit ``tts_duration`` into ``target_duration``.
 
-    tempo > 1 মানে দ্রুত করা (বাংলা অডিও লম্বা), tempo < 1 মানে ধীর
-    করা (বাংলা অডিও ছোট)। ডিফল্টে ধীর করা হয় না — ছোট ক্লিপ
-    স্বাভাবিক গতিতে রেখে বাকি সময়টা নীরব থাকলে শোনতে বেশি স্বাভাবিক লাগে।
+    tempo > 1 মানে দ্রুত করা (বাংলা অডিও লম্বা), tempo < 1 মানে ধীর করা।
+
+    ``fill_extension`` > 0 হলে ক্লিপ স্লটের চেয়ে ছোট থাকলে সেটি **ধীর করে
+    স্লট ভরা হয়** (সর্বোচ্চ ``fill_extension`` গুণ, যেমন ০.১২ = ১২% ধীর),
+    যাতে বাক্যের পর অযথা নীরবতা না থাকে। খুব ছোট ক্লিপকে অস্বাভাবিক ধীর
+    করা হয় না — ওই সীমার বাইরে গেলে স্বাভাবিক গতিতেই থাকে।
     """
     if tts_duration <= 0 or target_duration <= 0:
         return 1.0
     tempo = tts_duration / target_duration
-    if tempo < 1.0 and not slow_down_short_clips:
-        return 1.0
+    if tempo < 1.0:
+        if slow_down_short_clips:
+            return min(max(tempo, min_tempo), max_tempo)
+        if fill_extension <= 0:
+            return 1.0
+        longest = min(
+            max(target_duration - fill_gap_seconds, 0.05),
+            tts_duration * (1.0 + float(fill_extension)),
+        )
+        return min(1.0, max(tts_duration / max(longest, 0.05), 1.0 / (1.0 + float(fill_extension))))
     return min(max(tempo, min_tempo), max_tempo)
 
 
@@ -172,6 +185,7 @@ class SyncEngine:
         slot_gap_ms: int = 80,
         borrow_silence_ms: int = 250,
         prefer_rubberband: bool = True,
+        fill_extension: float = 0.12,
     ) -> None:
         """Args:
             min_tempo: ধীর করার সর্বনিম্ন সীমা (ডিফল্টে ধীর করা হয় না)।
@@ -182,6 +196,8 @@ class SyncEngine:
             slot_gap_ms: দুই ক্লিপের মাঝে ন্যূনতম ফাঁক।
             borrow_silence_ms: পরের নীরবতা থেকে সর্বোচ্চ কত ধার নেওয়া যাবে।
             prefer_rubberband: ffmpeg-এ থাকলে rubberband ব্যবহার করা হবে।
+            fill_extension: ক্লিপ স্লটের চেয়ে ছোট হলে সর্বোচ্চ এতটুকু ধীর
+                করে স্লট ভরা হয় (০.১২ = ১২%)। ``0`` = পুরোনো আচরণ (নীরবতা)।
         """
         self.min_tempo = float(min_tempo)
         self.max_tempo = float(max_tempo)
@@ -191,6 +207,7 @@ class SyncEngine:
         self.slot_gap_seconds = max(0.0, slot_gap_ms / 1000.0)
         self.borrow_seconds = max(0.0, borrow_silence_ms / 1000.0)
         self.prefer_rubberband = bool(prefer_rubberband)
+        self.fill_extension = max(0.0, min(0.5, float(fill_extension)))
         #: সর্বশেষ রানের পরিসংখ্যান (রিপোর্টে ব্যবহৃত)
         self.last_stats: Dict[str, object] = {}
 
@@ -215,6 +232,8 @@ class SyncEngine:
             tts_duration, window_length,
             min_tempo=self.min_tempo, max_tempo=self.max_tempo,
             slow_down_short_clips=self.slow_down_short_clips,
+            fill_extension=self.fill_extension,
+            fill_gap_seconds=self.slot_gap_seconds,
         )
 
         if abs(tempo - 1.0) < 0.02:
@@ -329,17 +348,25 @@ class SyncEngine:
         tempos = [float(getattr(s, "tempo_used", 1.0) or 1.0) for s in stretched]
         max_tempo = max(tempos) if tempos else 1.0
         aggressive = sum(1 for t in tempos if t > 1.15)
+        slowed = sum(1 for t in tempos if t < 0.98)
+        speech_seconds = sum(float(s.placed_duration or 0.0) for s in stretched)
+        silence = max(0.0, float(total_duration) - speech_seconds)
         self.last_stats = {
             "clips": len(stretched),
             "overlaps": 0,
             "max_tempo": max_tempo,
             "aggressive_stretch": aggressive,
+            "slowed_to_fill": slowed,
             "trimmed": int(self.last_stats.get("trimmed", 0)),
+            "speech_seconds": round(speech_seconds, 2),
+            "silence_seconds": round(silence, 2),
+            "silence_percent": round(100.0 * silence / total_duration, 1) if total_duration else 0.0,
         }
         logger.info(
             "চূড়ান্ত Bangla অডিও: %s | %.1fs | %d ক্লিপ | সর্বোচ্চ tempo %.2f "
-            "(জোরালো stretch %d) | ওভারল্যাপ ০",
-            output_wav.name, total_duration, len(stretched), max_tempo, aggressive,
+            "(জোরালো stretch %d, স্লট ভরাতে ধীর %d) | নীরবতা %.1fs (%.1f%%) | ওভারল্যাপ ০",
+            output_wav.name, total_duration, len(stretched), max_tempo, aggressive, slowed,
+            silence, self.last_stats["silence_percent"],
         )
         return output_wav
 

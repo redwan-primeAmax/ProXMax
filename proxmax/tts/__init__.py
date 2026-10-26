@@ -130,7 +130,7 @@ def build_tts_engine(
     if engine_name == "indicf5" and profile is None:
         logger.info(
             "কণ্ঠ ক্লোনিংয়ের জন্য কোনো ভয়েস নমুনা নেই — বিল্ট-ইন বাংলা ভয়েস "
-            "(%s) ব্যবহার হবে।", config.tts_voice,
+            "(%s) ব্যবহার হবে।", config.resolved_tts_voice,
         )
     elif engine_name == "indicf5":
         engine: BaseTTSEngine = IndicF5Engine(
@@ -142,6 +142,8 @@ def build_tts_engine(
             max_attempts=config.tts_max_attempts,
             time_budget_seconds=time_budget_seconds,
             total_audio_seconds=total_audio_seconds,
+            trim_silence=config.tts_trim_silence,
+            trim_pad_ms=config.tts_trim_pad_ms,
         )
         try:
             engine.prepare(profile)
@@ -157,13 +159,16 @@ def build_tts_engine(
             )
 
     edge = EdgeTTSEngine(
-        voice=config.tts_voice,
+        voice=config.resolved_tts_voice,
         rate=config.tts_rate,
         volume=config.tts_volume,
         pitch=config.tts_pitch,
         concurrency=config.tts_concurrency,
         max_retries=config.tts_max_retries,
         sample_rate=config.sync_sample_rate,
+        trim_silence=config.tts_trim_silence,
+        trim_pad_ms=config.tts_trim_pad_ms,
+        gender=config.tts_gender,
     )
     edge.prepare(profile)
     logger.info("TTS ইঞ্জিন প্রস্তুত: %s", edge.describe())
