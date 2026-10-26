@@ -118,7 +118,7 @@ def join_hotwords(entries: Iterable[str]) -> str:
     return ", ".join(clean_entry(e) for e in entries if clean_entry(e))
 
 
-def build_hotword_slices(entries: Iterable[str], max_chars: int = 620) -> List[str]:
+def build_hotword_slices(entries: Iterable[str], max_chars: int = 480) -> List[str]:
     """তালিকাকে ছোট ছোট ভাগে ভাগ করে (Whisper-এর prompt সীমা মেনে)।
 
     কেন ভাগ করা হয়: Whisper-এর প্রসঙ্গ সীমা ২২৪ টোকেন, তাই ৭০০+ নাম একসাথে

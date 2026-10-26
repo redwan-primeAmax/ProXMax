@@ -110,7 +110,7 @@ class AppConfig:
     #: ফাইলে এক লাইনে একটি নাম, ``#`` দিয়ে মন্তব্য। ব্যবহারকারীকে কিছু টাইপ করতে হয় না।
     stt_hotwords_file: str = DEFAULT_HOTWORDS_FILE
     #: Whisper-এর prompt সীমা (২২৪ টোকেন) মেনে hotwords কত অক্ষর পর্যন্ত যাবে
-    stt_hotwords_max_chars: int = 620
+    stt_hotwords_max_chars: int = 480
 
     # --- audio preprocessing (0 GPU) -----------------------------------------
     audio_preprocess: bool = True
@@ -553,7 +553,7 @@ class AppConfig:
             if not _MISSING_KEY_WARNED:
                 _MISSING_KEY_WARNED = True
                 logger.warning(
-                    "Gemini API key এখনো সেট হয়নি — নোটবুকের 'Gemini কনফিগারেশন' সেলে "
+                    "Gemini API key এখনো সেট হয়নি — নোটবুকের ধাপ ৬-এর সেলে "
                     "GEMINI_API_KEY বসান, নইলে প্রোগ্রাম শুরু হতে পারবে না।"
                 )
         return self

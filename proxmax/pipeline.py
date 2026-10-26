@@ -270,7 +270,7 @@ class DubbingPipeline:
                 logger.info(
                     "⏭️  আগের আউটপুট পাওয়া গেছে (%.1f MB), তাই বাদ দেওয়া হলো: %s\n"
                     "   নতুন করে (নতুন কোড/কণ্ঠ দিয়ে) ডাবিং করতে চাইলে চালান: "
-                    "python main.py --force  (নোটবুকে ধাপ ৭-এ FORCE_REPROCESS = True)",
+                    "python main.py --force  (নোটবুকে ধাপ ৪-এ FORCE_REPROCESS = True)",
                     size_mb, output_path.name,
                 )
                 return VideoResult(

@@ -18,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -76,7 +75,6 @@ from proxmax.translator import (                                       # noqa: E
     GeminiTranslator,
     TranslationError,
     create_translator,
-    parse_numbered_lines,
     parse_translations,
     salvage_translations,
 )

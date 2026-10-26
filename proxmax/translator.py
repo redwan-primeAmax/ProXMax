@@ -618,7 +618,7 @@ class GeminiTranslator(BaseTranslator):
         )
         if not resolved_key and client is None:
             raise GeminiAuthError(
-                "Gemini API key পাওয়া যায়নি। নোটবুকের 'Gemini কনফিগারেশন' সেলে "
+                "Gemini API key পাওয়া যায়নি। নোটবুকের ধাপ ৬-এর সেলে "
                 "GEMINI_API_KEY বসান, অথবা environment variable সেট করুন:\n"
                 "    export GEMINI_API_KEY='your-key'\n"
                 "API key নিন: https://aistudio.google.com/app/apikey"

@@ -44,12 +44,12 @@ stt:
   hotwords_file: "hotwords.txt"
   # এক chunk-এ hotwords-এর সর্বোচ্চ অক্ষর (Whisper-এর ২২৪ টোকেন সীমা মেনে
   # পুরো তালিকা ছোট ছোট ভাগে ভেঙে প্রতি chunk-এ আলাদা ভাগ দেওয়া হয়)
-  hotwords_max_chars: 620
+  hotwords_max_chars: 480   # প্রতি ভাগে সর্বোচ্চ অক্ষর (Whisper-এর ২২৪-টোকেন সীমার নিরাপদ মার্জিন)
   # হাতে লেখা নাম (কমা দিয়ে) — দিলে ফাইলের বদলে কেবল এগুলোই ব্যবহার হবে।
   # আপনার ভিডিওর বিশেষ নাম থাকলে এখানে লিখুন; সেগুলোই সবচেয়ে আগে যায়।
   hotwords: ""
 
-# --- অডিও পরিষ্কার (ভয়েস নমুনার জন্য; Demucs লাগে না) ----------------------
+# --- অডিও পরিষ্কার (STT-এর আগে; Demucs লাগে না) ------------------------------
 audio:
   preprocess: true          # high-pass + হালকা loudness normalization
   highpass_hz: 70           # কম-কম্পাঙ্কের গুঞ্জন/হাম সরায়
@@ -83,7 +83,7 @@ gemini:
   # API key নিন: https://aistudio.google.com/app/apikey
   # এখানে key না লিখে environment variable ব্যবহার করা বেশি নিরাপদ:
   #   export GEMINI_API_KEY="your-key"       (অথবা GOOGLE_API_KEY)
-  # Colab-এ নোটবুকের "Gemini কনফিগারেশন" সেলেই key দেওয়া যায়।
+  # Colab-এ নোটবুকের ধাপ ৬-এর সেলেই key দেওয়া যায়।
   api_key: ""
   # ডিফল্ট মডেল (ব্যবহারকারীর নির্দেশ অনুযায়ী)। দরকার হলে নাম বদলান।
   model: "gemini-3.5-flash-lite"

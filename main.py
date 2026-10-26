@@ -49,7 +49,7 @@ try:
 except ModuleNotFoundError as _import_error:                   # pragma: no cover
     print(
         f"❌ প্রয়োজনীয় প্যাকেজ পাওয়া যায়নি: '{_import_error.name}'\n"
-        f"   নোটবুকের **ধাপ ৪** (Dependency ইনস্টল) সেলটি রান করুন, অথবা চালান:\n"
+        f"   নোটবুকের **ধাপ ৩** (Dependency ইনস্টল) সেলটি রান করুন, অথবা চালান:\n"
         f"   pip install -r requirements.txt",
         file=sys.stderr, flush=True,
     )

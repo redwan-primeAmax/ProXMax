@@ -227,7 +227,7 @@ class SpeechToText:
         compression_ratio_threshold: float = 2.4,
         log_prob_threshold: float = -1.0,
         hotwords: str = "",
-        hotwords_max_chars: int = 620,
+        hotwords_max_chars: int = 480,
     ) -> None:
         """Args:
             model_size: Whisper মডেল (``large-v3`` / ``medium``)।
