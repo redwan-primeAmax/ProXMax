@@ -169,7 +169,7 @@ class TestConfig(unittest.TestCase):
         )
         self.assertEqual(cfg.whisper_model, "medium")
         self.assertEqual(cfg.tts_engine, "edge")
-        self.assertTrue(cfg.tts_voice.startswith("bn-BD-"))
+        self.assertTrue(cfg.resolved_tts_voice.startswith("bn-BD-"))
 
     def test_invalid_settings_are_rejected(self):
         cases = [
@@ -804,6 +804,137 @@ class TestTTSResolution(unittest.TestCase):
                 pipeline.close()
 
 
+class TestMaleVoiceAndGaps(unittest.TestCase):
+    """পুরুষ কণ্ঠ জোর করে নিশ্চিত করা + বাক্যের পরে অযথা ফাঁক বন্ধ।"""
+
+    # ---- voice -------------------------------------------------------
+    def test_default_voice_is_male(self):
+        cfg = AppConfig()
+        self.assertEqual(cfg.tts_gender, "male")
+        self.assertEqual(cfg.resolved_tts_voice, "bn-BD-PradeepNeural")
+
+    def test_gender_wins_over_stale_female_config(self):
+        # পুরোনো config.yaml-এ নারী ভয়েস লেখা থাকলেও পুরুষই ব্যবহার হবে
+        cfg = AppConfig(tts_gender="male", tts_voice="bn-BD-NabanitaNeural")
+        self.assertEqual(cfg.resolved_tts_voice, "bn-BD-PradeepNeural")
+
+    def test_explicit_custom_voice_is_honoured(self):
+        cfg = AppConfig(tts_gender="custom", tts_voice="bn-BD-NabanitaNeural").validate()
+        self.assertEqual(cfg.resolved_tts_voice, "bn-BD-NabanitaNeural")
+        female = AppConfig(tts_gender="female").validate()
+        self.assertEqual(female.resolved_tts_voice, "bn-BD-NabanitaNeural")
+
+    def test_repo_yaml_uses_male_voice(self):
+        cfg = AppConfig.from_yaml(Path(__file__).resolve().parents[1] / "config.yaml").validate()
+        self.assertEqual(cfg.resolved_tts_voice, "bn-BD-PradeepNeural")
+
+    # ---- TTS padding trim -------------------------------------------
+    def test_tts_padding_is_trimmed(self):
+        from proxmax.tts.base import BaseTTSEngine
+
+        class _Engine(BaseTTSEngine):
+            name = "test"
+
+            def synthesize(self, segments, output_dir):  # pragma: no cover
+                return segments
+
+        engine = _Engine(trim_silence=True, trim_pad_ms=20)
+        sr = 24000
+        speech = 0.3 * np.sin(2 * np.pi * 220 * np.arange(int(1.0 * sr)) / sr)
+        padded = np.concatenate([
+            np.zeros(int(0.5 * sr), dtype=np.float32),
+            speech.astype(np.float32),
+            np.zeros(int(0.8 * sr), dtype=np.float32),
+        ])
+        final = engine._finalize(padded)
+        self.assertLess(final.size, padded.size)
+        self.assertAlmostEqual(final.size / sr, 1.04, delta=0.12)
+
+    def test_trimming_can_be_disabled(self):
+        from proxmax.tts.base import BaseTTSEngine
+
+        class _Engine(BaseTTSEngine):
+            name = "test"
+
+            def synthesize(self, segments, output_dir):  # pragma: no cover
+                return segments
+
+        engine = _Engine(trim_silence=False)
+        sr = 24000
+        audio = np.zeros(int(1.5 * sr), dtype=np.float32)
+        audio[int(0.4 * sr):int(0.9 * sr)] = 0.4
+        self.assertEqual(engine._finalize(audio).size, audio.size)
+
+    # ---- fill short clips by slowing --------------------------------
+    def test_short_clip_is_slowed_to_fill_its_slot(self):
+        # ২.০s কথা, ২.৫s স্লট → ১২% সীমা পর্যন্ত ধীর (২.২৪s), নীরবতা কমে
+        tempo = compute_tempo(2.0, 2.5, fill_extension=0.12)
+        self.assertLess(tempo, 1.0)
+        self.assertGreaterEqual(tempo, 1.0 / 1.12 - 1e-6)
+        self.assertAlmostEqual(2.0 / tempo, 2.24, places=2)
+
+    def test_fill_never_exceeds_extension(self):
+        # ৭s কথা, ১২s স্লট → ১২%-এর বেশি ধীর করা হয় না
+        tempo = compute_tempo(7.0, 12.0, fill_extension=0.12)
+        self.assertAlmostEqual(tempo, 1.0 / 1.12, places=4)
+
+    def test_fill_can_be_disabled(self):
+        self.assertEqual(compute_tempo(2.0, 2.5, fill_extension=0.0), 1.0)
+
+    def test_no_fill_when_clip_is_longer_than_slot(self):
+        self.assertGreater(compute_tempo(3.0, 2.4, fill_extension=0.12), 1.0)
+
+
+class TestEdgeVoiceResolution(unittest.TestCase):
+    """edge-tts-এ ভয়েস না থাকলে নারী কণ্ঠে নেমে যাওয়া চলবে না — সমান লিঙ্গ।"""
+
+    def _engine(self, voice="bn-BD-PradeepNeural", gender="male"):
+        from proxmax.tts.edge_engine import EdgeTTSEngine
+
+        return EdgeTTSEngine(voice=voice, gender=gender)
+
+    def _with_voices(self, voices):
+        from proxmax.tts import edge_engine
+
+        patcher = mock.patch.dict(edge_engine._VOICE_LIST, {"voices": voices})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_existing_voice_is_kept(self):
+        self._with_voices([
+            {"ShortName": "bn-BD-PradeepNeural", "Gender": "Male", "Locale": "bn-BD"},
+            {"ShortName": "bn-BD-NabanitaNeural", "Gender": "Female", "Locale": "bn-BD"},
+        ])
+        self.assertEqual(self._engine()._resolve_voice(), "bn-BD-PradeepNeural")
+
+    def test_missing_voice_falls_back_to_same_gender(self):
+        self._with_voices([
+            {"ShortName": "bn-IN-Male", "Gender": "Male", "Locale": "bn-IN"},
+            {"ShortName": "bn-BD-NabanitaNeural", "Gender": "Female", "Locale": "bn-BD"},
+        ])
+        self.assertEqual(self._engine("bn-BD-GoneNeural")._resolve_voice(), "bn-IN-Male")
+
+    def test_no_same_gender_voice_raises_instead_of_female(self):
+        from proxmax.tts.base import TTSError
+
+        self._with_voices([
+            {"ShortName": "bn-BD-NabanitaNeural", "Gender": "Female", "Locale": "bn-BD"},
+        ])
+        with self.assertRaises(TTSError):
+            self._engine("bn-BD-GoneNeural")._resolve_voice()
+
+    def test_female_request_keeps_female(self):
+        self._with_voices([
+            {"ShortName": "bn-BD-NabanitaNeural", "Gender": "Female", "Locale": "bn-BD"},
+        ])
+        self.assertEqual(self._engine("bn-BD-NabanitaNeural", "female")._resolve_voice(),
+                         "bn-BD-NabanitaNeural")
+
+    def test_unknown_network_keeps_configured_voice(self):
+        self._with_voices([])
+        self.assertEqual(self._engine()._resolve_voice(), "bn-BD-PradeepNeural")
+
+
 class TestProsodyUnits(unittest.TestCase):
     """ছোট segment জোড়া লেগে এক clip-এ পুরো বাক্য হয় (মাঝপথে থামা বন্ধ)।"""
 
@@ -1434,6 +1565,84 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertEqual(client.closed, 1)
 
 
+class TestTranslatorRecovery(unittest.TestCase):
+    """অনূদিত না হওয়া লাইন ছোট ব্যাচে উদ্ধার — নীরব স্লট যেন না থাকে।"""
+
+    def test_missing_lines_are_recovered_in_small_batches(self):
+        def responder(contents, _n):
+            lines = _lines_from_contents(contents)
+            if len(lines) > 4:      # বড় ব্যাচে মডেল ভুল ফরম্যাট দেয়
+                return "sorry, I cannot help with that"
+            return json.dumps({"translations": [f"বাংলা: {t}" for t in lines]})
+
+        client = _FakeClient(responder)
+        translator = _make_translator(client, batch_size=6, max_retries=1)
+        segments = _segments([f"Line {i}." for i in range(6)])
+        translator.translate_segments(segments)
+        self.assertTrue(all((s.text_bn or "").strip() for s in segments),
+                        [s.text_bn for s in segments])
+        self.assertTrue(all(s.text_bn.startswith("বাংলা:") for s in segments))
+
+    def test_recovery_failure_is_graceful(self):
+        def responder(contents, _n):
+            return "still not valid"
+
+        client = _FakeClient(responder)
+        translator = _make_translator(client, batch_size=3, max_retries=1)
+        segments = _segments(["A.", "B."])
+        translator.translate_segments(segments)      # exception নয়
+        self.assertEqual([s.text_bn for s in segments], ["", ""])
+
+
+class TestTranslatorExpandPass(unittest.TestCase):
+    """বড় ফাঁকের জন্য লাইন ভরাট করা (expand pass)।"""
+
+    def _translator(self, grow_with: str):
+        def responder(contents, _n):
+            lines = _lines_from_contents(contents)
+            return json.dumps({"translations": [line + grow_with for line in lines]})
+
+        return _make_translator(_FakeClient(responder)), _FakeClient(responder)
+
+    def test_short_line_is_expanded_within_slot(self):
+        def responder(contents, _n):
+            lines = _lines_from_contents(contents)
+            return json.dumps({"translations": [line + " আসলে পুরো সময়টা জুড়ে কথা বলা যায়।" for line in lines]})
+
+        client = _FakeClient(responder)
+        translator = _make_translator(client)
+        seg = Segment(index=0, start=0.0, end=12.6, text_en="x", text_bn="খুব ছোট।")
+        seg.tts_duration = 1.0
+        changed = translator.expand_to_fit([seg], [12.5])
+        self.assertEqual(changed, 1)
+        self.assertGreater(len(seg.text_bn), 20)
+        self.assertTrue(seg.text_bn.startswith("খুব ছোট।"))
+
+    def test_absurdly_long_answer_is_rejected(self):
+        def responder(_contents, _n):
+            return json.dumps({"translations": ["অ" * 5000]})
+
+        translator = _make_translator(_FakeClient(responder))
+        seg = Segment(index=0, start=0.0, end=4.0, text_en="x", text_bn="ছোট।")
+        self.assertEqual(translator.expand_to_fit([seg], [4.0]), 0)
+        self.assertEqual(seg.text_bn, "ছোট।")
+
+    def test_failure_keeps_old_text(self):
+        client = _FakeClient(lambda c, n: (_ for _ in ()).throw(RuntimeError("boom")))
+        translator = _make_translator(client, max_retries=1)
+        seg = Segment(index=0, start=0.0, end=9.0, text_en="x", text_bn="ছোট।")
+        with mock.patch("proxmax.translator.time.sleep"):
+            self.assertEqual(translator.expand_to_fit([seg], [8.0]), 0)
+        self.assertEqual(seg.text_bn, "ছোট।")
+
+    def test_empty_texts_are_skipped(self):
+        client = _FakeClient(lambda c, n: json.dumps({"translations": ["কিছু"]}))
+        translator = _make_translator(client)
+        seg = Segment(index=0, start=0.0, end=5.0, text_en="x", text_bn="  ")
+        self.assertEqual(translator.expand_to_fit([seg], [5.0]), 0)
+        self.assertEqual(client.calls, [])
+
+
 class TestTranslatorFactory(unittest.TestCase):
     def test_gemini_backend(self):
         translator = create_translator(
@@ -1691,6 +1900,130 @@ class _FakeTTS:
 
     def close(self):
         self.closed = True
+
+
+class TestGapFilling(unittest.TestCase):
+    """বড় ফাঁক ভরানোর ধাপ: ছোট লাইন ভরাট করে শুধু সেগুলোরই আবার TTS।"""
+
+    class _Translator(_FakeTranslator):
+        def __init__(self, expand: bool = True):
+            super().__init__()
+            self.expand = expand
+            self.expand_calls = 0
+
+        def translate_segments(self, segments):
+            for seg in segments:
+                seg.text_bn = "ছোট।"
+            return segments
+
+        def expand_to_fit(self, segments, targets):
+            self.expand_calls += 1
+            changed = 0
+            for seg, target in zip(segments, targets):
+                if target - float(seg.tts_duration or 0.0) >= 0.9:
+                    seg.text_bn = "এটি এখন অনেক বেশি ভরাট করে লেখা একটি লাইন যাতে সময়টা পুরো ভরে যায়।"
+                    changed += 1
+            return changed
+
+    class _PaddedTTS(_FakeTTS):
+        """edge-tts-এর মতো দুই প্রান্তে নীরবতা জোড়া ক্লিপ (trim হবে)।"""
+
+        def synthesize(self, segments, output_dir):
+            from proxmax.tts.base import BaseTTSEngine
+
+            class _Trimmer(BaseTTSEngine):
+                name = "trimmer"
+
+                def synthesize(self, *_args, **_kwargs):  # pragma: no cover
+                    return []
+
+            engine = _Trimmer(trim_silence=True, trim_pad_ms=25)
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for seg in segments:
+                speech = max(0.5, len(seg.text_bn) / 13.0)
+                body = (0.3 * np.sin(2 * np.pi * 220 * np.arange(int(speech * 24000)) / 24000)).astype(np.float32)
+                padded = np.concatenate([
+                    np.zeros(int(0.15 * 24000), dtype=np.float32),
+                    body,
+                    np.zeros(int(0.6 * 24000), dtype=np.float32),
+                ])
+                final = engine._finalize(padded)
+                path = output_dir / f"seg_{seg.index:04d}.wav"
+                audio_fx.write_wav(path, final, 24000)
+                seg.tts_audio_path = path
+                seg.tts_duration = final.size / 24000
+            return segments
+
+    def _pipeline(self, root: Path, translator, tts):
+        from proxmax.audio_extraction import AudioExtractor
+        from proxmax.muxer import VideoMuxer
+        from proxmax.pipeline import DubbingPipeline
+
+        class _Stt:
+            last_stats = {"chunks": 1}
+
+            def __init__(self):
+                self.released = False
+
+            def transcribe(self, _path):
+                return [
+                    Segment(0, 0.3, 12.9, "a long english sentence about the squad", ""),
+                    Segment(1, 12.9, 18.0, "and another short one here", ""),
+                    Segment(2, 18.0, 23.0, "the final line of this clip", ""),
+                ]
+
+            def release(self):
+                self.released = True
+
+        input_dir, output_dir = root / "in", root / "out"
+        input_dir.mkdir()
+        video = input_dir / "demo.mp4"
+        subprocess.run(
+            [FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "color=c=navy:s=320x240:r=25:d=24",
+             "-f", "lavfi", "-i", "sine=frequency=220:duration=24",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(video)],
+            capture_output=True, text=True,
+        )
+        cfg = AppConfig(
+            input_dir=str(input_dir), output_dir=str(output_dir),
+            work_dir=str(root / "work"), save_srt=True,
+        ).validate()
+        pipeline = DubbingPipeline.__new__(DubbingPipeline)
+        pipeline.config = cfg
+        pipeline.extractor = AudioExtractor(use_hwaccel=False)
+        pipeline.stt = _Stt()
+        pipeline.translator = translator
+        pipeline.tts = tts
+        pipeline._tts = tts
+        pipeline._profile = None
+        pipeline._profile_checked = True
+        pipeline.sync_engine = SyncEngine(sample_rate=24000, max_workers=2,
+                                          fill_extension=cfg.fill_extension)
+        pipeline.muxer = VideoMuxer(use_hwaccel=False)
+        return pipeline
+
+    def test_short_lines_are_filled_and_resynthesized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            translator = self._Translator()
+            pipeline = self._pipeline(Path(tmp), translator, self._PaddedTTS())
+            summary = pipeline.run_batch()
+            self.assertEqual(len(summary.succeeded), 1, summary.failed)
+            self.assertEqual(translator.expand_calls, 1)
+            self.assertGreater(summary.succeeded[0].stats.get("filled_lines", 0), 0)
+            self.assertEqual(summary.succeeded[0].stats["sync"]["overlaps"], 0)
+
+    def test_expansion_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            translator = self._Translator()
+            pipeline = self._pipeline(Path(tmp), translator, self._PaddedTTS())
+            pipeline.config.translation_expand_pass = False
+            pipeline.config = pipeline.config.validate()
+            summary = pipeline.run_batch()
+            self.assertEqual(len(summary.succeeded), 1, summary.failed)
+            self.assertEqual(translator.expand_calls, 0)
+            self.assertNotIn("filled_lines", summary.succeeded[0].stats)
 
 
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")

@@ -65,6 +65,10 @@ translation:
   calibrate_speech_rate: true
   # সময়ে না আঁটা লাইন Gemini দিয়ে আবার ছোট করে লেখানো হবে
   shorten_pass: true
+  # স্লটের চেয়ে অনেক ছোট হয়ে যাওয়া লাইন (যেমন ১২s স্লটে ৭s কথা → ৫s ফাঁক)
+  # Gemini দিয়ে আরও ভরাট করে লেখানো হবে, তারপর শুধু সেই ক্লিপগুলো আবার TTS
+  expand_pass: true
+  expand_min_gap: 0.9
 
   indictrans2_model: "ai4bharat/indictrans2-en-indic-1B"
 
@@ -127,8 +131,15 @@ tts:
   unit_max_chars: 240         # এক clip-এ সর্বোচ্চ অক্ষর
   unit_max_gap: 0.6           # এই সেকেন্ডের কম বিরতি হলে দুই segment একসাথে
 
-  # ডিফল্ট **পুরুষ** কণ্ঠ। নারী কণ্ঠ চাইলে: "bn-BD-NabanitaNeural"
-  voice: "bn-BD-PradeepNeural"
+  # কণ্ঠের লিঙ্গ — **male** (ডিফল্ট) | female | custom
+  # পুরোনো config-এ ভুল ভয়েস থাকলেও gender-ই প্রধান, তাই male-ই ব্যবহার হবে।
+  gender: "male"
+  # gender=custom হলেই কেবল এই ভয়েস ব্যবহার হয় (এখানে খালি রাখাই ভালো)
+  voice: ""
+  # TTS ক্লিপের দুই প্রান্তের নীরবতা ছাঁটা — না ছাঁটলে প্রতি বাক্যের পর
+  # অযথা বিরতি শোনায় ("এক লাইন বলে অনেকক্ষণ গ্যাপ")
+  trim_silence: true
+  trim_pad_ms: 25
   rate: "+0%"
   volume: "+0%"
   pitch: "+0Hz"
@@ -138,8 +149,10 @@ tts:
 # --- Audio-Video Sync (time-stretch) -------------------------------------------
 sync:
   # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
-  min_tempo: 0.95           # ডিফল্টে ধীর করা হয় না (রোবটিক শোনায়)
+  min_tempo: 0.95           # সাধারণ slow-down-এর সীমা
   max_tempo: 1.25           # এর বেশি দ্রুত করলে কণ্ঠ বিকৃত হয় — hard cap
+  # ক্লিপ স্লটের চেয়ে ছোট হলে এতটা পর্যন্ত ধীর করে স্লট ভরা হয় (ফাঁক কমে)
+  fill_extension: 0.12
   slow_down_short_clips: false   # ছোট ক্লিপ ধীর না করে নীরবতা রাখা হয়
   slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
   borrow_silence_ms: 250    # পরের নীরবতা থেকে সর্বোচ্চ কতটুকু ধার নেওয়া যাবে

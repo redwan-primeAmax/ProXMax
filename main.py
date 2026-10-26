@@ -40,7 +40,7 @@ if __name__ == "__main__":
     print("▶ ProXMax চালু হচ্ছে — প্রয়োজনীয় মডিউল লোড হচ্ছে…", flush=True)
 
 try:
-    from proxmax.config import AppConfig                       # noqa: E402
+    from proxmax.config import AppConfig                                   # noqa: E402
     from proxmax.pipeline import DubbingPipeline               # noqa: E402
     from proxmax.utils import ensure_tool, get_logger, setup_logging  # noqa: E402
 except ModuleNotFoundError as _import_error:                   # pragma: no cover
@@ -134,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
             "gemini_api_key": args.gemini_api_key,
             "voice_reference": args.reference,
             "tts_engine": args.tts_engine,
+            # --voice দিলে সেটিই চূড়ান্ত (gender=custom), নাহলে gender-ই প্রধান
             "tts_voice": args.voice,
+            "tts_gender": "custom" if args.voice else None,
             "log_level": args.log_level,
             "skip_existing": False if args.force else None,
             "keep_temp_files": True if args.keep_temp else None,
@@ -156,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     voice_label = {
         "indicf5": "IndicF5 (কণ্ঠ ক্লোনিং)",
-        "edge": f"বিল্ট-ইন ({config.tts_voice})",
-    }.get(config.tts_engine, f"স্বয়ংক্রিয় — নমুনা থাকলে ক্লোনিং, নাহলে বিল্ট-ইন ({config.tts_voice})")
+        "edge": f"বিল্ট-ইন {config.resolved_tts_voice} ({config.tts_gender})",
+    }.get(config.tts_engine,
+          f"স্বয়ংক্রিয় — নমুনা থাকলে ক্লোনিং, নাহলে বিল্ট-ইন "
+          f"{config.resolved_tts_voice} ({config.tts_gender})")
     logger.info(
         "STT=%s | অনুবাদ=%s | কণ্ঠ=%s | tempo %.2f–%.2f",
         config.whisper_model, translator_label, voice_label,
@@ -165,6 +169,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if config.stt_hotwords:
         logger.info("Whisper hotwords: %s", config.stt_hotwords)
+    logger.info("কণ্ঠ (বিল্ট-ইন পথ): %s | লিঙ্গ: %s",
+                config.resolved_tts_voice, config.tts_gender)
+    if config.tts_gender == "custom" and not config.resolved_tts_voice.startswith("bn-"):
+        logger.warning("⚠️ tts.voice বাংলা ভয়েস নয়: %s", config.resolved_tts_voice)
 
     # Gemini key ছাড়া অনুবাদই সম্ভব নয় — শুরুতেই স্পষ্ট error, অপেক্ষা নয়
     if config.translator_backend == "gemini" and not config.resolved_gemini_api_key():

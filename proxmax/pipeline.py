@@ -67,6 +67,12 @@ from .voice_profile import VoiceProfile, VoiceProfileBuilder, discover_reference
 
 logger = get_logger(__name__)
 
+
+def _clock(seconds: float) -> str:
+    """সেকেন্ডকে ``MM:SS`` আকারে দেখায় (লগে সময় বোঝার জন্য)।"""
+    total = max(0, int(round(float(seconds or 0.0))))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
 _TOTAL_STEPS = 7
 
 
@@ -168,6 +174,7 @@ class DubbingPipeline:
             slot_gap_ms=cfg.slot_gap_ms,
             borrow_silence_ms=cfg.borrow_silence_ms,
             prefer_rubberband=cfg.prefer_rubberband,
+            fill_extension=cfg.fill_extension,
         )
         self.muxer = VideoMuxer(audio_bitrate=cfg.audio_bitrate, use_hwaccel=cfg.use_hwaccel)
 
@@ -500,15 +507,28 @@ class DubbingPipeline:
             if not translated:
                 raise RuntimeError("কোনো segment-এরই বাংলা অনুবাদ পাওয়া যায়নি।")
             if len(translated) < len(segments):
+                lost = [s for s in segments if not (s.text_bn or "").strip()]
                 logger.warning(
-                    "%dটি segment-এর অনুবাদ নেই — সেগুলো বাদ দিয়ে এগোনো হচ্ছে।",
-                    len(segments) - len(translated),
+                    "⚠️ %dটি segment-এর অনুবাদ নেই — ওই সময়টুকুতে কথা থাকবে না "
+                    "(স্লট পাশের লাইন ভরাট করবে)। সময়: %s",
+                    len(lost),
+                    ", ".join(f"{_clock(s.start)}–{_clock(s.end)}" for s in lost[:8])
+                    + (" …" if len(lost) > 8 else ""),
+                )
+                stats["untranslated_seconds"] = round(
+                    sum(float(s.duration or 0.0) for s in lost), 2
                 )
             synthesized = [s for s in translated if s.tts_audio_path]
             if not synthesized:
                 raise RuntimeError(
                     "একটি segment-এরও Bangla অডিও তৈরি হয়নি — TTS ইঞ্জিন/GPU যাচাই করুন।"
                 )
+
+            # 4.5) বড় ফাঁক ভরানো: স্লটের চেয়ে অনেক ছোট লাইন আরও ভরাট করে লেখানো
+            filled = self._fill_short_slots(synthesized, tts_dir, total_duration)
+            if filled:
+                logger.info("✅ %dটি লাইন ভরাট করে আবার কণ্ঠ দেওয়া হলো (ফাঁক কমল)।", filled)
+                stats["filled_lines"] = filled
         timings.translate = translate_seconds
         timings.tts = tts_seconds
         stats["tts"] = {
@@ -697,6 +717,67 @@ class DubbingPipeline:
             logger.warning("অনুবাদ ছোট করার ধাপ ব্যর্থ (%s) — মূল অনুবাদ রাখা হচ্ছে।", exc)
 
     # ------------------------------------------------------------------
+    def _fill_short_slots(
+        self, segments: List[Segment], tts_dir: Path, total_duration: float
+    ) -> int:
+        """স্লটের তুলনায় অনেক ছোট ক্লিপಗಳ টেক্সট ভরাট করে আবার TTS করে।
+
+        কেন: বাংলা অনুবাদ ইংরেজি স্লটের চেয়ে অনেক ছোট হলে (যেমন ১২.৬s
+        স্লটে ৭s কথা) ওই লাইনের পরে কয়েক সেকেন্ডের নীরবতা শোনায় —
+        ব্যবহারকারীর অভিযোগ ছিল ঠিক এটাই ("এক লাইন বলে বলার পরে অনেকক্ষণ
+        গ্যাপ")। শুধু ধীর করে (fill_extension) এসব বড় ফাঁক ভরে না, তাই
+        Gemini-কে একবার বলা হয় লাইনটি **আরও ভরাট করে** লিখতে (তথ্য না
+        বাড়িয়ে, স্বাভাবিক কথ্য শব্দ যোগ করে); তারপর শুধু ওই ক্লিপগুলো
+        আবার সিন্থেসাইজ করা হয়।
+
+        Returns:
+            কতটি লাইন ভরাট করে আবার সিন্থেসাইজ হলো।
+        """
+        cfg = self.config
+        if not cfg.translation_expand_pass:
+            return 0
+        expander = getattr(self.translator, "expand_to_fit", None)
+        if not callable(expander):
+            return 0
+        ordered = [s for s in sorted(segments, key=lambda s: s.start) if s.tts_audio_path]
+        if len(ordered) < 2:
+            return 0
+        slot_gap = max(0.0, cfg.slot_gap_ms / 1000.0)
+        offenders: List[Segment] = []
+        targets: List[float] = []
+        for index, seg in enumerate(ordered):
+            end = (
+                float(ordered[index + 1].start) - slot_gap
+                if index + 1 < len(ordered) else float(total_duration)
+            )
+            slot = max(0.4, end - float(seg.start))
+            gap = slot - float(seg.tts_duration or 0.0)
+            if gap >= float(cfg.translation_expand_min_gap):
+                offenders.append(seg)
+                targets.append(slot)
+        if not offenders:
+            return 0
+
+        logger.info(
+            "🕳️ %dটি লাইনের পরে বড় ফাঁক (≥%.1fs) — অনুবাদ আরও ভরাট করে লেখানো হচ্ছে…",
+            len(offenders), cfg.translation_expand_min_gap,
+        )
+        try:
+            changed = expander(offenders, targets)
+        except Exception as exc:  # ভরাট করা ব্যর্থ হলেও ডাবিং চলবে
+            logger.warning("লাইন ভরাট করা যায়নি (%s) — আগের টেক্সটই রাখা হচ্ছে।", exc)
+            return 0
+        updated = [seg for seg in offenders if (seg.text_bn or "").strip()]
+        if not changed or not updated:
+            return 0
+        try:
+            self._synthesize(updated, tts_dir)
+        except Exception as exc:
+            logger.warning("ভরাট করা লাইনের TTS ব্যর্থ (%s) — পুরোনো অডিওই থাকবে।", exc)
+            return 0
+        return len([s for s in updated if s.tts_audio_path])
+
+    # ------------------------------------------------------------------
     def _synthesize(self, group: List[Segment], tts_dir: Path) -> None:
         """এক গ্রুপ segment-এর Bangla কণ্ঠ তৈরি করে।"""
         usable = [s for s in group if (s.text_bn or "").strip()]
@@ -740,10 +821,11 @@ class DubbingPipeline:
             len(videos), cfg.whisper_model, self.translator.describe(),
             {
                 "indicf5": "IndicF5 (কণ্ঠ ক্লোনিং)",
-                "edge": f"বিল্ট-ইন ({cfg.tts_voice})",
+                "edge": f"বিল্ট-ইন {cfg.resolved_tts_voice} ({cfg.tts_gender})",
             }.get(
                 cfg.tts_engine,
-                f"স্বয়ংক্রিয় — নমুনা থাকলে ক্লোনিং, নাহলে বিল্ট-ইন ({cfg.tts_voice})",
+                f"স্বয়ংক্রিয় — নমুনা থাকলে ক্লোনিং, নাহলে বিল্ট-ইন "
+                f"{cfg.resolved_tts_voice} ({cfg.tts_gender})",
             ),
             cfg.min_tempo, cfg.max_tempo,
         )

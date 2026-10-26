@@ -73,6 +73,8 @@ class IndicF5Engine(BaseTTSEngine):
         max_attempts: int = 2,
         time_budget_seconds: Optional[float] = None,
         total_audio_seconds: float = 0.0,
+        trim_silence: bool = True,
+        trim_pad_ms: int = 25,
     ) -> None:
         """Args:
             model_id: Hugging Face মডেল আইডি।
@@ -83,8 +85,10 @@ class IndicF5Engine(BaseTTSEngine):
             max_attempts: একটি বাক্যের জন্য সর্বোচ্চ চেষ্টা।
             time_budget_seconds: TTS-এর জন্য সময়ের বাজেট।
             total_audio_seconds: মোট কত সেকেন্ড কথা হবে (governor-এর অনুমান)।
+            trim_silence: ক্লিপের দুই প্রান্তের নীরবতা ছাঁটবে কি না।
+            trim_pad_ms: ছাঁটার পর কত মিলিসেকেন্ড নীরবতা রাখা হবে।
         """
-        super().__init__()
+        super().__init__(trim_silence=trim_silence, trim_pad_ms=trim_pad_ms)
         self.model_id = model_id
         self.fp16 = bool(fp16)
         self.sample_rate = int(sample_rate)

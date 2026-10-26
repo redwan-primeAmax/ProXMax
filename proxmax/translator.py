@@ -71,6 +71,10 @@ SYSTEM_INSTRUCTION = (
     "1) ALWAYS finish every sentence with proper Bangla punctuation (। ? !) — never end "
     "a line mid-word or mid-phrase, even if that makes it slightly longer than 'c'. "
     "A complete, natural sentence is more important than the exact character count. "
+    "Do not come in far BELOW 'c' either: if your line would be much shorter than c, "
+    "say the same thing with fuller everyday phrasing (a natural connective, a spoken "
+    "filler like তো/আসলে/মানে, or the implied detail spelled out) so the speech fills "
+    "the time. Filling the slot is better than leaving a long silence. "
     "2) If a line must be shortened, compress by choosing shorter everyday words and "
     "dropping filler; never drop facts, numbers, names or the main idea. "
     "3) Keep names, numbers, units, game/technical terms accurate — write such terms "
@@ -85,6 +89,20 @@ SYSTEM_INSTRUCTION = (
     "number of lines in the same order. "
     "7) If a line is already Bangla or empty, return it as is. "
     "Return only the translations."
+)
+
+EXPAND_INSTRUCTION = (
+    "You lengthen Bengali (Bangla) dubbing lines that are too SHORT for their "
+    "speaking slot. Each input line's 't' is the existing Bangla line, 'd' is its "
+    "speaking time in seconds and 'c' roughly how many Bangla characters fit in it. "
+    "Rewrite each line so that spoken at a "
+    "natural pace it fills close to d seconds (about c characters), WITHOUT adding any "
+    "new fact, number, name, opinion or promise. Do it the way a live commentator "
+    "fills time: natural spoken connectives (তো, আসলে, মানে, দেখুন, বন্ধুরা), a "
+    "descriptive detail that is already implied, or a fuller but equivalent phrasing. "
+    "Keep every fact of the original line, keep it one complete sentence ending with "
+    "। ? or !, do not merge or split lines, keep the same number of lines in the same "
+    "order. Never pad with meaningless repeated words. Return only the Bangla lines."
 )
 
 SHORTEN_INSTRUCTION = (
@@ -505,6 +523,10 @@ class BaseTranslator(ABC):
 
     def shorten_to_fit(self, segments: List[Segment], **_: Any) -> int:
         """সময়ে না আঁটা লাইন ছোট করে লেখায় (ডিফল্ট: কিছুই করে না)।"""
+        return 0
+
+    def expand_to_fit(self, segments: List[Segment], targets: Sequence[float]) -> int:
+        """স্লটের চেয়ে ছোট লাইন ভরাট করে লেখায় (ডিফল্ট: কিছুই করে না)।"""
         return 0
 
     def describe(self) -> str:
@@ -1056,6 +1078,14 @@ class GeminiTranslator(BaseTranslator):
                     for seg in groups[text]:
                         seg.text_bn = cleaned
 
+        # ---- দ্বিতীয় পাস: খালি থেকে যাওয়া লাইন ----
+        # একটি লাইন অনূদিত না হলে পুরো স্লট নীরব থাকে → "এক লাইন বলে অনেকক্ষণ
+        # ফাঁক" অভিযোগের বড় কারণ। তাই ছোট ব্যাচে (৪ লাইন) আরেক দফা চেষ্টা।
+        missing = [s for s in segments
+                   if not (s.text_bn or "").strip() and normalise_text(s.text_en)]
+        if missing:
+            self._recover_missing(missing)
+
         logger.info(
             "Gemini অনুবাদ শেষ: %d segment | নতুন লাইন: %d | API call: %d | cache: %d | "
             "বাদ পড়া লাইন: %d | সময় %.1fs",
@@ -1068,6 +1098,53 @@ class GeminiTranslator(BaseTranslator):
                 "সমন্বয় করা হয়েছে।", self._truncated_hits,
             )
         return segments
+
+    def _recover_missing(self, segments: Sequence[Segment]) -> int:
+        """অনূদিত না হওয়া লাইনগুলো ছোট ব্যাচে আবার অনুবাদ করে বসায়।
+
+        বড় ব্যাচে একটি ফরম্যাট সমস্যা হলে ওই ব্যাচের লাইনগুলো খালি থেকে যেতে
+        পারে; ছোট ব্যাচে সফল হওয়ার সম্ভাবনা অনেক বেশি। ব্যর্থ হলেও ডাবিং
+        থামে না — বাকি ভিডিও চলবে।
+
+        Returns:
+            কতটি লাইন এই পাসে উদ্ধার হলো।
+        """
+        by_text: Dict[str, List[Segment]] = {}
+        for seg in segments:
+            text = normalise_text(seg.text_en)
+            if text:
+                by_text.setdefault(text, []).append(seg)
+        if not by_text:
+            return 0
+
+        logger.info(
+            "♻️ %dটি লাইন অনূদিত ছিল — ছোট ব্যাচে আবার চেষ্টা করা হচ্ছে (নীরবতা এড়াতে)…",
+            len(by_text),
+        )
+        items = [(text, group[0].duration) for text, group in by_text.items()]
+        saved_batch = self.batch_size
+        recovered = 0
+        try:
+            self.batch_size = min(4, saved_batch)
+            translations = self._run_batches(items, description="  Retry missing")
+        except Exception as exc:  # কোনো অবস্থাতেই পুরো ভিডিও নষ্ট হবে না
+            logger.warning("উদ্ধার-পাস ব্যর্থ (%s) — ওই লাইনগুলো বাদ দিয়ে এগোনো হচ্ছে।", exc)
+            return 0
+        finally:
+            self.batch_size = saved_batch
+
+        with self._cache_lock:
+            for (text, _duration), translated in zip(items, translations):
+                cleaned = normalise_bangla(translated)
+                if not cleaned:
+                    continue
+                self._cache[text] = cleaned
+                for seg in by_text[text]:
+                    seg.text_bn = cleaned
+                recovered += 1
+        if recovered:
+            logger.info("✅ %dটি লাইন উদ্ধার করা হলো।", recovered)
+        return recovered
 
     def shorten_to_fit(
         self,
@@ -1127,6 +1204,69 @@ class GeminiTranslator(BaseTranslator):
                 seg.text_bn = cleaned
                 changed += 1
         logger.info("ছোট করা হয়েছে %dটি লাইন।", changed)
+        return changed
+
+    def expand_to_fit(
+        self,
+        segments: List[Segment],
+        targets: Sequence[float],
+        max_overshoot: float = 1.25,
+    ) -> int:
+        """স্লটের চেয়ে অনেক ছোট বাংলা লাইন **ভরাট করে** আবার লেখায়।
+
+        বড় ফাঁকের একমাত্র ভালো সমাধান: কথা বেশি সময় ধরে বলা, নীরবতা নয়।
+        তথ্য যোগ না করে স্বাভাবিক কথ্য শব্দ/বিবরণ দিয়ে লাইনটি লম্বা করা হয়।
+
+        Args:
+            segments: যেসব segment-এর কথা স্লটের চেয়ে অনেক ছোট।
+            targets: প্রতিটির জন্য কত সেকেন্ড কথা দরকার (একই ক্রমে)।
+            max_overshoot: স্লটের জন্য দরকারি অক্ষরের চেয়ে সর্বোচ্চ কত গুণ
+                পর্যন্ত গ্রহণ করা হবে (অস্বাভাবিক বাড়তি লেখা আটকাতে), ১.২৫ = ২৫%।
+
+        Returns:
+            কতটি লাইন সত্যিই বদলানো হলো (শূন্য হলে caller পুরোনো টেক্সট রাখবে)।
+        """
+        pairs = [
+            (seg, float(target))
+            for seg, target in zip(segments, targets)
+            if (seg.text_bn or "").strip()
+        ]
+        if not pairs:
+            return 0
+        items = [(normalise_bangla(seg.text_bn), target) for seg, target in pairs]
+        try:
+            expanded = self._run_batches(
+                items,
+                instruction=EXPAND_INSTRUCTION,
+                task="Make each Bangla line long enough for its speaking time.",
+                description="  Fill gaps (Gemini)",
+            )
+        except TranslationError as exc:
+            logger.warning(
+                "লাইন ভরাট করা যায়নি (%s) — আগের অনুবাদই রাখা হচ্ছে; বড় ফাঁক "
+                "থাকলে sync ধীর করে ভরাট করবে।", exc,
+            )
+            return 0
+
+        changed = 0
+        for (seg, target), new_text in zip(pairs, expanded):
+            cleaned = normalise_bangla(new_text)
+            if not cleaned:
+                continue
+            old_len = max(1, len(seg.text_bn))
+            # স্লট ভরাতে যত অক্ষর লাগে তার একটু বেশি পর্যন্ত গ্রহণযোগ্য —
+            # খুব ছোট লাইন (৮ অক্ষর) থেকে ভরাট করতে অনেক বাড়তে হয়, তাই
+            # "আগের টেক্সটের ২ গুণ" ধাঁচের সীমা এখানে কাজ করে না।
+            wanted = max(float(target) * float(self.char_rate), old_len * 1.2)
+            if old_len < len(cleaned) <= wanted * float(max_overshoot):
+                seg.text_bn = cleaned
+                changed += 1
+            elif len(cleaned) > old_len:
+                logger.debug(
+                    "ভরাট করা লাইন স্লটের জন্য বেশি লম্বা (%d অক্ষর; সীমা %d) — বাদ।",
+                    len(cleaned), int(wanted * float(max_overshoot)),
+                )
+        logger.info("অনুবাদ ভরাট করা হয়েছে %d/%d লাইনে।", changed, len(pairs))
         return changed
 
     def set_char_rate(self, chars_per_second: float, source: str = "measured") -> None:
