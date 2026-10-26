@@ -1,0 +1,795 @@
+# =============================================================================
+# ProXMax — Whisper hotwords (নাম-শব্দের তালিকা)
+#
+# এই ফাইলটি নিজে থেকেই পড়া হয় — কিছু ইনস্টল/টাইপ করতে হয় না।
+# এক লাইনে একটি নাম, `#` দিয়ে মন্তব্য, `[ ]` দিয়ে শুধু গোছানোর হেডার।
+#
+# ⚠️ Whisper-এর prompt সীমা ২২৪ টোকেন, তাই এই ফাইলের **উপরের অংশই** বেশি
+#    ব্যবহৃত হয়। নিজের ভিডিওর সবচেয়ে দরকারি নাম থাকলে সেটি উপরে যোগ করুন
+#    (অথবা `config.yaml` → `stt.hotwords`-এ সরাসরি লিখুন; সেটি সবচেয়ে আগে যায়)।
+# =============================================================================
+
+[FC Mobile / গেমের শব্দ]
+FC Mobile
+FC Mobile 24
+FC Mobile 25
+EA Sports FC
+EA FC
+Ultimate Team
+FIFA Mobile
+eFootball
+PES
+OVR
+Overall
+star pass
+Star Pass
+rank up
+rank up reward
+pack opening
+pack luck
+untradeable
+transfer market
+market value
+coins
+gems
+FC Points
+division rivals
+head to head
+H2H
+weekend league
+season pass
+event pass
+player pick
+skill move
+skill boost
+chemistry
+squad builder
+formation
+4-3-3
+4-2-3-1
+4-4-2
+goalkeeper
+defender
+midfielder
+winger
+striker
+centre-back
+full-back
+substitution
+training
+upgrade
+evolution
+hero
+icon
+legend
+GOAT
+meta
+gameplay
+patch
+update
+version
+tournament
+leaderboard
+reward
+mission
+objective
+token
+fut
+FUT
+
+[প্রতিযোগিতা ও ইভেন্ট]
+FIFA World Cup
+World Cup
+FIFA Club World Cup
+Club World Cup
+UEFA Champions League
+Champions League
+UEFA Europa League
+Europa League
+UEFA Conference League
+UEFA Super Cup
+Copa America
+Copa Libertadores
+UEFA Euro
+Euro
+Africa Cup of Nations
+AFC Asian Cup
+Asian Cup
+Olympics
+Olympic Games
+Ballon d'Or
+The Best FIFA Football Awards
+FIFA Puskas Award
+Puskas Award
+Golden Boot
+Golden Glove
+Golden Ball
+Kopa Trophy
+Yashin Trophy
+La Liga
+Premier League
+Serie A
+Bundesliga
+Ligue 1
+Eredivisie
+Primeira Liga
+Saudi Pro League
+Major League Soccer
+MLS
+Brasileirao
+Copa del Rey
+FA Cup
+Carabao Cup
+Community Shield
+Supercopa
+Trophee des Champions
+Der Klassiker
+El Clasico
+Madrid derby
+Manchester derby
+Merseyside derby
+North London derby
+
+[ক্লাব]
+Real Madrid
+Barcelona
+Atletico Madrid
+Sevilla
+Valencia
+Villarreal
+Athletic Bilbao
+Real Betis
+Manchester United
+Manchester City
+Liverpool
+Arsenal
+Chelsea
+Tottenham Hotspur
+Newcastle United
+Aston Villa
+Everton
+Leicester City
+Nottingham Forest
+West Ham United
+Crystal Palace
+Brighton
+Fulham
+Wolverhampton
+Bournemouth
+Brentford
+Leeds United
+Celtic
+Rangers
+Bayern Munich
+Borussia Dortmund
+RB Leipzig
+Bayer Leverkusen
+Eintracht Frankfurt
+VfB Stuttgart
+Borussia Monchengladbach
+Werder Bremen
+Wolfsburg
+Juventus
+Inter Milan
+AC Milan
+Napoli
+AS Roma
+Lazio
+Fiorentina
+Atalanta
+Torino
+Bologna
+Paris Saint-Germain
+PSG
+Marseille
+Monaco
+Lyon
+Lille
+Nice
+Ajax
+PSV Eindhoven
+Feyenoord
+Benfica
+Porto
+Sporting CP
+Al Nassr
+Al Hilal
+Al Ittihad
+Al Ahli
+Inter Miami
+LA Galaxy
+LAFC
+Flamengo
+Palmeiras
+Santos
+Corinthians
+Boca Juniors
+River Plate
+Galatasaray
+Fenerbahce
+Besiktas
+Fenerbahce
+Olympiacos
+Panathinaikos
+Shakhtar Donetsk
+Dynamo Kyiv
+Red Star Belgrade
+Dinamo Zagreb
+Copenhagen
+Malmo
+Rosenborg
+Zenit
+CSKA Moscow
+Al Sadd
+Al Duhail
+Kawasaki Frontale
+Ulsan Hyundai
+Pohang Steelers
+
+[খেলোয়াড় — ইতিহাসের সেরা]
+Pele
+Diego Maradona
+Maradona
+Johan Cruyff
+Cruyff
+Franz Beckenbauer
+Beckenbauer
+Michel Platini
+Platini
+Zinedine Zidane
+Zidane
+Ronaldo Nazario
+Ronaldo
+Ronaldinho
+Romario
+Rivaldo
+Roberto Carlos
+Cafu
+Kaka
+Ronaldo Fenomeno
+George Best
+Bobby Charlton
+Bobby Moore
+Gary Lineker
+Paul Gascoigne
+David Beckham
+Beckham
+Steven Gerrard
+Gerrard
+Frank Lampard
+Lampard
+Wayne Rooney
+Rooney
+Paul Scholes
+Ryan Giggs
+Thierry Henry
+Henry
+Dennis Bergkamp
+Bergkamp
+Patrick Vieira
+Vieira
+Vieira
+Alan Shearer
+Shearer
+Eric Cantona
+Cantona
+Roy Keane
+Keane
+Rio Ferdinand
+John Terry
+Ashley Cole
+Sol Campbell
+Peter Schmeichel
+Schmeichel
+Edwin van der Sar
+Petr Cech
+Oliver Kahn
+Kahn
+Gianluigi Buffon
+Buffon
+Iker Casillas
+Casillas
+Dino Zoff
+Lev Yashin
+Yashin
+Paolo Maldini
+Maldini
+Fabio Cannavaro
+Cannavaro
+Alessandro Nesta
+Nesta
+Javier Zanetti
+Zanetti
+Andrea Pirlo
+Pirlo
+Francesco Totti
+Totti
+Alessandro Del Piero
+Del Piero
+Gianfranco Zola
+Roberto Baggio
+Baggio
+Christian Vieri
+Filippo Inzaghi
+Inzaghi
+Clarence Seedorf
+Seedorf
+Ruud Gullit
+Gullit
+Marco van Basten
+Van Basten
+Frank Rijkaard
+Rijkaard
+Lothar Matthaus
+Matthaus
+Jurgen Klinsmann
+Klinsmann
+Oliver Bierhoff
+Bierhoff
+Michael Ballack
+Ballack
+Miroslav Klose
+Klose
+Thomas Muller
+Muller
+Lukas Podolski
+Podolski
+Karl-Heinz Rummenigge
+Gerd Muller
+Sepp Maier
+Luis Figo
+Figo
+Eusebio
+Cristiano Ronaldo
+Cristiano
+Ronaldo
+Lionel Messi
+Messi
+Neymar
+Neymar Jr
+Kylian Mbappe
+Mbappe
+Erling Haaland
+Haaland
+Kevin De Bruyne
+De Bruyne
+Mohamed Salah
+Salah
+Sadio Mane
+Mane
+Virgil van Dijk
+Van Dijk
+Karim Benzema
+Benzema
+Luka Modric
+Modric
+Toni Kroos
+Kroos
+Sergio Ramos
+Ramos
+Andres Iniesta
+Iniesta
+Xavi
+Xavi Hernandez
+Carles Puyol
+Puyol
+Gerard Pique
+Pique
+Dani Alves
+Alves
+Sergio Busquets
+Busquets
+Raul
+Raul Gonzalez
+Fernando Torres
+Torres
+David Villa
+Villa
+Iker Muniain
+Andres Iniesta
+Zico
+Socrates
+Romario
+Dunga
+Juninho
+Juninho Pernambucano
+Rivaldo
+Emmanuel Adebayor
+Adebayor
+Didier Drogba
+Drogba
+Samuel Eto'o
+Eto'o
+Yaya Toure
+Toure
+Michael Essien
+Essien
+Jay-Jay Okocha
+Okocha
+Nwankwo Kanu
+Kanu
+Riyad Mahrez
+Mahrez
+Pierre-Emerick Aubameyang
+Aubameyang
+George Weah
+Weah
+Abedi Pele
+Roger Milla
+Milla
+Robert Lewandowski
+Lewandowski
+Zlatan Ibrahimovic
+Ibrahimovic
+Zlatan
+Andriy Shevchenko
+Shevchenko
+Igor Akinfeev
+Aleksandr Golovin
+Artem Dzyuba
+Hulk
+Oscar
+Axel Witsel
+Son Heung-min
+Son
+Park Ji-sung
+Ji-sung
+Kim Min-jae
+Min-jae
+Takefusa Kubo
+Kubo
+Keisuke Honda
+Honda
+Shinji Kagawa
+Kagawa
+Mohamed Aboutrika
+Aboutrika
+Hossam Ghaly
+Essam El-Hadary
+El-Hadary
+Sardar Azmoun
+Mehdi Taremi
+Taremi
+Ali Daei
+Daei
+Sunil Chhetri
+Chhetri
+
+[নতুন/সাম্প্রতিক তারকা]
+Jude Bellingham
+Bellingham
+Vinicius Junior
+Vinicius
+Rodrygo
+Raphinha
+Frenkie de Jong
+De Jong
+Gavi
+Pedri
+Lamine Yamal
+Yamal
+Ansu Fati
+Dani Olmo
+Olmo
+Pedro Gonzalez
+Osman Dembele
+Ousmane Dembele
+Dembele
+Antoine Griezmann
+Griezmann
+Olivier Giroud
+Giroud
+Kingsley Coman
+Coman
+Ousmane
+Aurelien Tchouameni
+Tchouameni
+Eduardo Camavinga
+Camavinga
+Federico Valverde
+Valverde
+Rodri
+Rodri Hernandez
+Phil Foden
+Foden
+Bukayo Saka
+Saka
+Declan Rice
+Rice
+Martin Odegaard
+Odegaard
+Kai Havertz
+Havertz
+Gabriel Jesus
+Gabriel Martinelli
+Martinelli
+Bruno Fernandes
+Bruno
+Marcus Rashford
+Rashford
+Jadon Sancho
+Sancho
+Mason Mount
+Mount
+Cole Palmer
+Palmer
+Enzo Fernandez
+Enzo
+Moises Caicedo
+Caicedo
+Alexander Isak
+Isak
+Anthony Gordon
+Gordon
+Darwin Nunez
+Nunez
+Luis Diaz
+Diaz
+Diogo Jota
+Jota
+Trent Alexander-Arnold
+Alexander-Arnold
+Andrew Robertson
+Robertson
+Alisson Becker
+Alisson
+Ederson
+Ruben Dias
+Dias
+Joao Cancelo
+Cancelo
+Bernardo Silva
+Bernardo
+Kyle Walker
+Walker
+Rodrygo Goes
+Rafael Leao
+Leao
+Theo Hernandez
+Theo
+Nicolo Barella
+Barella
+Lautaro Martinez
+Lautaro
+Romelu Lukaku
+Lukaku
+Victor Osimhen
+Osimhen
+Khvicha Kvaratskhelia
+Kvaratskhelia
+Federico Chiesa
+Chiesa
+Dusan Vlahovic
+Vlahovic
+Manuel Locatelli
+Sergej Milinkovic-Savic
+Paulo Dybala
+Dybala
+Lorenzo Insigne
+Insigne
+Ciro Immobile
+Immobile
+Jamal Musiala
+Musiala
+Florian Wirtz
+Wirtz
+Kai Havertz
+Leroy Sane
+Sane
+Serge Gnabry
+Gnabry
+Joshua Kimmich
+Kimmich
+Antonio Rudiger
+Rudiger
+Toni Rudiger
+Marc-Andre ter Stegen
+Ter Stegen
+Manuel Neuer
+Neuer
+Ilkay Gundogan
+Gundogan
+Thomas Muller
+Kylian
+Eduardo
+Joao Felix
+Felix
+Rafael
+Goncalo Ramos
+Ramos
+Bernardo
+Bruno Guimaraes
+Guimaraes
+Endrick
+Estevao
+Vitor Roque
+Savinho
+Rodrygo
+Gabriel Magalhaes
+Murillo
+Nico Williams
+Williams
+Mikel Merino
+Merino
+Fabian Ruiz
+Ruiz
+Dani Carvajal
+Carvajal
+Nacho Fernandez
+Ferran Torres
+Ferran
+Marcos Llorente
+Alvaro Morata
+Morata
+Diego Simeone
+Simeone
+Carlo Ancelotti
+Ancelotti
+Pep Guardiola
+Guardiola
+Jurgen Klopp
+Klopp
+Jose Mourinho
+Mourinho
+Arsene Wenger
+Wenger
+Sir Alex Ferguson
+Ferguson
+Zinedine
+Luis Enrique
+Enrique
+Xabi Alonso
+Alonso
+Mikel Arteta
+Arteta
+Thomas Tuchel
+Tuchel
+Hansi Flick
+Flick
+Roberto Mancini
+Mancini
+Didier Deschamps
+Deschamps
+Lionel Scaloni
+Scaloni
+Tite
+Dorival Junior
+
+[ফুটবল-সম্পর্কিত সাধারণ শব্দ]
+free kick
+penalty
+penalty shootout
+corner kick
+throw-in
+offside
+VAR
+Video Assistant Referee
+red card
+yellow card
+hat-trick
+hat trick
+own goal
+extra time
+injury time
+stoppage time
+half-time
+full-time
+kick-off
+clean sheet
+brace
+assist
+goalscorer
+golden generation
+transfer
+transfer window
+contract
+loan
+signing
+release clause
+buyout clause
+wages
+salary
+agent
+coach
+manager
+captain
+armband
+kit
+jersey
+boots
+stadium
+pitch
+turf
+crowd
+fans
+supporters
+chant
+tifo
+ultras
+academy
+youth team
+reserve team
+first team
+squad
+lineup
+starting eleven
+bench
+injury
+recovery
+fitness
+physio
+training session
+pre-season
+mid-season
+post-season
+promotion
+relegation
+title race
+top four
+bottom three
+points table
+goal difference
+away goals
+aggregate
+qualifier
+group stage
+knockout
+round of sixteen
+quarter-final
+semi-final
+final
+draw
+fixture
+derby
+rivalry
+legacy
+record
+statistics
+highlight
+matchday
+world ranking
+rating
+potential
+weak foot
+skill moves
+work rate
+stamina
+pace
+shooting
+passing
+dribbling
+defending
+physical
+position
+nationality
+league
+club
+nation
+jersey number
+season
+career
+debut
+retirement
+comeback
+injury comeback
+goal celebration
+celebration
+transfer news
+rumour
+rumor
+interview
+press conference
+documentary
+episode
+subscribe
+like
+share
+comment
+channel
+video
+youtube
+creator
+gameplay
+reaction
+live stream
+giveaway

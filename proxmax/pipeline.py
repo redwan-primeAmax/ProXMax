@@ -2,15 +2,14 @@
 
 একটি ভিডিওর পুরো যাত্রা::
 
-    video ─► [1] Audio Extract ─► [2] ঐচ্ছিক ভয়েস প্রোফাইল (নমুনা থাকলে)
-          ─► [3] STT (faster-whisper, silence-aware chunking)
-          ─► [4] অনুবাদ (Gemini) + TTS (বিল্ট-ইন বাংলা ভয়েস / ঐচ্ছিক IndicF5 ক্লোনিং)
-          ─► [5] Sync (non-overlap, tempo ≤ 1.25) ─► [6] Mux ─► *_bn.mp4
-          ─► [7] SRT
+    video ─► [1] Audio Extract ─► [2] STT (faster-whisper, silence-aware chunking)
+          ─► [3] অনুবাদ (Gemini) + TTS (বিল্ট-ইন বাংলা ভয়েস)
+          ─► [4] Sync (non-overlap, tempo ≤ 1.25) ─► [5] Mux ─► *_bn.mp4
+          ─► [6] SRT
 
 ``run_batch()`` input ফোল্ডারের সব ভিডিও একটার পর একটা প্রসেস করে।
-Whisper, Gemini client, TTS ইঞ্জিন ও (ঐচ্ছিক) ভয়েস প্রোফাইল একবারই তৈরি হয়
-এবং ব্যাচের সব ভিডিওতে পুনরায় ব্যবহার হয় — বড় speed সাশ্রয়।
+Whisper, Gemini client আর TTS ইঞ্জিন একবারই তৈরি হয় এবং ব্যাচের সব ভিডিওতে
+পুনরায় ব্যবহার হয় — বড় speed সাশ্রয়।
 
 গুরুত্বপূর্ণ সিদ্ধান্ত:
 
@@ -48,14 +47,7 @@ from .speech_rate import calibrate as calibrate_speech_rate
 from .stt import SpeechToText
 from .sync_engine import SyncEngine
 from .translator import create_translator
-from .tts import (
-    BaseTTSEngine,
-    EdgeTTSEngine,
-    IndicF5Engine,
-    build_tts_engine,
-    hf_token_available,
-    resolve_tts_engine,
-)
+from .tts import BaseTTSEngine, EdgeTTSEngine, build_tts_engine
 from .utils import (
     format_duration,
     get_logger,
@@ -63,7 +55,6 @@ from .utils import (
     output_filename_for,
     write_srt,
 )
-from .voice_profile import VoiceProfile, VoiceProfileBuilder, discover_reference_audio
 
 logger = get_logger(__name__)
 
@@ -73,7 +64,7 @@ def _clock(seconds: float) -> str:
     total = max(0, int(round(float(seconds or 0.0))))
     return f"{total // 60:02d}:{total % 60:02d}"
 
-_TOTAL_STEPS = 7
+_TOTAL_STEPS = 6
 
 
 def _safe_dirname(name: str) -> str:
@@ -146,7 +137,8 @@ class DubbingPipeline:
             no_speech_threshold=cfg.no_speech_threshold,
             compression_ratio_threshold=cfg.compression_ratio_threshold,
             log_prob_threshold=cfg.log_prob_threshold,
-            hotwords=cfg.stt_hotwords,
+            hotwords=cfg.resolved_hotwords(),
+            hotwords_max_chars=cfg.stt_hotwords_max_chars,
         )
         self.translator = create_translator(
             cfg.translator_backend,
@@ -180,8 +172,6 @@ class DubbingPipeline:
 
         # ব্যাচ জুড়ে একবারই তৈরি হয়
         self._tts: Optional[BaseTTSEngine] = None
-        self._profile: Optional[VoiceProfile] = None
-        self._profile_checked = False
 
     # ------------------------------------------------------------------
     def release_gpu(self) -> None:
@@ -208,89 +198,13 @@ class DubbingPipeline:
         self.release_gpu()
 
     # ------------------------------------------------------------------
-    # Voice profile (একবারই তৈরি হয়)
-    # ------------------------------------------------------------------
-    def _ensure_profile(self) -> Optional[VoiceProfile]:
-        """ইনপুট ফোল্ডার থেকে ভয়েস নমুনা খুঁজে প্রোফাইল তৈরি করে (cached)।"""
-        if self._profile_checked:
-            return self._profile
-        self._profile_checked = True
-        cfg = self.config
-
-        mode = (cfg.tts_engine or "auto").strip().lower()
-        if mode == "edge":
-            # স্পষ্টভাবে বিল্ট-ইন ভয়েস চাওয়া হয়েছে — নমুনা খোঁজার দরকার নেই
-            return None
-        if not hf_token_available():
-            # টোকেন নেই = ব্যবহারকারী ক্লোনিং চান না (IndicF5 gated, টোকেন ছাড়া
-            # ডাউনলোডই হবে না) — কিছু না করে বিল্ট-ইন ভয়েসে এগিয়ে যাওয়া হয়।
-            logger.info(
-                "Hugging Face টোকেন পাওয়া যায়নি — কণ্ঠ ক্লোনিং (IndicF5) বাদ দিয়ে "
-                "বিল্ট-ইন বাংলা neural ভয়েস (%s) ব্যবহার হবে। নিজের কণ্ঠে ডাবিং চাইলে "
-                "নোটবুকের ধাপ ৫-এ HF_TOKEN বসান (ঐচ্ছিক)।",
-                cfg.tts_voice,
-            )
-            return None
-
-        source = discover_reference_audio(cfg.input_dir, explicit=cfg.voice_reference or None)
-        if source is None:
-            logger.info(
-                "কণ্ঠের নমুনা পাওয়া যায়নি — বিল্ট-ইন বাংলা neural ভয়েস (%s) ব্যবহার হবে। "
-                "নিজের কণ্ঠে ডাবিং চাইলে %s ফোল্ডারে ১০–২০ সেকেন্ডের বাংলা কথার "
-                "একটি .wav/.mp3/.m4a ফাইল রাখুন (ঐচ্ছিক)।",
-                cfg.tts_voice, cfg.input_dir,
-            )
-            return None
-
-        builder = VoiceProfileBuilder(
-            cache_dir=cfg.voice_profile_dir,
-            target_seconds=cfg.voice_target_seconds,
-            min_seconds=cfg.voice_min_seconds,
-            max_seconds=cfg.voice_max_seconds,
-            max_internal_pause_ms=cfg.voice_max_internal_pause_ms,
-            min_silence_ms=cfg.vad_min_silence_ms,
-            language=cfg.voice_language,
-            use_cache=cfg.voice_cache,
-            highpass_hz=(cfg.audio_highpass_hz if cfg.audio_preprocess else 0),
-            loudnorm_i=(cfg.audio_loudnorm_i if cfg.audio_preprocess else 0.0),
-        )
-        try:
-            profile = builder.build(
-                source,
-                transcriber=lambda path: self.stt.transcribe_reference(
-                    path, language=cfg.voice_language
-                ),
-            )
-        except Exception as exc:
-            logger.error(
-                "❌ ভয়েস প্রোফাইল তৈরি করা যায়নি (%s): %s\n"
-                "   নিশ্চিত করুন নমুনায় ৫+ সেকেন্ড পরিষ্কার বাংলা কথা আছে।",
-                type(exc).__name__, exc,
-            )
-            return None
-
-        self._profile = profile
-        return profile
-
-    # ------------------------------------------------------------------
     # TTS engine (ব্যাচ জুড়ে একবার)
     # ------------------------------------------------------------------
-    def _ensure_tts(self, total_speech_seconds: float) -> BaseTTSEngine:
-        """TTS ইঞ্জিন তৈরি (বা পুনঃব্যবহার) করে বাজেট হালনাগাদ করে।"""
-        cfg = self.config
-        total_speech_seconds = max(1.0, float(total_speech_seconds))
-        budget = max(60.0, total_speech_seconds * float(cfg.tts_time_budget_factor))
-
+    def _ensure_tts(self, total_speech_seconds: float = 0.0) -> BaseTTSEngine:
+        """TTS ইঞ্জিন তৈরি (বা পুনঃব্যবহার) — ব্যাচ জুড়ে একবারই।"""
         if self._tts is None:
-            self._tts = build_tts_engine(
-                cfg,
-                profile=self._profile,
-                time_budget_seconds=budget,
-                total_audio_seconds=total_speech_seconds,
-            )
+            self._tts = build_tts_engine(self.config)
             self._calibrate_speech_rate()
-        else:
-            self._tts.set_budget(budget, total_speech_seconds)
         return self._tts
 
     # ------------------------------------------------------------------
@@ -308,7 +222,7 @@ class DubbingPipeline:
         if self._tts is None or not hasattr(self._tts, "synthesize"):
             return
         # শুধু আসল TTS ইঞ্জিনে (টেস্টের ডামি ইঞ্জিনে নয়)
-        if not isinstance(self._tts, (EdgeTTSEngine, IndicF5Engine)):
+        if not isinstance(self._tts, EdgeTTSEngine):
             return
         try:
             rate = calibrate_speech_rate(
@@ -356,7 +270,7 @@ class DubbingPipeline:
                 logger.info(
                     "⏭️  আগের আউটপুট পাওয়া গেছে (%.1f MB), তাই বাদ দেওয়া হলো: %s\n"
                     "   নতুন করে (নতুন কোড/কণ্ঠ দিয়ে) ডাবিং করতে চাইলে চালান: "
-                    "python main.py --force  (নোটবুকে ধাপ ৭-এ FORCE_REPROCESS = True)",
+                    "python main.py --force  (নোটবুকে ধাপ ৪-এ FORCE_REPROCESS = True)",
                     size_mb, output_path.name,
                 )
                 return VideoResult(
@@ -440,23 +354,22 @@ class DubbingPipeline:
         timings.audio_seconds = total_duration
         logger.info("ভিডিওর দৈর্ঘ্য: %s", format_duration(total_duration))
 
-        # 2) Voice profile (আপনার কণ্ঠ) --------------------------------------
+        # 2) Speech-to-Text -----------------------------------------------------
         marker = time.perf_counter()
-        with self._step(2, "ভয়েস প্রোফাইল (ঐচ্ছিক — কণ্ঠের নমুনা থাকলে)"):
-            profile = self._ensure_profile()
-            if profile is not None:
-                logger.info("ভয়েস: %s", profile.summary())
-        timings.voice_profile = time.perf_counter() - marker
-
-        # 3) Speech-to-Text -----------------------------------------------------
-        marker = time.perf_counter()
-        with self._step(3, "Speech-to-Text (faster-whisper, silence-aware)"):
+        with self._step(2, "Speech-to-Text (faster-whisper, silence-aware)"):
             # ভিডিওর নাম/শিরোনাম প্রথম chunk-এ প্রসঙ্গ হিসেবে দেওয়া হয় —
             # গেম/ব্র্যান্ডের নাম Whisper ঠিকভাবে লেখার সম্ভাবনা বাড়ে
             # (ব্যবহারকারীকে কিছু টাইপ করতে হয় না)
             setter = getattr(self.stt, "set_context_hint", None)
             if callable(setter):
                 setter(video_path.stem)
+            hints = getattr(self.stt, "hotword_slices", None)
+            if hints:
+                logger.info(
+                    "🏷️ hotwords: %dটি নাম, %d ভাগে (প্রতি chunk-এ এক ভাগ) — "
+                    "নাম/গেম-টার্ম ঠিক লিখতে সাহায্য করে",
+                    sum(len(h.split(", ")) for h in hints), len(hints),
+                )
             segments = self.stt.transcribe(audio_wav)
             if not segments:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
@@ -466,7 +379,7 @@ class DubbingPipeline:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
         timings.stt = time.perf_counter() - marker
 
-        # 3.5) Speech units: পুরো বাক্য একসাথে — TTS-এ মাঝপথে থামা বন্ধ ------
+        # 2.5) Speech units: পুরো বাক্য একসাথে — TTS-এ মাঝপথে থামা বন্ধ ------
         #      ছোট ছোট segment আলাদা ক্লিপ হলে কণ্ঠ বারবার থামে ("আমি একটি"…
         #      থেমে… "স্টার পাস দিবো")। তাই পাশাপাশি segment জোড়া লাগিয়ে
         #      বাক্য-ভিত্তিক unit বানানো হয়; unit-ই অনুবাদ/TTS/sync পায়।
@@ -484,22 +397,19 @@ class DubbingPipeline:
             )
             segments = units
 
-        # শুধু IndicF5 (GPU) ব্যবহার হলেই Whisper আনলোড করা দরকার
-        if cfg.unload_stt_before_tts and resolve_tts_engine(cfg, self._profile) == "indicf5":
+        # Whisper আর দরকার নেই — VRAM/মেমরি ছেড়ে দেওয়া হয় (কণ্ঠ তৈরি দ্রুত হয়)
+        if cfg.unload_stt_before_tts:
             logger.info("TTS-এর আগে Whisper আনলোড করা হচ্ছে (VRAM খালি রাখতে)…")
             self.stt.release()
 
-        # 4) Translation + TTS (একসাথে চলে) ---------------------------------
+        # 3) Translation + TTS (একসাথে চলে) ---------------------------------
         spoken = sum(float(s.duration) for s in segments)
         tts_dir = work_dir / "tts"
         engine = self._ensure_tts(spoken)
-        logger.info(
-            "TTS ইঞ্জিন: %s | মোট কথা ≈ %.0fs | বাজেট ≈ %.0fs",
-            engine.describe(), spoken, max(60.0, spoken * cfg.tts_time_budget_factor),
-        )
+        logger.info("TTS ইঞ্জিন: %s | মোট কথা ≈ %.0fs", engine.describe(), spoken)
 
         marker = time.perf_counter()
-        with self._step(4, "অনুবাদ (Gemini) + Bangla TTS (ভয়েস)"):
+        with self._step(3, "অনুবাদ (Gemini) + Bangla TTS (ভয়েস)"):
             translate_seconds, tts_seconds = self._translate_and_synthesize(
                 segments, tts_dir
             )
@@ -535,15 +445,11 @@ class DubbingPipeline:
             "engine": engine.describe(),
             "segments": len(synthesized),
             "total_audio_seconds": round(sum(float(s.tts_duration or 0.0) for s in synthesized), 2),
-            "governor": (
-                engine.governor.summary()  # type: ignore[attr-defined]
-                if hasattr(engine, "governor") else None
-            ),
         }
 
-        # 5) Sync: time-stretch + non-overlapping assembly ---------------------
+        # 4) Sync: time-stretch + non-overlapping assembly ---------------------
         marker = time.perf_counter()
-        with self._step(5, "Audio-Video Sync (কোনো overlap নেই)"):
+        with self._step(4, "Audio-Video Sync (কোনো overlap নেই)"):
             final_audio = self.sync_engine.build_final_track(
                 segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
             )
@@ -560,9 +466,9 @@ class DubbingPipeline:
 
         timings.sync = time.perf_counter() - marker
 
-        # 6) Mux locally, then copy the finished file to the output (Drive) ----
+        # 5) Mux locally, then copy the finished file to the output (Drive) ----
         marker = time.perf_counter()
-        with self._step(6, "Final Muxing (ভিডিও + Bangla অডিও)"):
+        with self._step(5, "Final Muxing (ভিডিও + Bangla অডিও)"):
             local_output = work_dir / output_filename_for(video_path)
             self.muxer.mux(video_path, final_audio, local_output)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -572,7 +478,7 @@ class DubbingPipeline:
 
         # 7) Subtitles (যাচাই ও পুনঃব্যবহারের জন্য) -----------------------------
         if cfg.save_srt:
-            with self._step(7, "সাবটাইটেল (SRT) সেভ করা"):
+            with self._step(6, "সাবটাইটেল (SRT) সেভ করা"):
                 try:
                     stem = video_path.stem
                     english_lines = [
@@ -819,14 +725,7 @@ class DubbingPipeline:
         logger.info(
             "ব্যাচ শুরু: %dটি ভিডিও | STT=%s | অনুবাদ=%s | কণ্ঠ=%s | tempo %.2f–%.2f",
             len(videos), cfg.whisper_model, self.translator.describe(),
-            {
-                "indicf5": "IndicF5 (কণ্ঠ ক্লোনিং)",
-                "edge": f"বিল্ট-ইন {cfg.resolved_tts_voice} ({cfg.tts_gender})",
-            }.get(
-                cfg.tts_engine,
-                f"স্বয়ংক্রিয় — নমুনা থাকলে ক্লোনিং, নাহলে বিল্ট-ইন "
-                f"{cfg.resolved_tts_voice} ({cfg.tts_gender})",
-            ),
+            f"বিল্ট-ইন {cfg.resolved_tts_voice} ({cfg.tts_gender})",
             cfg.min_tempo, cfg.max_tempo,
         )
         logger.info("=" * 70)

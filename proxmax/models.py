@@ -74,7 +74,6 @@ class StageTimings:
     """Per-stage wall-clock timings for one video (used in the final report)."""
 
     extract: float = 0.0
-    voice_profile: float = 0.0
     stt: float = 0.0
     translate: float = 0.0
     tts: float = 0.0

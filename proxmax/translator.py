@@ -188,6 +188,17 @@ class _ContentBlockedError(TranslationError):
     """Gemini নিরাপত্তার কারণে কোনো অংশ অনুবাদ করতে না চাইলে (retry করে লাভ নেই)।"""
 
 
+class _BadRequestError(TranslationError):
+    """HTTP 400 (INVALID_ARGUMENT) — অনুুরোধের গঠন Gemini মানছে না।
+
+    সবচেয়ে সাধারণ কারণ: structured output (``response_schema``),
+    ``thinking_config`` বা ``system_instruction`` ওই মডেলে/API সংস্করণে
+    অসমর্থিত। তাই এই ত্রুটি পেলে অপেক্ষা না করে **একটার পর একটা সুবিধা
+    বাদ দিয়ে** আবার চেষ্টা করা হয় (:class:`_CapabilityError`); সব বাদ
+    দেওয়ার পরেও ৪০০ এলে তখনই সেটি অনিবার্য ত্রুটি।
+    """
+
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -506,6 +517,28 @@ class _RateLimiter:
 class BaseTranslator(ABC):
     """Common interface for all translation backends."""
 
+    def verify(self) -> Dict[str, Any]:
+        """API backend সত্যিই কাজ করছে কি না যাচাই করে (ডিফল্ট: শুধু একটি অনুবাদ)।
+
+        Returns:
+            ``{"ok": True, "model": ..., "elapsed": ..., "sample": ...}``
+
+        Raises:
+            TranslationError: backend কাজ না করলে পরিষ্কার বার্তা সহ।
+        """
+        started = time.perf_counter()
+        sample = normalise_bangla(
+            self.translate_text("The match starts at seven.", duration=2.5)
+        )
+        if not sample:
+            raise TranslationError("Backend উত্তর দিল, কিন্তু বাংলা টেক্সট পাওয়া যায়নি।")
+        return {
+            "ok": True,
+            "model": self.describe(),
+            "elapsed": round(time.perf_counter() - started, 2),
+            "sample": sample,
+        }
+
     @abstractmethod
     def translate_text(self, text: str, duration: float = 0.0) -> str:
         """Translate a single English string into Bangla.
@@ -585,7 +618,7 @@ class GeminiTranslator(BaseTranslator):
         )
         if not resolved_key and client is None:
             raise GeminiAuthError(
-                "Gemini API key পাওয়া যায়নি। নোটবুকের 'Gemini কনফিগারেশন' সেলে "
+                "Gemini API key পাওয়া যায়নি। নোটবুকের ধাপ ৬-এর সেলে "
                 "GEMINI_API_KEY বসান, অথবা environment variable সেট করুন:\n"
                 "    export GEMINI_API_KEY='your-key'\n"
                 "API key নিন: https://aistudio.google.com/app/apikey"
@@ -612,10 +645,14 @@ class GeminiTranslator(BaseTranslator):
         #: মডেল/SDK কোন কোন সুবিধা দেয় — প্রথম ব্যর্থতায় নিজেই বন্ধ হয়ে যায়
         self._use_schema = True
         self._use_thinking = True
+        #: system_instruction না মানলে নির্দেশনা prompt-এর ভেতরেই দেওয়া হয়
+        self._use_system_instruction = True
         #: কতবার উত্তর output-token সীমায় কেটেছে (লগ/ডায়াগনস্টিকসের জন্য)
         self._truncated_hits = 0
         #: ফরম্যাট ঠিক না হওয়ায় কতটি লাইন বাদ পড়ল
         self._skipped_lines = 0
+        #: কতটি ব্যাচ পুরোপুরি ব্যর্থ হলো (ওই লাইনগুলো খালি থেকে গেল)
+        self._failed_batches = 0
 
         self._api_key = resolved_key
         self._client = client
@@ -732,30 +769,36 @@ class GeminiTranslator(BaseTranslator):
 
         client = self._ensure_client()
         kwargs: Dict[str, Any] = {
-            "system_instruction": instruction,
             # retry-তে একই ভুলের পুনরাবৃত্তি এড়াতে নির্ধারক (temperature=0)
             "temperature": self.temperature if mode == "json" else 0.0,
             "max_output_tokens": self._output_token_budget(items),
         }
+        if self._use_system_instruction:
+            kwargs["system_instruction"] = instruction
+        else:
+            # কিছু মডেল/API সংস্করণ system_instruction নেয় না → prompt-এ ঢুকিয়ে দেওয়া
+            instruction = f"{instruction}\n\n{task}"
+            task = ""
         count_hint = (
             f"IMPORTANT: the input has exactly {len(items)} lines — return exactly "
             f"{len(items)} items, one per line, in the same order."
         )
+        task_line = f"{task}\n" if task else ""
         if mode == "json":
-            contents = f"{task}\n{count_hint}\n{self._payload(items)}"
+            contents = f"{task_line}{count_hint}\n{self._payload(items)}"
             if self._use_schema:
                 kwargs["response_mime_type"] = "application/json"
                 kwargs["response_schema"] = _RESPONSE_SCHEMA
         elif mode == "json_plain":
             contents = (
-                f"{task}\n"
+                f"{task_line}"
                 f'Return ONLY a JSON object like {{"translations": ["<bangla 1>", "<bangla 2>"]}} '
                 f"with exactly {len(items)} strings in the same order. No other text.\n"
                 f"{count_hint}\nInput lines:\n{self._payload(items)}"
             )
         else:
             contents = (
-                f"{task}\n"
+                f"{task_line}"
                 f"Answer with exactly {len(items)} numbered lines, each like "
                 f"`1. <bangla translation>`. No JSON, no explanation.\n"
                 f"Input lines:\n{self._payload_numbered(items)}"
@@ -766,7 +809,7 @@ class GeminiTranslator(BaseTranslator):
             kwargs["thinking_config"] = thinking
         try:
             config = types.GenerateContentConfig(**kwargs)
-        except TypeError as exc:
+        except TypeError:
             if "thinking_config" in kwargs:
                 kwargs.pop("thinking_config", None)
                 self._use_thinking = False
@@ -781,6 +824,34 @@ class GeminiTranslator(BaseTranslator):
             )
         except Exception as exc:  # noqa: BLE001 - কোনো প্যারামিটার অসমর্থিত হলে
             message = _error_message(exc).lower()
+            status = _status_code(exc)
+            looks_like_bad_request = status == 400 or "invalid_argument" in message or (
+                "invalid argument" in message
+            )
+            if looks_like_bad_request and not any(h in message for h in _AUTH_HINTS):
+                detail = _error_message(exc, 700)
+                logger.warning(
+                    "⚠️ Gemini 400 (অনুরোধের গঠন মানছে না): %s", detail
+                )
+                # ধাপে ধাপে সুবিধা বাদ দিয়ে সঙ্গে সঙ্গে আবার চেষ্টা (অপেক্ষা নেই)
+                if self._use_schema:
+                    self._use_schema = False
+                    raise _CapabilityError(
+                        "400 — structured output (response_schema) বাদ দিয়ে সাধারণ JSON-এ "
+                        "আবার চেষ্টা করা হচ্ছে।"
+                    ) from exc
+                if self._use_thinking:
+                    self._use_thinking = False
+                    raise _CapabilityError(
+                        "400 — thinking বন্ধ করার অপশন বাদ দিয়ে আবার চেষ্টা করা হচ্ছে।"
+                    ) from exc
+                if self._use_system_instruction:
+                    self._use_system_instruction = False
+                    raise _CapabilityError(
+                        "400 — system_instruction বাদ দিয়ে (নির্দেশনা prompt-এর ভেতরে) "
+                        "আবার চেষ্টা করা হচ্ছে।"
+                    ) from exc
+                # সব সহজ করা হয়েছে, তবু ৪০০ → অনিবার্য ত্রুটি (caller স্পষ্ট বার্তা দেবে)
             if "thinking" in message and self._use_thinking:
                 self._use_thinking = False
                 raise _CapabilityError(
@@ -879,7 +950,12 @@ class GeminiTranslator(BaseTranslator):
         last_error: Optional[BaseException] = None
         format_failures = 0
         same_request = False  # True = আগের request-এরই পুনরায় চেষ্টা (নতুন নয়)
-        for attempt in range(1, self.max_retries + 1):
+        # কাঠামো সহজ করার ধাপগুলো (schema/thinking/system) "চেষ্টা" হিসেবে গোনা
+        # হয় না — নাহলে ৩টি সরলীকরণেই retry-বাজেট শেষ হয়ে যায়
+        capability_steps_left = 5
+        attempt = 0
+        while attempt < self.max_retries:
+            attempt += 1
             mode = self.FORMAT_MODES[min(format_failures, len(self.FORMAT_MODES) - 1)]
             try:
                 if not same_request:
@@ -892,6 +968,15 @@ class GeminiTranslator(BaseTranslator):
                 logger.info("ℹ️ %s", exc)
                 same_request = True  # অপেক্ষা নেই, রেট-লিমিট স্লটও খরচ হবে না
                 self._rate_limiter.refund()
+                # চেষ্টার সংখ্যা ফিরিয়ে দেওয়া হয় — এটি নতুন চেষ্টা নয়, একই
+                # request-এর সরল রূপ (ব্যবহারকারী: "সঙ্গে সঙ্গে আবার")
+                attempt -= 1
+                capability_steps_left -= 1
+                if capability_steps_left <= 0:
+                    raise TranslationError(
+                        "Gemini বারবার ৪০০ (INVALID_ARGUMENT) দিচ্ছে, সব সরলীকরণের "
+                        f"পরেও: {_error_message(exc, 400)}"
+                    ) from exc
                 continue  # শুধু একই request সরল করে পাঠানো হচ্ছে
             except _ContentBlockedError as exc:
                 logger.error("🛑 %s — এই অংশের কাজ বাদ দেওয়া হলো।", exc)
@@ -963,9 +1048,14 @@ class GeminiTranslator(BaseTranslator):
         ফরম্যাট ভুল হলে: (১) উত্তর কেটে গেলে শুরুর লাইনগুলো রেখে **শুধু
         বাকি লাইন** সঙ্গে সঙ্গে আবার চাওয়া হয়, (২) তাও না হলে ব্যাচ দুই
         ভাগ করে ছোট করে চেষ্টা করা হয় — অপেক্ষা ছাড়াই।
+
+        API ত্রুটিতে **পুরো ভিডিও নষ্ট হয় না**: শুধু ওই ব্যাচের লাইনগুলো
+        খালি থাকে (পরে :meth:`_recover_missing` আরেক দফা চেষ্টা করে)।
+        সব ব্যাচই ব্যর্থ হলে তখনই error ওঠে — কারণ তখন ডাবিংয়ের কিছু নেই।
         """
         results: List[str] = []
-        for batch in self._make_batches(items):
+        batches = self._make_batches(items)
+        for batch in batches:
             try:
                 results.extend(
                     self._call_with_retry(batch, instruction=instruction, task=task)
@@ -1001,7 +1091,55 @@ class GeminiTranslator(BaseTranslator):
                 results.extend(
                     self._run_batches(batch[middle:], instruction, task, description, depth + 1)
                 )
+            except GeminiAuthError:
+                raise  # key/permission ভুল — এখানেই থামা উচিত
+            except TranslationError as exc:
+                # শুধু এই ব্যাচের লাইনগুলো বাদ; বাকি ভিডিও চলবে
+                self._failed_batches += 1
+                self._skipped_lines += len(batch)
+                logger.error(
+                    "🩹 %d লাইনের একটি ব্যাচ অনুবাদ করা যায়নি (%s) — ওই লাইনগুলো বাদ "
+                    "দিয়ে বাকি ভিডিও চলবে।", len(batch), _error_message(exc, 300),
+                )
+                if self._failed_batches >= max(1, len(batches)) and not any(results):
+                    raise
+                results.extend([""] * len(batch))
         return results
+
+    def verify(self) -> Dict[str, Any]:
+        """Gemini API সত্যিই কাজ করছে কি না যাচাই করে (নোটবুকের key-সেলের পরে)।
+
+        একটি ছোট বাক্য অনুবাদ করা হয় — key, মডেলের নাম আর নেটওয়ার্ক একসাথে
+        পরীক্ষা হয়। ডাবিং ঠিক এই একই কোড-পথ ব্যবহার করে, তাই এখানে সফল হলে
+        পরে আর "অনুবাদ হচ্ছেই না" সমস্যা হবে না।
+
+        Returns:
+            ``{"ok": True, "model": ..., "elapsed": ..., "sample": ...}``
+
+        Raises:
+            TranslationError: key/মডেল/নেটওয়ার্ক ঠিক না থাকলে পরিষ্কার বার্তা সহ।
+        """
+        started = time.perf_counter()
+        try:
+            answer = self._run_batches(
+                [("The match starts at seven.", 2.5)], description="  API check"
+            )
+        except TranslationError as exc:
+            raise TranslationError(
+                f"model={self.model} | {_error_message(exc, 400)}"
+            ) from exc
+        sample = normalise_bangla(answer[0]) if answer else ""
+        if not sample:
+            raise TranslationError(
+                "Gemini উত্তর দিল, কিন্তু তাতে বাংলা টেক্সট পাওয়া যায়নি — "
+                "মডেলের নাম/আউটপুট সেটিং যাচাই করুন।"
+            )
+        return {
+            "ok": True,
+            "model": self.model,
+            "elapsed": round(time.perf_counter() - started, 2),
+            "sample": sample,
+        }
 
     def translate_text(self, text: str, duration: float = 0.0) -> str:
         """Translate a single English string into Bangla."""
@@ -1074,6 +1212,9 @@ class GeminiTranslator(BaseTranslator):
             with self._cache_lock:
                 for (text, _duration), translated in zip(items, translations):
                     cleaned = normalise_bangla(translated)
+                    if not cleaned:
+                        # ফাঁকা উত্তর ক্যাশে রাখা হয় না — পরে আবার চেষ্টা হবে
+                        continue
                     self._cache[text] = cleaned
                     for seg in groups[text]:
                         seg.text_bn = cleaned

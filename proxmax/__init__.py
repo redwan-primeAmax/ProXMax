@@ -1,8 +1,9 @@
 """ProXMax — English-to-Bangla video dubbing package.
 
-English ভিডিও থেকে **আপনার নিজের কণ্ঠে** Bangla ডাবিং তৈরি করার সম্পূর্ণ
-pipeline এই প্যাকেজে রয়েছে: নীরবতা-সচেতন chunking → faster-whisper STT →
-duration-aware Gemini অনুবাদ → IndicF5 ভয়েস ক্লোনিং → non-overlap sync → mux।
+English ভিডিও থেকে **বাংলা কণ্ঠে** ডাবিং তৈরি করার সম্পূর্ণ pipeline এই
+প্যাকেজে রয়েছে: নীরবতা-সচেতন chunking → faster-whisper STT (hotwords সহ) →
+duration-aware Gemini অনুবাদ → বিল্ট-ইন বাংলা neural ভয়েস → non-overlap
+sync → mux → SRT।
 """
 
 from __future__ import annotations

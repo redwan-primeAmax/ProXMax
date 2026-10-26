@@ -40,7 +40,9 @@ from typing import List, Optional, Sequence, Tuple
 from .audio_fx import decode_audio
 from .chunking import SpeechChunk, plan_chunks
 from .config import SOURCE_LANGUAGE
-from .models import Word
+from .hotwords import build_hotword_slices, split_hotwords
+from .model_cache import cached_model_path
+from .models import Segment, Word
 from .segmenter import build_sentences, join_words
 from .utils import format_duration, get_logger, release_cuda_memory
 
@@ -225,6 +227,7 @@ class SpeechToText:
         compression_ratio_threshold: float = 2.4,
         log_prob_threshold: float = -1.0,
         hotwords: str = "",
+        hotwords_max_chars: int = 480,
     ) -> None:
         """Args:
             model_size: Whisper মডেল (``large-v3`` / ``medium``)।
@@ -243,8 +246,11 @@ class SpeechToText:
             no_speech_threshold: Whisper-এর নীরবতা থ্রেশহোল্ড।
             compression_ratio_threshold: পুনরাবৃত্তি-লুপ আটকানোর থ্রেশহোল্ড।
             log_prob_threshold: কম আত্মবিশ্বাসের segment বাদ দেওয়ার সীমা।
-            hotwords: ভিডিও-নির্দিষ্ট নাম/শব্দ (কমা দিয়ে) — Whisper এগুলো
-                চিনতে সুবিধা পায় (যেমন ``"Ballon d'Or, OVR, star pass"``)।
+            hotwords: নাম/শব্দের তালিকা (কমা দিয়ে) — সাধারণত ``hotwords.txt``
+                ফাইল থেকে আসে (:mod:`proxmax.hotwords`)। Whisper এগুলো চিনতে
+                সুবিধা পায় (যেমন ``"Ballon d'Or, OVR, star pass"``)।
+            hotwords_max_chars: এক chunk-এ সর্বোচ্চ কত অক্ষরের hotwords যাবে
+                (Whisper-এর ২২৪-টোকেন prompt সীমা মেনে ভাগ করা হয়)।
         """
         self.model_size = model_size
         self.requested_device = device
@@ -260,7 +266,12 @@ class SpeechToText:
         self.seam_window_seconds = max(0.5, float(seam_window_seconds))
         self.max_seam_repairs = max(0, int(max_seam_repairs))
         self.no_speech_threshold = float(no_speech_threshold)
-        self.hotwords = (hotwords or "").strip()
+        # নাম-শব্দগুলো ছোট ভাগে ভেঙে প্রতি chunk-এ আলাদা ভাগ দেওয়া হয়, যাতে
+        # পুরো তালিকা (শত শত নাম) কোনোটা বাদ না পড়ে প্রাইম হয়
+        self.hotword_slices = build_hotword_slices(
+            split_hotwords(hotwords or ""), max(80, int(hotwords_max_chars))
+        )
+        self.hotwords = self.hotword_slices[0] if self.hotword_slices else ""
         #: প্রথম chunk-এ শুধু একবার দেওয়া প্রসঙ্গ (ভিডিওর নাম/বিষয়) —
         #: নাম-শব্দের বানান ঠিক রাখতে সাহায্য করে, ব্যবহারকারীকে কিছু দিতে হয় না
         self.context_hint = ""
@@ -284,12 +295,20 @@ class SpeechToText:
         )
         from faster_whisper import WhisperModel
 
-        logger.info(
-            "Whisper মডেল লোড হচ্ছে: %s | device=%s | compute=%s — প্রথমবার ওজন "
-            "ডাউনলোড হবে (large-v3 ≈ ৩ GB), তাই কিছুক্ষণ কোনো নতুন লগ নাও দেখতে "
-            "পারেন; ডাউনলোডের অগ্রগতি নিচে দেখানো হবে।",
-            self.model_size, self.device, self.compute_type,
-        )
+        cached_path = cached_model_path(self.model_size)
+        if cached_path is not None:
+            logger.info(
+                "Whisper মডেল লোড হচ্ছে: %s | device=%s | compute=%s — ওজন আগেই "
+                "নামানো আছে (ডাউনলোড লাগবে না)।",
+                self.model_size, self.device, self.compute_type,
+            )
+        else:
+            logger.info(
+                "Whisper মডেল লোড হচ্ছে: %s | device=%s | compute=%s — ওজন এখন "
+                "ডাউনলোড হবে (large-v3 ≈ ৩ GB), তাই কিছুক্ষণ নতুন লগ নাও দেখতে "
+                "পারেন। পরে এড়াতে নোটবুকের সেটআপ ধাপে মডেল আগেই নামিয়ে রাখা যায়।",
+                self.model_size, self.device, self.compute_type,
+            )
         started = time.perf_counter()
         # ডাউনলোড/লোডের সময় নীরবতা যেন "ঝুলে গেছে" মনে না হয় — heartbeat
         stop_heartbeat = threading.Event()
@@ -304,12 +323,19 @@ class SpeechToText:
         heartbeat = threading.Thread(target=_heartbeat, daemon=True)
         heartbeat.start()
         try:
-            self._model = WhisperModel(
-                self.model_size,
+            kwargs = dict(
                 device=self.device,
                 compute_type=self.compute_type,
                 cpu_threads=(os.cpu_count() or 4) if self.device == "cpu" else 0,
             )
+            if cached_path is not None:
+                # cache সম্পূর্ণ → সরাসরি ফোল্ডারের পাথ দেওয়া হয় এবং
+                # local_files_only; ফলে প্রসেসিংয়ের সময় নেটওয়ার্ক একেবারেই
+                # ছোঁয়া হয় না ("আবার ডাউনলোড" সমস্যা আর হয় না)
+                kwargs["local_files_only"] = True
+                self._model = WhisperModel(cached_path, **kwargs)
+            else:
+                self._model = WhisperModel(self.model_size, **kwargs)
         finally:
             stop_heartbeat.set()
         logger.info("Whisper মডেল প্রস্তুত (লোড: %.1fs)।", time.perf_counter() - started)
@@ -337,6 +363,7 @@ class SpeechToText:
         offset: float = 0.0,
         initial_prompt: Optional[str] = None,
         language: str = SOURCE_LANGUAGE,
+        hotwords: str = "",
     ) -> Tuple[List[Word], str]:
         """Run Whisper on one in-memory chunk and return (words, text).
 
@@ -348,6 +375,8 @@ class SpeechToText:
             offset: এই অডিওটুকু পুরো ফাইলের কোন সেকেন্ডে শুরু, তা যোগ হয়।
             initial_prompt: আগের টেক্সটের প্রসঙ্গ।
             language: ``"en"`` (ভিডিও) বা ``"bn"`` (রেফারেন্স নমুনা)।
+            hotwords: এই chunk-এ দেওয়ার নাম-শব্দের ভাগ (খালি হলে
+                :attr:`hotwords`, অর্থাৎ প্রথম ভাগ)।
 
         Returns:
             ``(words, text)`` — শব্দগুলোর সময় absolute।
@@ -368,16 +397,17 @@ class SpeechToText:
             log_prob_threshold=self.log_prob_threshold,
             hallucination_silence_threshold=2.0,
         )
-        if self.hotwords:
+        hint = (hotwords or self.hotwords or "").strip()
+        if hint:
             # পুরোনো faster-whisper-এ ``hotwords`` নেই — TypeError হলে বাদ দেওয়া হয়
             try:
-                segments, _info = self._model.transcribe(samples, hotwords=self.hotwords,
-                                                         **options)
+                segments, _info = self._model.transcribe(samples, hotwords=hint, **options)
             except TypeError:  # pragma: no cover - পুরোনো সংস্করণ
                 logger.info(
                     "এই faster-whisper সংস্করণে hotwords নেই — সাধারণ ডিকোড চলবে।"
                 )
                 self.hotwords = ""
+                self.hotword_slices = []
                 segments, _info = self._model.transcribe(samples, **options)
         else:
             segments, _info = self._model.transcribe(samples, **options)
@@ -451,8 +481,10 @@ class SpeechToText:
         per_chunk_text: List[str] = []
         total_chunks = len(chunks)
         logger.info(
-            "Whisper ডিকোড শুরু: %dটি chunk | মোট অডিও %s | device=%s",
+            "Whisper ডিকোড শুরু: %dটি chunk | মোট অডিও %s | device=%s | hotwords %dটি "
+            "(%d ভাগে ভাগ করা)",
             total_chunks, format_duration(total_seconds), self.device,
+            sum(len(x.split(", ")) for x in self.hotword_slices), len(self.hotword_slices),
         )
         first_prompt = self.context_hint or None
         for index, chunk in enumerate(chunks, start=1):
@@ -465,10 +497,16 @@ class SpeechToText:
                 index, total_chunks, format_duration(chunk.start),
                 format_duration(chunk.end), format_duration(chunk.duration),
             )
+            # নাম-শব্দের আলাদা ভাগ প্রতি chunk-এ (পুরো তালিকা ঘুরে ঘুরে আসে)
+            hint = (
+                self.hotword_slices[(index - 1) % len(self.hotword_slices)]
+                if self.hotword_slices else ""
+            )
             chunk_words, text = self._decode_words(
                 audio[start_sample:end_sample],
                 offset=chunk.start,
                 initial_prompt=carried or (first_prompt if index == 1 else None),
+                hotwords=hint,
             )
             if chunk_words:
                 words.extend(chunk_words)
@@ -553,40 +591,3 @@ class SpeechToText:
             repaired_words = replace_in_window(repaired_words, new_words, start, end)
             repaired += 1
         return repaired_words, repaired
-
-    # ------------------------------------------------------------------
-    def transcribe_reference(self, audio_path: Path | str, language: str = "bn") -> str:
-        """Transcribe the voice sample (``ref_text`` for IndicF5).
-
-        Args:
-            audio_path: ভয়েস রেফারেন্স WAV।
-            language: নমুনার ভাষা (ডিফল্ট বাংলা)।
-
-        Returns:
-            পরিষ্কার এক লাইন টেক্সট (কিছু না পেলে খালি স্ট্রিং)।
-        """
-        self._load()
-        audio = decode_audio(audio_path, STT_SAMPLE_RATE)
-        chunks, _ = plan_chunks(
-            audio, STT_SAMPLE_RATE,
-            min_seconds=self.chunk_min_seconds, max_seconds=self.chunk_max_seconds,
-            pad_seconds=0.0, min_silence_ms=self.vad_min_silence_ms,
-        )
-        texts: List[str] = []
-        carried = ""
-        for chunk in chunks or [SpeechChunk(0.0, audio.size / STT_SAMPLE_RATE)]:
-            start = int(chunk.start * STT_SAMPLE_RATE)
-            end = min(audio.size, int(chunk.end * STT_SAMPLE_RATE))
-            if end <= start:
-                continue
-            _words, text = self._decode_words(
-                audio[start:end], offset=chunk.start,
-                initial_prompt=carried or None, language=language,
-            )
-            if text:
-                texts.append(text)
-                carried = _tail_context(" ".join(texts), self.carry_context_chars)
-        result = " ".join(texts).strip()
-        if not result:
-            logger.warning("ভয়েস রেফারেন্সে কোনো কথা চেনা যায়নি (ভাষা=%s)।", language)
-        return result
