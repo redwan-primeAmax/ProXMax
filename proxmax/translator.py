@@ -123,6 +123,9 @@ _NETWORK_HINTS = (
 _NETWORK_MODULES = frozenset({"httpx", "httpcore", "requests", "urllib3", "aiohttp", "socket"})
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+_JSON_START_RE = re.compile(r"[\[{]")
+#: বাংলা হরফ (অনুবাদের ফল অবশ্যই এগুলোতে থাকবে)
+_BANGLA_RE = re.compile(r"[\u0980-\u09FF]")
 _RETRY_DELAY_RE = re.compile(r"retryDelay\"?\s*[:=]\s*\"?(?P<seconds>\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 
@@ -135,7 +138,32 @@ class GeminiAuthError(TranslationError):
 
 
 class _ResponseFormatError(TranslationError):
-    """Gemini-র উত্তর প্রত্যাশিত JSON ফরম্যাটে না এলে (retry যোগ্য)।"""
+    """Gemini-র উত্তর প্রত্যাশিত ফরম্যাটে না এলে (retry যোগ্য)।"""
+
+
+class _PartialBatchError(_ResponseFormatError):
+    """উত্তর কাঁচা/কাটা, কিন্তু শুরুর কয়েকটি লাইন ঠিকই পাওয়া গেছে।
+
+    ``translations``-এ ওই সম্পূর্ণ লাইনগুলো থাকে (ইনপুটের শুরুর দিকের সাথে
+    ঠিক ঠিক মেলে)। caller শুধু **বাকি লাইনগুলোর** জন্য সঙ্গে সঙ্গে নতুন
+    অনুরোধ করবে — পুরো ব্যাচ আবার চাওয়ার দরকার নেই।
+    """
+
+    def __init__(self, translations: List[str], expected: int, detail: str = "") -> None:
+        self.translations = list(translations)
+        self.expected = int(expected)
+        super().__init__(
+            f"{len(self.translations)}/{expected} লাইন পাওয়া গেছে"
+            + (f" — {detail}" if detail else "")
+        )
+
+
+class _CapabilityError(TranslationError):
+    """এই মডেল/সংস্করণ কোনো প্যারামিটার চেনে না (যেমন thinking/schema)।
+
+    ভুলটা অনুরোধের *বিন্যাসে*, Gemini-র উত্তরে নয় — প্যারামিটারটি বাদ দিয়ে
+    সঙ্গে সঙ্গে আবার চেষ্টা করা হয়, কোনো অপেক্ষা ছাড়াই।
+    """
 
 
 class _ContentBlockedError(TranslationError):
@@ -150,31 +178,136 @@ def normalise_text(text: Optional[str]) -> str:
     return " ".join((text or "").split())
 
 
-def parse_translations(raw: str, expected: int) -> List[str]:
-    """Gemini-র JSON উত্তর থেকে ঠিক ``expected`` সংখ্যক অনুবাদ বের করে।
+def _strip_fences(text: str) -> str:
+    """Markdown code-fence (```json … ```) সরিয়ে ফেলে — যেখানেই থাকুক।"""
+    cleaned = _FENCE_RE.sub("", text or "")
+    cleaned = re.sub(r"```[A-Za-z]*", "", cleaned)
+    return cleaned.replace("```", "").strip()
 
-    মডেল মাঝে মাঝে কোড-ফেন্স বা অতিরিক্ত কী দেয়; সেগুলো সহনশীলভাবে
-    সামলে নেওয়া হয়। সংখ্যা না মিললে :class:`_ResponseFormatError`
-    ওঠে, যাতে caller ব্যাচ ভেঙে আবার চেষ্টা করতে পারে।
 
-    Args:
-        raw: মডেলের ফেরত দেওয়া টেক্সট (JSON)।
-        expected: ইনপুটে কতটি লাইন ছিল।
+def _json_blobs(text: str) -> List[str]:
+    """টেক্সট থেকে সম্ভাব্য JSON টুকরোগুলো (প্রথম ``{``/``[`` থেকে শুরু)।"""
+    cleaned = _strip_fences(text)
+    blobs = [cleaned]
+    match = _JSON_START_RE.search(cleaned)
+    if match and match.start() > 0:
+        blobs.append(cleaned[match.start():])
+    return blobs
+
+
+def _decode_json(text: str) -> Any:
+    """JSON ডিকোড করার সর্বাত্মক চেষ্টা (পেছনে বাড়তি লেখা থাকলেও চলে)।
 
     Raises:
-        _ResponseFormatError: অবৈধ JSON বা লাইন-সংখ্যা না মিললে।
+        ValueError: কোনোভাবেই বৈধ JSON না মিললে।
     """
-    cleaned = _FENCE_RE.sub("", raw or "").strip()
-    try:
-        data = json.loads(cleaned)
-    except (TypeError, ValueError) as exc:
-        raise _ResponseFormatError(
-            f"Gemini বৈধ JSON দেয়নি (প্রথম ২০০ অক্ষর: {cleaned[:200]!r})"
-        ) from exc
+    decoder = json.JSONDecoder()
+    last_error: Optional[Exception] = None
+    for blob in _json_blobs(text):
+        if not blob:
+            continue
+        try:
+            return json.loads(blob)
+        except (TypeError, ValueError) as exc:
+            last_error = exc
+        # JSON-এর পেছনে মডেলের বাড়তি লেখা ("Here are the lines…") থাকলে
+        start = _JSON_START_RE.search(blob)
+        if start:
+            try:
+                value, _end = decoder.raw_decode(blob[start.start():])
+                return value
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+    raise ValueError(str(last_error) if last_error else "JSON পাওয়া যায়নি")
 
+
+_STRING_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+#: object আকারের item-এ যে কী-গুলো টেক্সট বহন করে
+_OBJECT_TEXT_KEYS = ("bn", "translation", "text", "bangla")
+
+
+def _salvage_string_array(text: str) -> List[str]:
+    """কাটা/অসম্পূর্ণ JSON থেকে **শুরুর সম্পূর্ণ** স্ট্রিংগুলো উদ্ধার করে।
+
+    উত্তর মাঝপথে কেটে গেলে (``MAX_TOKENS``) পুরো ব্যাচ আবার না চেয়ে,
+    যতগুলো লাইন পুরোপুরি এসেছে সেগুলো রাখা হয় — বাকিগুলোই আবার চাওয়া হবে।
+
+    Returns:
+        উদ্ধার করা স্ট্রিংগুলোর তালিকা (না পেলে খালি তালিকা)।
+    """
+    cleaned = _strip_fences(text)
+    match = _JSON_START_RE.search(cleaned)
+    if not match:
+        return []
+    body = cleaned[match.start():]
+
+    # ``{"translations": [ … `` হলে অ্যারের অংশটুকু নেওয়া হয়
+    if body.startswith("{"):
+        key = re.search(r'"(?:translations|lines|output|outputs|results)"\s*:\s*\[', body)
+        if not key:
+            return []
+        body = body[key.end() - 1:]
+
+    # শুধু স্ট্রিং-অ্যারে (``["…", "…"]``) হলে নিরাপদে উদ্ধার করা যায়;
+    # ``[{"bn": "…"}`` হলে শুধু মানগুলো (কী-গুলো বাদ দিয়ে)
+    dict_mode = bool(re.match(r'\[\s*\{', body))
+    values = _STRING_ITEM_RE.findall(body)
+    if dict_mode:
+        values = [v for v in values if v.strip() not in _OBJECT_TEXT_KEYS]
+    items: List[str] = []
+    for value in values:
+        try:
+            items.append(json.loads(f'"{value}"').strip())
+        except (TypeError, ValueError):
+            items.append(value.strip())
+    return [item for item in items if item]
+
+
+_NUMBERED_LINE_RE = re.compile(r"^\s*(?:[-*•]\s*)?(?P<num>\d{1,3})\s*[.):\-–]\s*(?P<text>.+?)\s*$")
+
+
+def _looks_like_bangla(lines: Sequence[str]) -> bool:
+    """ফলাফলে অন্তত একটি বাংলা হরফ আছে কি না (মডেলের বাড়তি লেখা আলাদা করতে)।"""
+    return any(_BANGLA_RE.search(line or "") for line in lines)
+
+
+def parse_numbered_lines(raw: str, expected: int) -> List[str]:
+    """সাধারণ নম্বরযুক্ত লাইন (``1. বাংলা``) থেকে অনুবাদ পড়ে।
+
+    JSON ব্যর্থ হওয়ার পরের নিরাপদ পথ — মডেল প্রায় কখনোই নম্বর ভোলে না।
+    নম্বর না থাকলে, ঠিক ``expected`` সংখ্যক লাইন থাকলেই সেগুলো নেওয়া হয়।
+
+    Raises:
+        _ResponseFormatError: লাইন-সংখ্যা না মিললে।
+    """
+    cleaned = _strip_fences(raw or "")
+    cleaned = re.sub(r"^\s*```.*$", "", cleaned, flags=re.M)
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    numbered: Dict[int, str] = {}
+    for line in lines:
+        match = _NUMBERED_LINE_RE.match(line)
+        if match:
+            numbered.setdefault(int(match.group("num")), match.group("text").strip())
+    ordered = [numbered[index] for index in range(1, expected + 1)
+               if index in numbered]
+    if len(ordered) == expected and _looks_like_bangla(ordered):
+        return ordered
+    plain = [re.sub(r"^\s*(?:[-*•]\s*)", "", line).strip() for line in lines]
+    plain = [line for line in plain if line]
+    if len(plain) == expected and _looks_like_bangla(plain):
+        return plain
+    snippet = " ".join((raw or "").split())[:160]
+    raise _ResponseFormatError(
+        f"ফরম্যাট বোঝা যায়নি: {expected} লাইন দরকার, নম্বরযুক্ত পাওয়া গেছে "
+        f"{len(numbered)}টি (মোট লাইন {len(lines)}টি) — উত্তর: {snippet!r}"
+    )
+
+
+def _values_from_json(data: Any) -> Any:
+    """JSON থেকে অনুবাদের list-টি বের করে (dict/একাধিক কী সহনশীলভাবে)।"""
     values: Any = data
     if isinstance(data, dict):
-        for key in ("translations", "lines", "output", "results"):
+        for key in ("translations", "lines", "output", "results", "outputs"):
             candidate = data.get(key)
             if isinstance(candidate, list):
                 values = candidate
@@ -182,12 +315,15 @@ def parse_translations(raw: str, expected: int) -> List[str]:
         else:
             lists = [v for v in data.values() if isinstance(v, list)]
             values = lists[0] if len(lists) == 1 else data
+    return values
 
+
+def _normalise_items(values: Any) -> List[str]:
+    """list-এর প্রতিটি item-কে স্ট্রিং-এ আনে (dict হলে text কী থেকে)।"""
     if not isinstance(values, list):
         raise _ResponseFormatError(
             f"Gemini-র উত্তরে অনুবাদের list পাওয়া যায়নি (পাওয়া গেছে: {type(values).__name__})"
         )
-
     translations: List[str] = []
     for item in values:
         if isinstance(item, str):
@@ -204,12 +340,54 @@ def parse_translations(raw: str, expected: int) -> List[str]:
             raise _ResponseFormatError(
                 f"Gemini-র উত্তরের item অবৈধ টাইপের: {type(item).__name__}"
             )
-
-    if len(translations) != expected:
-        raise _ResponseFormatError(
-            f"অনুবাদের সংখ্যা মেলেনি: দরকার {expected}, পাওয়া গেছে {len(translations)}"
-        )
     return translations
+
+
+def parse_translations(raw: str, expected: int) -> List[str]:
+    """Gemini-র উত্তর থেকে ঠিক ``expected`` সংখ্যক অনুবাদ বের করে।
+
+    মডেল মাঝে মাঝে কোড-ফেন্স, বাড়তি লেখা বা ভিন্ন কী দেয়; সবই
+    সহনশীলভাবে সামলে নেওয়া হয়। শেষ উপায় হিসেবে নম্বরযুক্ত লাইনও পড়া হয়।
+    সংখ্যা না মিললে :class:`_ResponseFormatError` ওঠে, যাতে caller
+    সঙ্গে সঙ্গে আবার চেষ্টা করতে পারে।
+
+    Args:
+        raw: মডেলের ফেরত দেওয়া টেক্সট।
+        expected: ইনপুটে কতটি লাইন ছিল।
+
+    Raises:
+        _ResponseFormatError: ফরম্যাট বোঝা না গেলে বা লাইন-সংখ্যা না মিললে।
+    """
+    cleaned = _strip_fences(raw or "")
+    try:
+        data = _decode_json(cleaned)
+    except ValueError:
+        # JSON নয় — হয়তো নম্বরযুক্ত লাইনে উত্তর দিয়েছে
+        return parse_numbered_lines(cleaned, expected)
+
+    translations = _normalise_items(_values_from_json(data))
+    if translations and not _looks_like_bangla(translations):
+        # ইংরেজি/মেটা-লেখা ফেরত দিলে সেটি অনুবাদ নয় — আবার চাওয়াই ঠিক
+        raise _ResponseFormatError(
+            "উত্তরে বাংলা টেক্সট নেই (মডেল হয়তো অনুবাদ না করে অন্য কিছু লিখেছে)"
+        )
+    if len(translations) != expected:
+        # শেষে বাড়তি খালি লাইন থাকলে বাদ দেওয়া হয়
+        trimmed = list(translations)
+        while len(trimmed) > expected and not trimmed[-1].strip():
+            trimmed.pop()
+        if len(trimmed) != expected:
+            raise _ResponseFormatError(
+                f"অনুবাদের সংখ্যা মেলেনি: দরকার {expected}, পাওয়া গেছে {len(trimmed)}"
+            )
+        translations = trimmed
+    return translations
+
+
+def salvage_translations(raw: str, expected: int) -> List[str]:
+    """কাটা JSON থেকে শুরুর সম্পূর্ণ অনুবাদগুলো উদ্ধার করে (সর্বোচ্চ ``expected``)।"""
+    recovered = [t for t in _salvage_string_array(raw) if t]
+    return recovered[:expected]
 
 
 def _status_code(exc: BaseException) -> Optional[int]:
@@ -293,6 +471,16 @@ class _RateLimiter:
                 now = time.monotonic()
             self._next_allowed = max(now, self._next_allowed) + self._interval
 
+    def refund(self) -> None:
+        """ব্যর্থ (ফরম্যাট ভুল) request-এর স্লট ফিরিয়ে দেয়।
+
+        ফরম্যাট ভুলে আবার পাঠানোটা নতুন request নয় — একই request-এর
+        পুনরায় চেষ্টা। তাই আবার পুরো ``60/RPM`` সেকেন্ড অপেক্ষা করা
+        অর্থহীন (ব্যবহারকারীর অভিযোগ ছিল ঠিক এটাই: "ডাবল সময়")।
+        """
+        with self._lock:
+            self._next_allowed = max(0.0, self._next_allowed - self._interval)
+
 
 # =============================================================================
 # Translator interface
@@ -360,8 +548,9 @@ class GeminiTranslator(BaseTranslator):
         batch_size: int = DEFAULT_GEMINI_BATCH_SIZE,
         max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
         max_retries: int = DEFAULT_MAX_RETRIES,
-        retry_base_delay: float = 4.0,
-        retry_max_delay: float = 90.0,
+        retry_base_delay: float = 0.5,
+        retry_max_delay: float = 2.0,
+        retry_cap_delay: float = 2.0,
         requests_per_minute: int = 15,
         temperature: float = 0.2,
         timeout: int = 120,
@@ -389,6 +578,8 @@ class GeminiTranslator(BaseTranslator):
         self.max_retries = min(10, max(1, int(max_retries)))
         self.retry_base_delay = max(0.5, float(retry_base_delay))
         self.retry_max_delay = max(self.retry_base_delay, float(retry_max_delay))
+        #: এক retry-তে সর্বোচ্চ অপেক্ষা (ব্যবহারকারীর নির্দেশ: ২ সেকেন্ডের বেশি নয়)
+        self.retry_cap_delay = min(max(0.0, float(retry_cap_delay)), max(self.retry_max_delay, 0.0))
         self.requests_per_minute = max(1, int(requests_per_minute))
         self.temperature = min(2.0, max(0.0, float(temperature)))
         self.timeout = max(10, int(timeout))
@@ -396,6 +587,13 @@ class GeminiTranslator(BaseTranslator):
         self.char_rate = max(6.0, float(char_rate))
         #: এই গতি কোথা থেকে এলো — ``"config"`` (অনুমান) বা ``"measured"`` (মাপা)
         self.rate_source = "config"
+        #: মডেল/SDK কোন কোন সুবিধা দেয় — প্রথম ব্যর্থতায় নিজেই বন্ধ হয়ে যায়
+        self._use_schema = True
+        self._use_thinking = True
+        #: কতবার উত্তর output-token সীমায় কেটেছে (লগ/ডায়াগনস্টিকসের জন্য)
+        self._truncated_hits = 0
+        #: ফরম্যাট ঠিক না হওয়ায় কতটি লাইন বাদ পড়ল
+        self._skipped_lines = 0
 
         self._api_key = resolved_key
         self._client = client
@@ -458,28 +656,122 @@ class GeminiTranslator(BaseTranslator):
         ]
         return json.dumps({"lines": lines}, ensure_ascii=False)
 
+    #: ব্যর্থ হলে যে ক্রমে ফরম্যাট সহজ করা হয় (সবচেয়ে কড়া → সবচেয়ে সহজ)
+    FORMAT_MODES = ("json", "json_plain", "lines")
+
+    def _payload_numbered(self, items: Sequence[Tuple[str, float]]) -> str:
+        """নম্বরযুক্ত সাধারণ টেক্সট — JSON ব্যর্থ হলে ব্যবহৃত নিরাপদ বিন্যাস।"""
+        lines = [f"{i}. {text}" for i, (text, _d) in enumerate(items, start=1)]
+        return "\n".join(lines)
+
+    def _output_token_budget(self, items: Sequence[Tuple[str, float]]) -> int:
+        """এই ব্যাচের উত্তরের জন্য কত output token দরকার তার হিসাব।
+
+        বাংলা টেক্সটে টোকেন বেশি লাগে; ছোট বাজেট দিলে উত্তর মাঝপথে কেটে
+        যায় (এটাই "ভুল ফরম্যাট"-এর সবচেয়ে বড় কারণ)। তাই ইনপুটের
+        দৈর্ঘ্য দেখে বাজেট বাড়ানো হয়, তবে মডেলের নিরাপদ সীমার ভেতরে।
+        """
+        chars = sum(len(text) for text, _d in items)
+        needed = int(chars * 2.4) + 640
+        return max(1024, min(int(self.max_output_tokens), max(needed, 2048)))
+
+    def _thinking_config(self, types: Any) -> Any:
+        """thinking বন্ধ করার কনফিগ (অনুবাদে চিন্তা দরকার নেই — সময় ও টোকেন বাঁচে)।"""
+        if not self._use_thinking:
+            return None
+        try:
+            return types.ThinkingConfig(thinking_budget=0)
+        except (AttributeError, TypeError):  # পুরোনো SDK
+            self._use_thinking = False
+            return None
+
     def _generate(
         self,
         items: Sequence[Tuple[str, float]],
         instruction: str = SYSTEM_INSTRUCTION,
         task: str = "Translate each line into Bangla.",
+        mode: str = "json",
     ) -> List[str]:
-        """এক request-এ একাধিক লাইন প্রসেস করে (retry ছাড়া)।"""
+        """এক request-এ একাধিক লাইন প্রসেস করে (retry ছাড়া)।
+
+        Args:
+            items: ``(English text, duration)`` জোড়া।
+            instruction: system instruction।
+            task: assistant-কে দেওয়া কাজের বাক্য।
+            mode: ``json`` (schema সহ) | ``json_plain`` (schema ছাড়া) |
+                ``lines`` (নম্বরযুক্ত সাধারণ টেক্সট)।
+
+        Raises:
+            _ResponseFormatError: উত্তর প্রত্যাশিত ফরম্যাটে না এলে।
+            _PartialBatchError: উত্তর কেটে গেছে, তবে শুরুর লাইনগুলো পাওয়া গেছে।
+            _CapabilityError: SDK/মডেল কোনো প্যারামিটার চেনে না।
+        """
         from google.genai import types
 
         client = self._ensure_client()
-        contents = f"{task}\n{self._payload(items)}"
-        config = types.GenerateContentConfig(
-            system_instruction=instruction,
-            temperature=self.temperature,
-            max_output_tokens=self.max_output_tokens,
-            response_mime_type="application/json",
-            response_schema=_RESPONSE_SCHEMA,
+        kwargs: Dict[str, Any] = {
+            "system_instruction": instruction,
+            # retry-তে একই ভুলের পুনরাবৃত্তি এড়াতে নির্ধারক (temperature=0)
+            "temperature": self.temperature if mode == "json" else 0.0,
+            "max_output_tokens": self._output_token_budget(items),
+        }
+        count_hint = (
+            f"IMPORTANT: the input has exactly {len(items)} lines — return exactly "
+            f"{len(items)} items, one per line, in the same order."
         )
+        if mode == "json":
+            contents = f"{task}\n{count_hint}\n{self._payload(items)}"
+            if self._use_schema:
+                kwargs["response_mime_type"] = "application/json"
+                kwargs["response_schema"] = _RESPONSE_SCHEMA
+        elif mode == "json_plain":
+            contents = (
+                f"{task}\n"
+                f'Return ONLY a JSON object like {{"translations": ["<bangla 1>", "<bangla 2>"]}} '
+                f"with exactly {len(items)} strings in the same order. No other text.\n"
+                f"{count_hint}\nInput lines:\n{self._payload(items)}"
+            )
+        else:
+            contents = (
+                f"{task}\n"
+                f"Answer with exactly {len(items)} numbered lines, each like "
+                f"`1. <bangla translation>`. No JSON, no explanation.\n"
+                f"Input lines:\n{self._payload_numbered(items)}"
+            )
 
-        response = client.models.generate_content(
-            model=self.model, contents=contents, config=config
-        )
+        thinking = self._thinking_config(types)
+        if thinking is not None:
+            kwargs["thinking_config"] = thinking
+        try:
+            config = types.GenerateContentConfig(**kwargs)
+        except TypeError as exc:
+            if "thinking_config" in kwargs:
+                kwargs.pop("thinking_config", None)
+                self._use_thinking = False
+                logger.info("এই SDK-তে thinking_config নেই — বাদ দিয়ে চলছে (দ্রুত নয়)।")
+                config = types.GenerateContentConfig(**kwargs)
+            else:
+                raise
+
+        try:
+            response = client.models.generate_content(
+                model=self.model, contents=contents, config=config
+            )
+        except Exception as exc:  # noqa: BLE001 - কোনো প্যারামিটার অসমর্থিত হলে
+            message = _error_message(exc).lower()
+            if "thinking" in message and self._use_thinking:
+                self._use_thinking = False
+                raise _CapabilityError(
+                    "এই মডেলে thinking বন্ধ করার অপশন নেই — বাদ দিয়ে আবার চেষ্টা।"
+                ) from exc
+            if ("schema" in message or "response_mime" in message) and self._use_schema:
+                self._use_schema = False
+                raise _CapabilityError(
+                    "এই মডেলে structured output নেই — সাধারণ JSON-এ আবার চেষ্টা।"
+                ) from exc
+            raise
+
+        truncated = self._finish_reason(response) == "MAX_TOKENS"
         try:
             raw = response.text
         except Exception as exc:  # কোনো candidate নেই (blocked বা empty)
@@ -500,22 +792,57 @@ class GeminiTranslator(BaseTranslator):
                 )
             detail = f" (prompt_feedback: {feedback})" if feedback else ""
             raise _ResponseFormatError(f"Gemini খালি উত্তর দিয়েছে{detail}")
-        return parse_translations(raw, len(items))
+
+        try:
+            if mode == "lines":
+                return parse_numbered_lines(raw, len(items))
+            return parse_translations(raw, len(items))
+        except _ResponseFormatError as exc:
+            # উত্তর কেটে গেলে শুরুর সম্পূর্ণ লাইনগুলো রেখে বাকিগুলো আবার চাওয়া হয়
+            recovered = salvage_translations(raw, len(items))
+            if 0 < len(recovered) < len(items):
+                reason = "উত্তর মাঝপথে কেটে গেছে" if truncated else "উত্তর অসম্পূর্ণ"
+                raise _PartialBatchError(recovered, len(items), reason) from exc
+            if truncated:
+                self._truncated_hits += 1
+                logger.warning(
+                    "✂️ উত্তর output-token সীমায় কেটে গেছে (%d লাইন, বাজেট %d টোকেন) — "
+                    "ব্যাচ ছোট করে আবার চেষ্টা।",
+                    len(items), kwargs["max_output_tokens"],
+                )
+            raise
+
+    @staticmethod
+    def _finish_reason(response: Any) -> str:
+        """উত্তর কেন থেমেছে (``STOP`` / ``MAX_TOKENS`` …) — নিরাপদে পড়া হয়।"""
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return ""
+        reason = getattr(candidates[0], "finish_reason", "")
+        name = getattr(reason, "name", None)
+        return str(name or reason or "").upper()
 
     # ------------------------------------------------------------------
     # Retry logic
     # ------------------------------------------------------------------
     def _retry_delay(self, attempt: int, exc: BaseException, status: Optional[int]) -> float:
-        """Exponential backoff + jitter; server-এর বলা সময়কে প্রাধান্য দেয়।"""
+        """পরের চেষ্টার আগে অপেক্ষা — **সর্বোচ্চ ২ সেকেন্ড**, দ্বিগুণ নয়।
+
+        ফরম্যাট ভুল হলে অপেক্ষার কোনো মানে নেই (একই request আবার পাঠালেই
+        হয়), তাই প্রায় সঙ্গে সঙ্গে আবার চেষ্টা করা হয়। নেটওয়ার্ক/429-এ
+        সামান্য বাড়তি অপেক্ষা useful, কিন্তু কখনো ``retry_cap_delay``-এর
+        (ডিফল্ট ২s) বেশি নয় — ব্যবহারকারীর নির্দেশ।
+        """
+        if isinstance(exc, _ResponseFormatError):
+            return random.uniform(0.0, 0.2)
         hinted = _retry_after_seconds(exc)
         if hinted is not None:
-            delay = hinted + 1.0
+            delay = hinted
         else:
-            delay = self.retry_base_delay * (2 ** (attempt - 1))
+            delay = self.retry_base_delay * (1.5 ** (attempt - 1))
             if status == 429:
-                delay *= 1.5
-            delay += random.uniform(0.0, min(3.0, delay * 0.1))
-        return min(max(delay, 0.5), self.retry_max_delay)
+                delay = max(delay, 1.0)
+        return min(max(delay, 0.0), self.retry_cap_delay)
 
     def _call_with_retry(
         self,
@@ -523,32 +850,46 @@ class GeminiTranslator(BaseTranslator):
         instruction: str = SYSTEM_INSTRUCTION,
         task: str = "Translate each line into Bangla.",
     ) -> List[str]:
-        """ব্যর্থ হলে অপেক্ষা করে আবার চেষ্টা; শেষে পরিষ্কার error দেয়।"""
+        """ব্যর্থ হলে (প্রায়) সঙ্গে সঙ্গে আবার চেষ্টা; শেষে পরিষ্কার error দেয়।"""
         if self._fatal_error:
             raise TranslationError(self._fatal_error)
 
         last_error: Optional[BaseException] = None
+        format_failures = 0
+        same_request = False  # True = আগের request-এরই পুনরায় চেষ্টা (নতুন নয়)
         for attempt in range(1, self.max_retries + 1):
+            mode = self.FORMAT_MODES[min(format_failures, len(self.FORMAT_MODES) - 1)]
             try:
-                self._rate_limiter.wait()
+                if not same_request:
+                    self._rate_limiter.wait()
+                same_request = False
                 self._api_calls += 1
-                return self._generate(items, instruction=instruction, task=task)
+                return self._generate(items, instruction=instruction, task=task, mode=mode)
+            except _CapabilityError as exc:
+                last_error = exc
+                logger.info("ℹ️ %s", exc)
+                same_request = True  # অপেক্ষা নেই, রেট-লিমিট স্লটও খরচ হবে না
+                self._rate_limiter.refund()
+                continue  # শুধু একই request সরল করে পাঠানো হচ্ছে
             except _ContentBlockedError as exc:
                 logger.error("🛑 %s — এই অংশের কাজ বাদ দেওয়া হলো।", exc)
                 raise TranslationError(str(exc)) from exc
+            except _PartialBatchError:
+                # কিছু লাইন পাওয়া গেছে — caller বাকিটা সঙ্গে সঙ্গে চাইবে
+                raise
             except _ResponseFormatError as exc:
                 last_error = exc
-                logger.error(
-                    "⚠️ Gemini উত্তর সঠিক ফরম্যাটে আসেনি (চেষ্টা %d/%d) — %s",
-                    attempt, self.max_retries, _error_message(exc),
+                format_failures += 1
+                logger.warning(
+                    "⚠️ Gemini উত্তর সঠিক ফরম্যাটে আসেনি (চেষ্টা %d/%d, বিন্যাস=%s) — %s",
+                    attempt, self.max_retries, mode, _error_message(exc, 300),
                 )
                 if attempt < self.max_retries:
+                    same_request = True
+                    self._rate_limiter.refund()
                     delay = self._retry_delay(attempt, exc, None)
-                    logger.warning(
-                        "⏳ %.1fs অপেক্ষা করে আবার চেষ্টা করা হবে (%d/%d)…",
-                        delay, attempt + 1, self.max_retries,
-                    )
-                    time.sleep(delay)
+                    if delay >= 0.05:
+                        time.sleep(delay)
             except Exception as exc:  # noqa: BLE001 - সব API/নেটওয়ার্ক ত্রুটি এক জায়গায়
                 last_error = exc
                 status = _status_code(exc)
@@ -575,7 +916,8 @@ class GeminiTranslator(BaseTranslator):
                         "⏳ %.1fs অপেক্ষা করে আবার চেষ্টা করা হবে (%d/%d)…",
                         delay, attempt + 1, self.max_retries,
                     )
-                    time.sleep(delay)
+                    if delay > 0:
+                        time.sleep(delay)
 
         final = (
             f"Gemini {self.max_retries} বার চেষ্টা করেও ব্যর্থ হয়েছে "
@@ -594,18 +936,43 @@ class GeminiTranslator(BaseTranslator):
         description: str = "  Translate (Gemini)",
         depth: int = 0,
     ) -> List[str]:
-        """সব ব্যাচ চালিয়ে ফলাফল একই ক্রমে ফেরত দেয় (format ভুল হলে ভাগ করে)।"""
+        """সব ব্যাচ চালিয়ে ফলাফল একই ক্রমে ফেরত দেয়।
+
+        ফরম্যাট ভুল হলে: (১) উত্তর কেটে গেলে শুরুর লাইনগুলো রেখে **শুধু
+        বাকি লাইন** সঙ্গে সঙ্গে আবার চাওয়া হয়, (২) তাও না হলে ব্যাচ দুই
+        ভাগ করে ছোট করে চেষ্টা করা হয় — অপেক্ষা ছাড়াই।
+        """
         results: List[str] = []
         for batch in self._make_batches(items):
             try:
                 results.extend(
                     self._call_with_retry(batch, instruction=instruction, task=task)
                 )
-            except _ResponseFormatError:
-                if len(batch) <= 1 or depth >= 4:
+            except _PartialBatchError as exc:
+                if depth >= 6:
                     raise
+                results.extend(exc.translations)
+                rest = list(batch)[len(exc.translations):]
+                logger.warning(
+                    "♻️ %d/%d লাইন পাওয়া গেছে — বাকি %d লাইন সঙ্গে সঙ্গে আবার চাওয়া হচ্ছে…",
+                    len(exc.translations), len(batch), len(rest),
+                )
+                results.extend(
+                    self._run_batches(rest, instruction, task, description, depth + 1)
+                )
+            except _ResponseFormatError as exc:
+                if len(batch) <= 1 or depth >= 6:
+                    # এক লাইনেও ফরম্যাট ঠিক হলো না — পুরো ভিডিও নষ্ট না করে
+                    # ওই লাইনটি বাদ দেওয়া হয় (বাকি ডাবিং চলবে)
+                    logger.error(
+                        "🩹 একটি লাইনের উত্তর বারবার ভুল ফরম্যাটে এসেছে — লাইনটি বাদ "
+                        "দেওয়া হলো (ভিডিওর বাকি অংশ চলবে): %s", _error_message(exc, 200),
+                    )
+                    self._skipped_lines += 1
+                    results.append("")
+                    continue
                 middle = len(batch) // 2
-                logger.warning("🔀 %d লাইনের ব্যাচ দুই ভাগে ভেঙে আবার চেষ্টা…", len(batch))
+                logger.warning("🔀 %d লাইনের ব্যাচ দুই ভাগে ভেঙে সঙ্গে সঙ্গে আবার চেষ্টা…", len(batch))
                 results.extend(
                     self._run_batches(batch[:middle], instruction, task, description, depth + 1)
                 )
@@ -614,9 +981,6 @@ class GeminiTranslator(BaseTranslator):
                 )
         return results
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def translate_text(self, text: str, duration: float = 0.0) -> str:
         """Translate a single English string into Bangla."""
         original = normalise_text(text)
@@ -693,10 +1057,16 @@ class GeminiTranslator(BaseTranslator):
                         seg.text_bn = cleaned
 
         logger.info(
-            "Gemini অনুবাদ শেষ: %d segment | নতুন লাইন: %d | API call: %d | cache: %d | সময় %.1fs",
+            "Gemini অনুবাদ শেষ: %d segment | নতুন লাইন: %d | API call: %d | cache: %d | "
+            "বাদ পড়া লাইন: %d | সময় %.1fs",
             len(segments), len(items), self._api_calls - calls_before,
-            len(self._cache), time.perf_counter() - started,
+            len(self._cache), self._skipped_lines, time.perf_counter() - started,
         )
+        if self._truncated_hits:
+            logger.info(
+                "ℹ️ %dটি উত্তরে output-token সীমা ছুঁয়েছিল — বাজেট/ব্যাচ স্বয়ংক্রিয়ভাবে "
+                "সমন্বয় করা হয়েছে।", self._truncated_hits,
+            )
         return segments
 
     def shorten_to_fit(
@@ -929,8 +1299,9 @@ def create_translator(
     gemini_batch_size: int = DEFAULT_GEMINI_BATCH_SIZE,
     gemini_max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
     gemini_max_retries: int = DEFAULT_MAX_RETRIES,
-    gemini_retry_base_delay: float = 4.0,
-    gemini_retry_max_delay: float = 90.0,
+    gemini_retry_base_delay: float = 0.5,
+    gemini_retry_max_delay: float = 2.0,
+    gemini_retry_cap_delay: float = 2.0,
     gemini_requests_per_minute: int = 15,
     gemini_temperature: float = 0.2,
     gemini_timeout: int = 120,
@@ -954,6 +1325,7 @@ def create_translator(
             max_retries=gemini_max_retries,
             retry_base_delay=gemini_retry_base_delay,
             retry_max_delay=gemini_retry_max_delay,
+            retry_cap_delay=gemini_retry_cap_delay,
             requests_per_minute=gemini_requests_per_minute,
             temperature=gemini_temperature,
             timeout=gemini_timeout,

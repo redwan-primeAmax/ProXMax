@@ -10,7 +10,7 @@
     python main.py --force              # আউটপুট থাকলেও আবার প্রসেস করা
 
 কণ্ঠ: ডিফল্টে (`tts.engine: auto`) **কিছুই দিতে হয় না** — বিল্ট-ইন বাংলা
-neural ভয়েস (`bn-BD-NabanitaNeural`) দিয়েই ডাবিং হয়। ইনপুট ফোল্ডারে
+neural ভয়েস (`bn-BD-PradeepNeural`, পুরুষ) দিয়েই ডাবিং হয়। ইনপুট ফোল্ডারে
 ১০–২০ সেকেন্ডের পরিষ্কার বাংলা কথার অডিও (.wav/.mp3/.m4a) রাখলে নিজে থেকেই
 IndicF5 দিয়ে আপনার কণ্ঠ ক্লোন করার চেষ্টা করবে (ঐচ্ছিক)।
 
@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--voice", default=None,
         help="edge-tts ভয়েস (শুধু fallback/edge ইঞ্জিনে): "
-             "bn-BD-NabanitaNeural (নারী) / bn-BD-PradeepNeural (পুরুষ)",
+             "bn-BD-PradeepNeural (পুরুষ, ডিফল্ট) / bn-BD-NabanitaNeural (নারী)",
     )
     parser.add_argument(
         "--force", action="store_true",

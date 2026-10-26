@@ -151,6 +151,7 @@ class DubbingPipeline:
             gemini_max_retries=cfg.gemini_max_retries,
             gemini_retry_base_delay=cfg.gemini_retry_base_delay,
             gemini_retry_max_delay=cfg.gemini_retry_max_delay,
+            gemini_retry_cap_delay=cfg.gemini_retry_cap_delay,
             gemini_requests_per_minute=cfg.gemini_requests_per_minute,
             gemini_temperature=cfg.gemini_temperature,
             gemini_timeout=cfg.gemini_timeout,
