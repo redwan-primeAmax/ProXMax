@@ -567,6 +567,10 @@ class GeminiTranslator(BaseTranslator):
             self.hotwords_list: List[str] = load_hotwords(
                 hotwords_file, extra_hotwords=hotwords
             )
+            logger.info(
+                "Gemini glossary-তে %dটি local hotword আছে; request-এ শুধু text-এ মেলা term পাঠানো হবে (সর্বোচ্চ ২০টি/৬০০ অক্ষর)।",
+                len(self.hotwords_list),
+            )
         else:
             self.hotwords_list = []
 
@@ -681,8 +685,12 @@ class GeminiTranslator(BaseTranslator):
         }
         glossary_hint = ""
         if self.hotwords_list:
+            # Full vocabulary stays local; only exact matches from this batch enter the prompt.
             matched = matched_hotwords_for_texts(
-                [text for text, _d in items], self.hotwords_list, max_matches=35
+                [text for text, _d in items],
+                self.hotwords_list,
+                max_matches=20,
+                max_chars=600,
             )
             if matched:
                 glossary_hint = (
@@ -1147,10 +1155,22 @@ class GeminiTranslator(BaseTranslator):
         targets: List[float] = []
         for i, seg in enumerate(ordered):
             next_start = ordered[i + 1].start if i + 1 < len(ordered) else None
-            available = (
-                (next_start - seg.start - slot_gap) if next_start is not None else seg.duration
+            speech_window = max(0.0, float(seg.end) - float(seg.start))
+            if next_start is not None:
+                hard_window = max(0.0, float(next_start) - float(seg.start) - slot_gap)
+                speech_window = min(speech_window, hard_window)
+                borrowable = min(max(0.0, float(borrow)), max(0.0, hard_window - speech_window))
+            else:
+                # Without a later segment timestamp, don't borrow the video's trailing silence.
+                borrowable = 0.0
+            available = min(
+                max(0.0, speech_window + borrowable),
+                max(0.0, (float(next_start) - float(seg.start) - slot_gap))
+                if next_start is not None else max(0.0, speech_window),
             )
-            budget = max(0.4, (available + borrow) * max_tempo)
+            if available <= 0.2:
+                continue
+            budget = max(0.4, available * max_tempo)
             estimated = estimate_speech_seconds(seg.text_bn, self.char_rate)
             if estimated > budget * (1 + DURATION_TOLERANCE):
                 offenders.append(seg)

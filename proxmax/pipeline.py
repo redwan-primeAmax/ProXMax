@@ -588,7 +588,7 @@ class DubbingPipeline:
     def _fill_short_slots(
         self, segments: List[Segment], tts_dir: Path, total_duration: float
     ) -> int:
-        """স্লটের তুলনায় অনেক ছোট ক্লিপগুলোর টেক্সট ভরাট করে আবার TTS করে।"""
+        """মূল speech interval-এর তুলনায় ছোট ক্লিপ ভরাট করে; পরের নীরবতা ব্যবহার করে না।"""
         cfg = self.config
         if not cfg.translation_expand_pass:
             return 0
@@ -599,14 +599,21 @@ class DubbingPipeline:
         if len(ordered) < 2:
             return 0
         slot_gap = max(0.0, cfg.slot_gap_ms / 1000.0)
+        borrow = max(0.0, cfg.borrow_silence_ms / 1000.0)
         offenders: List[Segment] = []
         targets: List[float] = []
         for index, seg in enumerate(ordered):
-            end = (
+            deadline = (
                 float(ordered[index + 1].start) - slot_gap
                 if index + 1 < len(ordered) else float(total_duration)
             )
-            slot = max(0.4, end - float(seg.start))
+            hard_window = max(0.0, deadline - float(seg.start))
+            speech_window = max(0.0, float(seg.end) - float(seg.start))
+            # Only the segment's measured speech interval plus a small configured
+            # borrow is available. Never treat a 2–5s source pause as extra speech time.
+            slot = min(hard_window, max(0.4, speech_window + borrow))
+            if slot <= 0.2:
+                continue
             gap = slot - float(seg.tts_duration or 0.0)
             if gap >= float(cfg.translation_expand_min_gap):
                 offenders.append(seg)
@@ -615,7 +622,7 @@ class DubbingPipeline:
             return 0
 
         logger.info(
-            "🕳️ %dটি লাইনের পরে বড় ফাঁক (≥%.1fs) — অনুবাদ আরও ভরাট করে লেখানো হচ্ছে…",
+            "🕳️ %dটি লাইনের মূল speech interval-এ বড় ফাঁক (≥%.1fs) — সীমিত সময়ে অনুবাদ ভরাট করা হচ্ছে…",
             len(offenders), cfg.translation_expand_min_gap,
         )
         try:

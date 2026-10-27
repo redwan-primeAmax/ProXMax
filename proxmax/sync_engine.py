@@ -136,8 +136,9 @@ def plan_windows(
 
     নিয়ম:
       * উইন্ডো কখনো পরের segment শুরুর আগে শেষ হয় (``min_gap`` বাদে),
-      * বাংলা অডিও লম্বা হলে নীরবতা থেকে সর্বোচ্চ ``borrow_seconds`` ধার
-        নেওয়া যায়, তবু পরের ক্লিপে ঢুকে পড়া যাবে না,
+      * উইন্ডোর মূল দৈর্ঘ্য source-এর মাপা speech interval (``seg.start``–``seg.end``),
+      * ``borrow_seconds``-এর বেশি নীরবতা ধার নেওয়া হয় না — পরের বক্তব্যের আগে
+        ২–৫ সেকেন্ড ফাঁকা থাকলেও সেটি ভুল করে dub slot হিসেবে ব্যবহৃত হবে না,
       * শুরু কখনো পিছিয়ে যায় না (lip-sync নষ্ট হয়)।
 
     Returns:
@@ -151,12 +152,11 @@ def plan_windows(
             hard_end = min(float(ordered[index + 1].start) - min_gap_seconds, total_duration)
         else:
             hard_end = float(total_duration)
-        desired = float(seg.tts_duration or seg.duration)
-        natural_end = start + max(desired, seg.duration)
-        # speech unit (পুরো বাক্য) হলে পরের বাক্যের আগের নীরবতা থেকে একটু বেশি
-        # ধার নেওয়া হয় — নাহলে বাক্যের শেষ শব্দটা কেটে যাওয়ার ঝুঁকি থাকে
-        borrow = max(borrow_seconds, 0.45) if getattr(seg, "is_unit", False) else borrow_seconds
-        end = min(hard_end, natural_end + borrow)
+        source_end = max(start + 0.15, float(seg.end))
+        borrow = max(0.0, float(borrow_seconds))
+        # TTS length must not turn a multi-second source pause into extra speech time.
+        # If it overruns this bounded source window, shorten/tempo-fit it instead.
+        end = min(hard_end, source_end + borrow)
         end = max(end, min(hard_end, start + 0.15))
         windows.append((start, end))
     return windows

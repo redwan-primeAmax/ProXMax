@@ -247,6 +247,18 @@ class TestUtilsAndSyncMath(unittest.TestCase):
         self.assertLessEqual(windows[0][1], windows[1][0])
         self.assertLessEqual(windows[1][1], windows[2][0])
 
+    def test_plan_window_does_not_absorb_a_multi_second_source_pause(self):
+        segments = [
+            Segment(index=0, start=1.0, end=2.0, tts_duration=3.5),
+            Segment(index=1, start=7.0, end=8.0, tts_duration=1.0),
+        ]
+        windows = plan_windows(
+            segments, total_duration=9.0, min_gap_seconds=0.08, borrow_seconds=0.25
+        )
+        # Five seconds of source silence after line 1 is not a five-second dub slot.
+        self.assertAlmostEqual(windows[0][1], 2.25, places=3)
+        self.assertLess(windows[0][1], segments[1].start - 3.0)
+
     def test_find_overlaps_flags_bad_spans(self):
         self.assertEqual(find_overlaps([(0.0, 1.0), (1.0, 2.0)]), [])
         self.assertTrue(find_overlaps([(0.0, 1.5), (1.0, 2.0)]))
@@ -547,6 +559,31 @@ class TestSttHelpers(unittest.TestCase):
         self.assertNotIn("hotwords", calls[1])
         self.assertEqual(old.hotwords, "")
 
+        large_inline = ", ".join(f"Custom Game Term {index:04d}" for index in range(300))
+        bounded = SpeechToText(model_size="tiny", hotwords=large_inline)
+        self.assertLessEqual(len(bounded.hotwords), 1600)
+
+    def test_whisper_decode_reselects_hotwords_from_chunk_context(self):
+        calls: list[dict] = []
+
+        class _Model:
+            def transcribe(self, samples, **kwargs):
+                calls.append(dict(kwargs))
+                return iter([]), None
+
+        stt = SpeechToText(
+            model_size="tiny", hotwords_file=str(REPO_ROOT / "hotwords.txt")
+        )
+        stt._model = _Model()
+        stt._decode_words(
+            np.ones(16000, dtype=np.float32) * 0.1,
+            initial_prompt="FC Mobile 27: Aitana Bonmati is in the lineup.",
+        )
+        prompt = calls[0]["hotwords"]
+        self.assertLessEqual(len(prompt), 1600)
+        self.assertIn("Aitana Bonmati", prompt)
+        self.assertIn("Game Plans", prompt)
+
     def test_video_name_is_used_as_first_prompt(self):
         from proxmax.models import Word
 
@@ -702,6 +739,33 @@ class TestMaleVoiceAndGaps(unittest.TestCase):
 
     def test_no_fill_when_clip_is_longer_than_slot(self):
         self.assertGreater(compute_tempo(3.0, 2.4, fill_extension=0.12), 1.0)
+
+    def test_gap_filler_does_not_use_multi_second_pause_after_speech(self):
+        from proxmax.pipeline import DubbingPipeline
+
+        class _Translator:
+            def __init__(self):
+                self.calls = 0
+
+            def expand_to_fit(self, segments, targets):
+                self.calls += 1
+                return 0
+
+        translator = _Translator()
+        pipeline = DubbingPipeline.__new__(DubbingPipeline)
+        pipeline.config = AppConfig().validate()
+        pipeline.translator = translator
+        pipeline._tts = None
+        first = Segment(index=0, start=1.0, end=2.0, text_en="First line.", text_bn="Short.")
+        first.tts_audio_path = Path("unused-first.wav")
+        first.tts_duration = 1.0
+        second = Segment(index=1, start=6.0, end=7.0, text_en="Second line.", text_bn="Also short.")
+        second.tts_audio_path = Path("unused-second.wav")
+        second.tts_duration = 1.0
+
+        filled = pipeline._fill_short_slots([first, second], Path("unused"), total_duration=8.0)
+        self.assertEqual(filled, 0)
+        self.assertEqual(translator.calls, 0)
 
 
 class TestEdgeVoiceResolution(unittest.TestCase):
@@ -1339,6 +1403,64 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertEqual(info["active_model"], "gemini-3.5-flash-lite")
         self.assertIn("স্বাগতম", info["sample_reply"])
 
+    def test_gemini_gets_only_matched_and_bounded_hotword_glossary(self):
+        client = _FakeClient(lambda c, n: json.dumps({"translations": ["মেসি ও মাসচেরানো।"]}))
+        translator = _make_translator(
+            client,
+            hotwords_file=str(REPO_ROOT / "hotwords.txt"),
+            hotwords="Unrelated Player Name",
+        )
+        translator.translate_text("FC Mobile 27: Messi and Mascherano.")
+        contents = client.calls[0]["contents"]
+        self.assertIn("Recognized football/FC Mobile terms in this batch", contents)
+        self.assertIn("Mascherano", contents)
+        self.assertNotIn("Unrelated Player Name", contents)
+        self.assertNotIn("Aitana Bonmati", contents)
+        glossary = contents.split("Recognized football/FC Mobile terms in this batch", 1)[1]
+        glossary = glossary.split("\n{", 1)[0]
+        self.assertLessEqual(len(glossary), 650)
+
+    def test_gemini_glossary_caps_match_count_and_characters(self):
+        response = lambda c, n: json.dumps({"translations": ["বাংলা অনুবাদ।"]})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = (
+                ([f"ModeTerm{i:02d}" for i in range(30)], 20),
+                ([f"VeryLongGameMode{i:02d}_" + "x" * 40 for i in range(30)], None),
+            )
+            for index, (terms, expected_count) in enumerate(cases):
+                hotwords_file = root / f"hotwords-{index}.txt"
+                hotwords_file.write_text("\n".join(terms), encoding="utf-8")
+                client = _FakeClient(response)
+                translator = _make_translator(client, hotwords_file=str(hotwords_file))
+                translator.translate_text(" / ".join(terms))
+
+                contents = client.calls[0]["contents"]
+                marker = "(keep names/terms accurate in Bangla): "
+                self.assertIn(marker, contents)
+                glossary = contents.split(marker, 1)[1].split("\n{", 1)[0].rstrip(".")
+                matched = glossary.split(", ")
+                self.assertLessEqual(len(matched), 20)
+                self.assertLessEqual(len(glossary), 600)
+                if expected_count is not None:
+                    self.assertEqual(len(matched), expected_count)
+                else:
+                    self.assertLess(len(matched), 20)
+
+    def test_shorten_budget_uses_speech_span_not_following_pause(self):
+        translator = _make_translator(_FakeClient(lambda c, n: "{}"))
+        long_line = "বাংলা বাক্য অনুবাদ " * 12
+        first = Segment(index=0, start=0.0, end=1.0, text_en="A line.", text_bn=long_line)
+        second = Segment(index=1, start=5.0, end=6.0, text_en="Next line.", text_bn="ছোট।")
+        with mock.patch.object(translator, "_run_batches", return_value=["ছোট।"]) as run:
+            changed = translator.shorten_to_fit(
+                [first, second], max_tempo=1.25, slot_gap=0.08, borrow=0.25
+            )
+        self.assertEqual(changed, 1)
+        items = run.call_args.args[0]
+        self.assertEqual(len(items), 1)
+        self.assertAlmostEqual(items[0][1], 1.25, places=3)
+
     def test_output_budget_grows_with_batch_size(self):
         translator = _make_translator(_FakeClient(lambda c, n: "{}"))
         small = translator._output_token_budget([("short line", 1.0)] * 2)
@@ -1919,19 +2041,53 @@ class TestHotwords(unittest.TestCase):
         from proxmax.hotwords import load_hotwords
 
         terms = load_hotwords(REPO_ROOT / "hotwords.txt")
-        self.assertGreater(len(terms), 400)
+        self.assertGreater(len(terms), 1_500)
         joined = " | ".join(terms)
-        # FC Mobile game terms
-        for term in ("FC Mobile", "OVR", "Star Pass", "Mascherano", "Skill Boost", "VSA", "H2H"):
+        # FC Mobile UI, controls, and current game terms
+        for term in (
+            "FC Mobile", "OVR", "Star Pass", "Mascherano", "Skill Boost", "VSA", "H2H",
+            "Exchange", "Player Exchange", "Play", "Game Plans", "Gauntlet Mode",
+            "Football Centre", "Sprint & Skill", "Swipe Up", "Quick Match",
+        ):
+            self.assertIn(term, joined)
+        # Current mobile PlayStyles, skill moves and events
+        for term in (
+            "Incisive Through Pass", "Dead Ball", "Finesse Expert", "Guardian",
+            "Advanced Rainbow", "Lane Change", "Hocus Pocus", "3rd Anniversary",
+            "Ballon d'Or 2026", "Unbreakable", "CONMEBOL Libertadores",
+        ):
             self.assertIn(term, joined)
         # Events
         for event in ("TOTY", "UTOTY", "TOTS", "UTOTS", "Ballon d'Or", "Winter Wildcards", "Rulebreakers"):
             self.assertIn(event, joined)
         # Legends & current players
-        for player in ("Pele", "Maradona", "Lionel Messi", "Cristiano Ronaldo", "Cruyff", "Zidane",
-                       "Ronaldinho", "Maldini", "Kylian Mbappe", "Erling Haaland", "Jude Bellingham",
-                       "Vinicius Junior", "Lamine Yamal"):
+        for player in (
+            "Pele", "Maradona", "Lionel Messi", "Cristiano Ronaldo", "Cruyff", "Zidane",
+            "Ronaldinho", "Maldini", "Kylian Mbappe", "Erling Haaland", "Jude Bellingham",
+            "Vinicius Junior", "Lamine Yamal", "Alexia Putellas", "Aitana Bonmati",
+            "Aitana Bonmatí", "Ewa Pajor", "Michael Olise", "Willian Pacho",
+        ):
             self.assertIn(player, joined)
+
+    def test_context_prompt_is_bounded_and_selects_late_curated_names(self):
+        from proxmax.hotwords import load_hotwords, select_whisper_hotwords
+
+        terms = load_hotwords(REPO_ROOT / "hotwords.txt")
+        prompt = select_whisper_hotwords(
+            terms, max_chars=500, context="FC Mobile 27: Aitana Bonmati is on the squad."
+        )
+        self.assertLessEqual(len(prompt), 500)
+        self.assertIn("Aitana Bonmati", prompt)
+        self.assertIn("FC Mobile 27", prompt)
+
+    def test_custom_hotwords_file_is_self_contained(self):
+        from proxmax.hotwords import load_hotwords
+
+        with tempfile.TemporaryDirectory() as tmp:
+            custom = Path(tmp) / "custom.txt"
+            custom.write_text("Custom Club Term\n", encoding="utf-8")
+            terms = load_hotwords(custom)
+        self.assertEqual(terms, ["Custom Club Term"])
 
     def test_repair_transcript_hotwords_fixes_common_mishearings(self):
         from proxmax.hotwords import repair_transcript_hotwords
@@ -1942,6 +2098,14 @@ class TestHotwords(unittest.TestCase):
         self.assertIn("TOTY", fixed)
         self.assertIn("Bellingham", fixed)
         self.assertIn("Mbappe", fixed)
+
+    def test_curated_player_aliases_get_exact_casing(self):
+        from proxmax.hotwords import load_hotwords, repair_transcript_hotwords
+
+        fixed = repair_transcript_hotwords(
+            "dembélé and pacho", hotwords=load_hotwords(REPO_ROOT / "hotwords.txt")
+        )
+        self.assertEqual(fixed, "Dembélé and Pacho")
 
     def test_matched_hotwords_for_texts_extracts_relevant_terms(self):
         from proxmax.hotwords import load_hotwords, matched_hotwords_for_texts
