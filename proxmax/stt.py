@@ -44,6 +44,7 @@ from .chunking import SpeechChunk, plan_chunks
 from .config import SOURCE_LANGUAGE
 from .hotwords import (
     load_hotwords,
+    parse_hotwords_text,
     repair_transcript_hotwords,
     select_whisper_hotwords,
 )
@@ -337,9 +338,15 @@ class SpeechToText:
                 hotwords_file, extra_hotwords=hotwords
             )
             self.hotwords = select_whisper_hotwords(self.hotwords_list)
+            logger.info(
+                "Whisper hotwords লোড: %dটি local term/name | প্রাথমিক context-aware prompt %d অক্ষর",
+                len(self.hotwords_list), len(self.hotwords),
+            )
         else:
-            self.hotwords_list = []
-            self.hotwords = (hotwords or "").strip()
+            self.hotwords_list = parse_hotwords_text(hotwords)
+            self.hotwords = select_whisper_hotwords(self.hotwords_list)
+        self._supports_hotwords = True
+        self.last_hotwords_prompt = ""
         #: প্রথম chunk-এ শুধু একবার দেওয়া প্রসঙ্গ (ভিডিওর নাম/বিষয়)
         self.context_hint = ""
         self.compression_ratio_threshold = float(compression_ratio_threshold)
@@ -451,16 +458,25 @@ class SpeechToText:
             log_prob_threshold=self.log_prob_threshold,
             hallucination_silence_threshold=2.0,
         )
-        if self.hotwords:
-            # পুরোনো faster-whisper-এ ``hotwords`` নেই — TypeError হলে বাদ দেওয়া হয়
+        hotwords_prompt = self.hotwords
+        if self.hotwords_list:
+            hotwords_prompt = select_whisper_hotwords(
+                self.hotwords_list,
+                context=initial_prompt or self.context_hint,
+            )
+        self.last_hotwords_prompt = hotwords_prompt
+
+        if hotwords_prompt and self._supports_hotwords:
+            # পুরোনো faster-whisper-এ ``hotwords`` নেই — TypeError হলে একবারই বাদ দেওয়া হয়
             try:
                 segments, _info = self._model.transcribe(
-                    samples, hotwords=self.hotwords, **options
+                    samples, hotwords=hotwords_prompt, **options
                 )
             except TypeError:  # pragma: no cover - পুরোনো সংস্করণ
                 logger.info(
                     "এই faster-whisper সংস্করণে hotwords নেই — সাধারণ ডিকোড চলবে।"
                 )
+                self._supports_hotwords = False
                 self.hotwords = ""
                 segments, _info = self._model.transcribe(samples, **options)
         else:
