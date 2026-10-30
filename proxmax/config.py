@@ -134,7 +134,7 @@ class AppConfig:
     tts_pitch: str = "+0Hz"
     tts_concurrency: int = DEFAULT_TTS_CONCURRENCY
     tts_max_retries: int = 3
-    #: পূর্ণ TTS edge-silence trim বন্ধ; overrun হলে sync-এ শুধু প্রয়োজনীয় অংশ বাদ যায়
+    #: পূর্ণ TTS edge trim বন্ধ; overrun হলে sync-এ শেষ থেকে প্রয়োজনীয় silence বাদ যায়
     tts_trim_silence: bool = False
     tts_trim_pad_ms: int = 25
     #: এক clip-এ কয় সেকেন্ড পর্যন্ত কথা (বাক্য জোড়া লাগিয়ে)
@@ -147,7 +147,7 @@ class AppConfig:
     # --- audio-video sync ----------------------------------------------------
     min_tempo: float = 0.90                # সর্বোচ্চ ১০% ধীর
     fill_extension: float = 0.12
-    max_tempo: float = 1.15                 # সর্বোচ্চ ১৫% দ্রুত
+    max_tempo: float = 1.20                 # সর্বোচ্চ ২০% দ্রুত
     slow_down_short_clips: bool = True
     slot_gap_ms: int = 80
     borrow_silence_ms: int = 250

@@ -237,7 +237,7 @@ class PipelineProcessingMixin:
             "checked": 0, "overlong_before": 0, "shortened": 0,
             "translation_seconds": 0.0, "tts_seconds": 0.0,
         }
-        with self._step(4, "Audio-Video Sync (silence-fit + tempo 0.90×–1.15×)"):
+        with self._step(4, f"Audio-Video Sync (silence-fit + tempo {cfg.min_tempo:.2f}×–{cfg.max_tempo:.2f}×)"):
             sync_passes = []
 
             def build_track():
@@ -265,7 +265,7 @@ class PipelineProcessingMixin:
                     segments, tts_dir, total_duration, only_unfit=True,
                     retry_round=retry_round, eligible_indexes=eligible,
                 )
-                if result["overlong_before"]:
+                if result["overlong_before"] or result.get("awaiting_tempo_cap"):
                     rounds.append(result)
                 if result["shortened"]:
                     eligible = set(result["shortened_segments"])
@@ -290,6 +290,7 @@ class PipelineProcessingMixin:
                 )
                 fit_stats["retry_failed"] = sorted({index for item in rounds for index in item["retry_failed"]})
                 fit_stats["not_shorter_audio"] = sorted({index for item in rounds for index in item["not_shorter_audio"]})
+                fit_stats["awaiting_tempo_cap"] = sorted({index for item in rounds for index in item.get("awaiting_tempo_cap", [])})
                 fit_stats["still_unfit_after_sync"] = [
                     int(issue.get("segment_index", -1))
                     for issue in stats["sync"].get("sync_issues", [])
@@ -300,7 +301,7 @@ class PipelineProcessingMixin:
             unplaced = int(stats["sync"].get("unplaced", 0) or 0)
             if unplaced:
                 logger.warning(
-                    "⚠️ %dটি clip final track-এ place হয়নি; overrun হলে edge-silence trim ও ০.৯০×–১.১৫× tempo প্রয়োগ করা হয়েছে, speech কাটা হয়নি। Report review করুন।",
+                    "⚠️ %dটি clip final track-এ place হয়নি; শনাক্ত silence ও অনুমোদিত tempo fit চেষ্টা হয়েছে, speech কাটা হয়নি। বিস্তারিতের জন্য report review করুন।",
                     unplaced,
                 )
 

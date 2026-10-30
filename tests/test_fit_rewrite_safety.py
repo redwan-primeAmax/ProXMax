@@ -65,6 +65,7 @@ class TestFitRewriteSafety(unittest.TestCase):
             "আমাদের কাছে ১২৬ ওভিআর এবং ৫ স্টার আছে।",
             tts_audio_path=original, tts_duration=2.0, stretched_duration=1.7,
             sync_issue="stretched clip exceeds safe window after tempo cap",
+            sync_tempo_cap_measured=True,
         )
         return pipeline, segment, original
 
@@ -124,6 +125,33 @@ class TestFitRewriteSafety(unittest.TestCase):
             self.assertNotEqual(seg.tts_audio_path, original)
             self.assertTrue(original.exists())
             self.assertAlmostEqual(seg.tts_duration, .8)
+
+    def test_longer_raw_retry_with_more_removable_silence_can_still_be_better(self):
+        class PausedTTS:
+            def synthesize(self, segments, output_dir):
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+                rate = 24000
+                t = np.arange(int(.6 * rate), dtype=np.float32) / rate
+                voice = .1 * np.sin(2 * np.pi * 350 * t)
+                path = Path(output_dir) / "paused.wav"
+                audio_fx.write_wav(path, np.r_[voice, np.zeros(int(1.5 * rate)), voice], rate)
+                segments[0].tts_audio_path = path
+                segments[0].tts_duration = 99.0  # Trust the WAV, not provider metadata.
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline, seg, original = self._setup(root, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।", .8)
+            pipeline._tts = PausedTTS()
+            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0)
+            self.assertEqual(stats["shortened"], 1)
+            self.assertNotEqual(seg.tts_audio_path, original)
+            self.assertAlmostEqual(seg.tts_duration, 2.7)
+            if FFMPEG:
+                engine = SyncEngine(max_workers=1, prefer_rubberband=False)
+                engine.build_final_track([seg], 2.0, root, root / "track.wav")
+                self.assertEqual(engine.last_stats["unplaced"], 0)
+                self.assertLessEqual(seg.placed_duration, 1.26)
+                self.assertGreater(seg.sync_trimmed_internal_seconds, 1.0)
 
     def test_second_round_only_targets_eligible_remaining_clips(self):
         with tempfile.TemporaryDirectory() as tmp:

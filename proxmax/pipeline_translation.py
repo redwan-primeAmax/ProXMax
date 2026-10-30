@@ -14,7 +14,7 @@ from .audio_quality import assess_bengali_coverage
 from .models import Segment
 from .pipeline_helpers import _usable
 from .sync_engine import plan_windows
-from .sync_silence import measured_active_seconds
+from .sync_silence import measured_fit_durations
 from .translation_quality import assess_fit_rewrite
 from .tts.base import TTSError
 from .utils import get_logger
@@ -139,13 +139,13 @@ class PipelineTranslationMixin:
         retry_round: int = 1,
         eligible_indexes: Optional[Set[int]] = None,
     ) -> dict:
-        """Shorten only measured clips that remain unfit after edge trim and tempo fitting."""
+        """Rewrite only clips still unfit after silence trimming and a measured tempo cap."""
         ordered = [s for s in sorted(segments, key=lambda item: item.start) if s.tts_audio_path]
         if not ordered:
             return {
                 "checked": 0, "overlong_before": 0, "overlong_segments": [], "shortened": 0, "shortened_segments": [],
                 "retry_failed": [], "not_shorter_audio": [], "still_unfit_after_sync": [],
-                "retry_seconds": 0.0, "translation_seconds": 0.0, "tts_seconds": 0.0, "audio_check_seconds": 0.0,
+                "awaiting_tempo_cap": [], "retry_seconds": 0.0, "translation_seconds": 0.0, "tts_seconds": 0.0, "audio_check_seconds": 0.0,
             }
         windows = plan_windows(
             ordered,
@@ -155,10 +155,16 @@ class PipelineTranslationMixin:
         )
         overlong: List[Segment] = []
         targets: List[float] = []
+        awaiting_cap: List[int] = []
         for segment, (start, end) in zip(ordered, windows):
-            safe_window = max(0.12, end - start - 0.04)
+            window_length = max(0.0, end - start)
+            safe_window = max(min(0.01, window_length), window_length - 0.04)
             remains_unfit = "stretched clip exceeds safe window" in (segment.sync_issue or "")
-            if only_unfit and remains_unfit and (eligible_indexes is None or segment.index in eligible_indexes):
+            eligible = eligible_indexes is None or segment.index in eligible_indexes
+            if only_unfit and remains_unfit and eligible:
+                if not segment.sync_tempo_cap_measured:
+                    awaiting_cap.append(int(segment.index))
+                    continue
                 overlong.append(segment)
                 targets.append(safe_window)
         summary = {
@@ -170,11 +176,17 @@ class PipelineTranslationMixin:
             "retry_failed": [],
             "not_shorter_audio": [],
             "still_unfit_after_sync": [],
+            "awaiting_tempo_cap": awaiting_cap,
             "retry_seconds": 0.0,
             "translation_seconds": 0.0,
             "tts_seconds": 0.0,
             "audio_check_seconds": 0.0,
         }
+        if awaiting_cap:
+            logger.warning(
+                "%dটি unfit clip-এর সর্বোচ্চ tempo মাপা যায়নি; rewrite না করে review-তে রাখা হলো।",
+                len(awaiting_cap),
+            )
         if not only_unfit or not overlong:
             return summary
 
@@ -248,14 +260,15 @@ class PipelineTranslationMixin:
                 check_started = time.perf_counter()
                 for i in changed:
                     original, replacement = overlong[i], replacements[i]
-                    if not replacement.tts_audio_path or not replacement.tts_duration:
+                    if not replacement.tts_audio_path:
                         summary["retry_failed"].append(int(original.index))
                         original.translation_notes.append("Fit-retry synthesis produced no usable clip; prior text/audio retained.")
                         continue
                     try:
                         pad = int(self.config.tts_trim_pad_ms)
-                        old_duration = measured_active_seconds(original.tts_audio_path, pad_ms=pad)
-                        new_duration = measured_active_seconds(replacement.tts_audio_path, pad_ms=pad)
+                        threshold = float(getattr(getattr(self, "sync_engine", None), "silence_threshold_dbfs", -45.0))
+                        _, old_duration = measured_fit_durations(original.tts_audio_path, pad_ms=pad, threshold_dbfs=threshold)
+                        actual_duration, new_duration = measured_fit_durations(replacement.tts_audio_path, pad_ms=pad, threshold_dbfs=threshold)
                     except (OSError, ValueError, RuntimeError, wave.Error, EOFError) as exc:
                         logger.warning("TTS retry-এর audio মাপা যায়নি (%s); আগের clip রাখা হলো।", exc)
                         summary["retry_failed"].append(int(original.index))
@@ -269,7 +282,7 @@ class PipelineTranslationMixin:
                     original.original_text_bn = original.original_text_bn or old_texts[i]
                     original.text_bn = replacement.text_bn
                     original.tts_audio_path = replacement.tts_audio_path
-                    original.tts_duration = replacement.tts_duration
+                    original.tts_duration = actual_duration
                     original.translation_issues = []
                     original.translation_notes.append(
                         "Bangla was rewritten after a measured TTS fit failure; review meaning against the source."

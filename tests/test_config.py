@@ -30,7 +30,7 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(cfg.save_report)
         self.assertFalse(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
-        self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.90, 1.15))
+        self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.90, 1.20))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
         self.assertLessEqual(cfg.chunk_max_seconds, 29.5)
         self.assertTrue(cfg.input_dir.endswith("Video/input"))
@@ -59,7 +59,7 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(cfg.save_report)
         self.assertFalse(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
-        self.assertAlmostEqual(cfg.max_tempo, 1.15)
+        self.assertAlmostEqual(cfg.max_tempo, 1.20)
         self.assertAlmostEqual(cfg.min_tempo, 0.90)
         self.assertGreaterEqual(cfg.carry_context_chars, 100)
         self.assertTrue(cfg.seam_repair)
@@ -124,7 +124,7 @@ class TestConfig(unittest.TestCase):
             {"gemini_max_retries": 0},
             {"gemini_max_retries": 101},
             {"gemini_max_input_tokens": 999},
-            {"max_tempo": 1.16},
+            {"max_tempo": 1.2001},
             {"min_tempo": 0.89},
             {"translator_backend": "google"},
             {"translator_backend": "deepl"},

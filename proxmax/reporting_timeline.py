@@ -73,8 +73,12 @@ def _unit_timing_rows(
             "stretched_duration": unit.stretched_duration,
             "placed_duration": placed,
             "tempo": getattr(unit, "tempo_used", None),
+            "tempo_cap": float(getattr(config, "max_tempo", 1.20)),
+            "tempo_cap_measured": getattr(unit, "sync_tempo_cap_measured", False),
             "overrun_before_silence_trim": getattr(unit, "sync_overrun_before_seconds", 0.0),
             "trimmed_head_seconds": getattr(unit, "sync_trimmed_head_seconds", 0.0),
+            "trimmed_internal_seconds": getattr(unit, "sync_trimmed_internal_seconds", 0.0),
+            "trimmed_internal_cuts": getattr(unit, "sync_trimmed_internal_cuts", 0),
             "trimmed_tail_seconds": getattr(unit, "sync_trimmed_tail_seconds", 0.0),
             "trimmed_seconds": trimmed,
             "unused_slot_seconds": max(0.0, allocated_end - actual_end) if allocated_end is not None and actual_end is not None else None,
@@ -111,12 +115,21 @@ def _render_unit(
             f"stretched={float(row['stretched_duration'] or 0.0):.3f} s; "
             f"tempo={float(row['tempo'] or 1.0):.3f}×; estimated trimmed={float(row['trimmed_seconds'] or 0.0):.3f} s; "
             f"pre-fit overrun={float(row['overrun_before_silence_trim'] or 0.0):.3f} s; "
-            f"edge silence trimmed tail/head={float(row['trimmed_tail_seconds'] or 0.0):.3f}/{float(row['trimmed_head_seconds'] or 0.0):.3f} s; "
             f"unused target slot={float(row['unused_slot_seconds'] or 0.0):.3f} s; "
             f"gap after={float(row['gap_after_audio'] or 0.0):.3f} s."
         )
     else:
         lines.append("- **Dub actually placed:** no audio was recorded as placed for this unit.")
+    if unit.tts_audio_path:
+        lines.append(
+            f"- **Detected silence removed, tail/internal/head:** "
+            f"{float(row['trimmed_tail_seconds'] or 0.0):.3f}/"
+            f"{float(row['trimmed_internal_seconds'] or 0.0):.3f}/"
+            f"{float(row['trimmed_head_seconds'] or 0.0):.3f} s "
+            f"({int(row['trimmed_internal_cuts'] or 0)} internal pauses); "
+            f"**allowed tempo cap measured:** {bool(row['tempo_cap_measured'])} "
+            f"(cap {float(row['tempo_cap']):.2f}×; not needed for every clip)."
+        )
     if getattr(unit, "sync_issue", None):
         lines.append(f"- **Sync repair flag:** {_md(unit.sync_issue)}")
     if validation:
@@ -198,16 +211,18 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
         if unit.tts_audio_path and not unit.stretched_audio_path:
             warnings.append(f"{label}: TTS clip was not successfully prepared for sync.")
         trimmed = float(row.get("trimmed_seconds") or 0.0)
-        edge_trimmed = float(row.get("trimmed_head_seconds") or 0.0) + float(row.get("trimmed_tail_seconds") or 0.0)
+        silence_trimmed = sum(float(row.get(key) or 0.0) for key in (
+            "trimmed_tail_seconds", "trimmed_internal_seconds", "trimmed_head_seconds"
+        ))
         if trimmed > 0.08:
             warnings.append(f"{label}: approximately {trimmed:.3f} s exceeded the placed duration; listen for fit issues.")
-        if edge_trimmed > 0.08:
+        if silence_trimmed > 0.08:
             warnings.append(
-                f"{label}: {edge_trimmed:.3f} s of detected leading/trailing silence was removed; above-threshold frames and padding were retained, but quiet speech can be misclassified."
+                f"{label}: {silence_trimmed:.3f} s of detected silence was removed end-first; above-threshold frames and padding were retained, but quiet speech can be misclassified."
             )
         tempo = float(row.get("tempo") or 1.0)
         if tempo > 1.10:
-            warnings.append(f"{label}: audio was sped up near the 1.15× cap ({tempo:.3f}×); verify intelligibility/prosody.")
+            warnings.append(f"{label}: audio was sped up ({tempo:.3f}×; allowed cap {float(row.get('tempo_cap', 1.20)):.2f}×); verify intelligibility/prosody.")
         if row.get("unused_slot_seconds") is not None and row["unused_slot_seconds"] > 0.8:
             warnings.append(f"{label}: {row['unused_slot_seconds']:.3f} s of the bounded target slot remained unused; this is not automatically an error if it is a genuine pause.")
     if float(stats.get("untranslated_seconds", 0.0) or 0.0) > 0:
@@ -216,7 +231,7 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
     if isinstance(sync, Mapping):
         if int(sync.get("silence_trimmed_clips", 0) or 0) > 0:
             warnings.append(
-                f"Edge-silence heuristic trimmed {int(sync['silence_trimmed_clips'])} clip(s), tail first and then head; review unit-level timing details."
+                f"Silence heuristic trimmed {int(sync['silence_trimmed_clips'])} clip(s), from the end toward the start; review unit-level timing details."
             )
         if int(sync.get("unplaced", 0) or 0) > 0:
             warnings.append(f"Sync safely left {int(sync['unplaced'])} full clip(s) unplaced instead of truncating the sentence.")

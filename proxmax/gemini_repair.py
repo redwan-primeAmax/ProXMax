@@ -21,7 +21,7 @@ class GeminiRepairMixin:
     def shorten_to_fit(
         self,
         segments: List[Segment],
-        max_tempo: float = 1.15,
+        max_tempo: float = 1.20,
         slot_gap: float = 0.08,
         borrow: float = 0.25,
     ) -> int:
