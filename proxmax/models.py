@@ -46,6 +46,10 @@ class Segment:
     placed_duration: Optional[float] = None
     #: sync ধাপে ব্যবহৃত tempo (১.০ = স্বাভাবিক গতি)
     tempo_used: float = 1.0
+    #: sync-এর আগে কত সেকেন্ড overrun ছিল এবং প্রান্ত থেকে কত silence সরানো হয়েছে
+    sync_overrun_before_seconds: float = 0.0
+    sync_trimmed_head_seconds: float = 0.0
+    sync_trimmed_tail_seconds: float = 0.0
     #: clip নিরাপদে বসানো যায়নি বা মেরামত দরকার হলে report-এ কারণ দেখায়
     sync_issue: Optional[str] = None
     #: ``True`` হলে এটি একাধিক segment মিলিয়ে বানানো "speech unit"

@@ -208,8 +208,8 @@ class PipelineProcessingMixin:
             if len(translated) < len(segments):
                 lost = [s for s in segments if not (s.text_bn or "").strip()]
                 logger.warning(
-                    "⚠️ %dটি segment-এর অনুবাদ নেই — ওই সময়টুকুতে কথা থাকবে না "
-                    "(স্লট পাশের লাইন ভরাট করবে)। সময়: %s",
+                    "⚠️ %dটি segment-এর অনুবাদ নেই — ওই speech window নীরব থাকবে; "
+                    "source pause অপরিবর্তিত থাকবে। সময়: %s",
                     len(lost),
                     ", ".join(f"{_clock(s.start)}–{_clock(s.end)}" for s in lost[:8])
                     + (" …" if len(lost) > 8 else ""),
@@ -223,16 +223,8 @@ class PipelineProcessingMixin:
                     "একটি segment-এরও Bangla অডিও তৈরি হয়নি — TTS ইঞ্জিন যাচাই করুন।"
                 )
 
-            # 3.5) বড় ফাঁক ভরানো: স্লটের চেয়ে অনেক ছোট লাইন আরও ভরাট করে লেখানো
-            filled = self._fill_short_slots(synthesized, tts_dir, total_duration)
-            if filled:
-                logger.info("✅ %dটি লাইন ভরাট করে আবার কণ্ঠ দেওয়া হলো (ফাঁক কমল)।", filled)
-                stats["filled_lines"] = filled
-            fit_stats = self._repair_overlong_tts(segments, tts_dir, total_duration)
-            if fit_stats["overlong_before"]:
-                stats["tts_fit_retry"] = fit_stats
-        timings.translate = translate_seconds + float(fit_stats.get("translation_seconds", 0.0))
-        timings.tts = tts_seconds + float(fit_stats.get("tts_seconds", 0.0))
+        timings.translate = translate_seconds
+        timings.tts = tts_seconds
         stats["tts"] = {
             "engine": engine.describe(),
             "segments": len(synthesized),
@@ -241,19 +233,48 @@ class PipelineProcessingMixin:
 
         # 4) Sync: time-stretch + non-overlapping assembly ---------------------
         marker = time.perf_counter()
-        with self._step(4, "Audio-Video Sync (কোনো overlap নেই)"):
+        fit_stats = {
+            "checked": 0, "overlong_before": 0, "shortened": 0,
+            "translation_seconds": 0.0, "tts_seconds": 0.0,
+        }
+        with self._step(4, "Audio-Video Sync (silence-fit + tempo 0.90×–1.15×)"):
             final_audio = self.sync_engine.build_final_track(
                 segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
             )
             stats["sync"] = dict(getattr(self.sync_engine, "last_stats", {}) or {})
+            if int(stats["sync"].get("unplaced", 0) or 0):
+                fit_stats = self._repair_overlong_tts(
+                    segments, tts_dir, total_duration, only_unfit=True
+                )
+                if fit_stats["shortened"]:
+                    final_audio = self.sync_engine.build_final_track(
+                        segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
+                    )
+                    stats["sync"] = dict(getattr(self.sync_engine, "last_stats", {}) or {})
+            if fit_stats["overlong_before"]:
+                fit_stats["still_unfit_after_sync"] = [
+                    int(issue.get("segment_index", -1))
+                    for issue in stats["sync"].get("sync_issues", [])
+                    if "still overlong" in str(issue.get("reason", ""))
+                    or "exceeds safe window" in str(issue.get("reason", ""))
+                ]
+                stats["tts_fit_retry"] = fit_stats
             unplaced = int(stats["sync"].get("unplaced", 0) or 0)
             if unplaced:
                 logger.warning(
-                    "⚠️ %dটি clip নিরাপদ window-তে পুরোপুরি আঁটেনি/পড়া যায়নি — বাক্য কেটে না দিয়ে বাদ রাখা হয়েছে; report-এর review flag দেখুন।",
+                    "⚠️ %dটি clip final track-এ place হয়নি; overrun হলে edge-silence trim ও ০.৯০×–১.১৫× tempo প্রয়োগ করা হয়েছে, speech কাটা হয়নি। Report review করুন।",
                     unplaced,
                 )
 
-        timings.sync = time.perf_counter() - marker
+        retry_translation = float(fit_stats.get("translation_seconds", 0.0))
+        retry_tts = float(fit_stats.get("tts_seconds", 0.0))
+        timings.translate += retry_translation
+        timings.tts += retry_tts
+        timings.sync = max(0.0, time.perf_counter() - marker - retry_translation - retry_tts)
+        if fit_stats.get("shortened"):
+            stats["tts"]["total_audio_seconds"] = round(
+                sum(float(s.tts_duration or 0.0) for s in synthesized), 2
+            )
 
         # 5) Mux locally, then copy the finished file to the output (Drive) ----
         marker = time.perf_counter()

@@ -21,20 +21,28 @@ class TestUtilsAndSyncMath(unittest.TestCase):
         self.assertEqual(format_srt_timestamp(3661.5), "01:01:01,500")
 
     def test_atempo_chain(self):
+        from proxmax.sync_math import build_stretch_filter
+
         self.assertEqual(build_atempo_filter(1.0), "atempo=1.0000")
         self.assertEqual(build_atempo_filter(2.5), "atempo=2.0000,atempo=1.2500")
         self.assertEqual(build_atempo_filter(0.4), "atempo=0.5000,atempo=0.8000")
+        self.assertIn("atempo=1.0030", build_stretch_filter(1.003, 24000, False))
 
     def test_compute_tempo_caps(self):
-        # বাংলা দ্বিগুণ লম্বা → 2.0 চাই, কিন্তু 1.25-এ আটকাবে (রোবটিক শোনা বন্ধ)
-        self.assertAlmostEqual(compute_tempo(10.0, 5.0, max_tempo=1.25), 1.25)
-        # ছোট ক্লিপ ডিফল্টে ধীর করা হয় না
+        # ১× অগ্রাধিকার; overrun হলে দ্রুত করা সর্বোচ্চ ১.১৫×।
+        self.assertAlmostEqual(compute_tempo(10.0, 5.0), 1.15)
+        # ছোট clip ডিফল্টে ধীর হবে, তবে সর্বনিম্ন tempo ০.৯০×।
+        self.assertAlmostEqual(compute_tempo(2.5, 5.0), 0.90)
         self.assertAlmostEqual(
-            compute_tempo(2.5, 5.0, min_tempo=0.95, slow_down_short_clips=False), 1.0
+            compute_tempo(2.5, 5.0, slow_down_short_clips=False), 1.0
         )
-        self.assertAlmostEqual(compute_tempo(2.5, 5.0, slow_down_short_clips=True), 0.95)
-        self.assertAlmostEqual(compute_tempo(5.0, 5.0), 1.0)
-        self.assertAlmostEqual(compute_tempo(0.0, 5.0), 1.0)
+        self.assertAlmostEqual(compute_tempo(10.0, 5.0, max_tempo=2.0), 1.15)
+        self.assertAlmostEqual(
+            compute_tempo(1.0, 5.0, min_tempo=0.5, slow_down_short_clips=True), 0.90
+        )
+        self.assertGreaterEqual(
+            compute_tempo(1.0, 5.0, slow_down_short_clips=False, fill_extension=0.5), 0.90
+        )
 
     def test_plan_windows_never_overlap(self):
         segments = [
@@ -72,6 +80,35 @@ class TestUtilsAndSyncMath(unittest.TestCase):
         release_cuda_memory()
 
 
+class TestEdgeSilenceTrim(unittest.TestCase):
+    def test_tail_is_trimmed_before_head_and_voiced_frames_remain(self):
+        rate = 24000
+        t = np.arange(rate, dtype=np.float32) / rate
+        speech = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        audio = np.concatenate([
+            np.zeros(int(0.2 * rate), dtype=np.float32),
+            speech,
+            np.zeros(int(0.3 * rate), dtype=np.float32),
+        ])
+        trimmed, head_seconds, tail_seconds = trim_edge_silence_for_overrun(
+            audio, rate, 0.4, threshold_dbfs=-45.0, pad_ms=25
+        )
+        self.assertAlmostEqual(head_seconds + tail_seconds, 0.4, delta=1 / rate)
+        self.assertGreater(tail_seconds, head_seconds)
+        self.assertAlmostEqual(trimmed.size / rate, audio.size / rate - 0.4, delta=1 / rate)
+        self.assertGreater(float(np.max(np.abs(trimmed))), 0.19)
+
+    def test_voiced_clip_is_not_trimmed_without_detected_edge_silence(self):
+        rate = 24000
+        t = np.arange(rate, dtype=np.float32) / rate
+        audio = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        trimmed, head_seconds, tail_seconds = trim_edge_silence_for_overrun(
+            audio, rate, 0.2, threshold_dbfs=-45.0, pad_ms=25
+        )
+        self.assertEqual(trimmed.size, audio.size)
+        self.assertEqual((head_seconds, tail_seconds), (0.0, 0.0))
+
+
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
 class TestSyncEngineBuild(unittest.TestCase):
     def _clip(self, path: Path, seconds: float, freq: float = 220.0) -> Path:
@@ -92,15 +129,15 @@ class TestSyncEngineBuild(unittest.TestCase):
                 seg.tts_audio_path = self._clip(work / f"seg_{seg.index}.wav", dur)
                 seg.tts_duration = dur
 
-            engine = SyncEngine(max_tempo=1.25, min_tempo=0.95, sample_rate=24000,
+            engine = SyncEngine(max_tempo=1.15, min_tempo=0.90, sample_rate=24000,
                                 max_workers=2)
             out = engine.build_final_track(segments, 7.5, work, work / "final.wav")
             self.assertTrue(out.is_file())
             clip, rate = audio_fx.read_wav(out)
             self.assertEqual(rate, 24000)
             self.assertAlmostEqual(clip.size / 24000.0, 7.5, delta=0.3)
-            # tempo কখনো 1.25 ছাড়ায়নি
-            self.assertLessEqual(engine.last_stats["max_tempo"], 1.25 + 1e-6)
+            # tempo কখনো 1.15 ছাড়ায়নি
+            self.assertLessEqual(engine.last_stats["max_tempo"], 1.15 + 1e-6)
             self.assertEqual(engine.last_stats["overlaps"], 0)
             # কোনো sentence-tail trim হয় না: overrun হলে পুরো clip বাদ ও review flag।
             self.assertTrue(all(s.stretched_duration is not None for s in segments))
@@ -148,11 +185,15 @@ class TestNoSentenceTruncation(unittest.TestCase):
         self.assertIn("unreadable", segment.sync_issue)
         self.assertEqual(engine.last_stats["sync_issues"][0]["segment_index"], 8)
 
-    def test_measured_overrun_gets_one_shorter_translation_and_tts_retry(self):
+    def test_retry_waits_for_sync_fit_failure_and_then_resynthesizes(self):
         from proxmax.pipeline import DubbingPipeline
 
         class ShrinkingTranslator:
+            def __init__(self):
+                self.calls = 0
+
             def shorten_to_durations(self, segments, targets):
+                self.calls += 1
                 self.targets = list(targets)
                 for item in segments:
                     item.text_bn = "ছোট বাক্য।"
@@ -176,12 +217,19 @@ class TestNoSentenceTruncation(unittest.TestCase):
             segment.tts_audio_path = original_audio
             segment.tts_duration = 3.0
             pipeline = DubbingPipeline.__new__(DubbingPipeline)
-            pipeline.config = AppConfig(max_tempo=1.25).validate()
+            pipeline.config = AppConfig(max_tempo=1.15).validate()
             pipeline.translator = ShrinkingTranslator()
             pipeline._tts = TinyTTS()
+
+            # Raw-duration prediction alone cannot trigger a shortening request.
+            before_sync = pipeline._repair_overlong_tts([segment], root / "tts", 2.0)
+            self.assertEqual(before_sync["overlong_before"], 0)
+            self.assertEqual(pipeline.translator.calls, 0)
+
+            # Only the post-fit sync issue marker is eligible for a retry.
+            segment.sync_issue = "stretched clip exceeds safe window by 0.7s after silence trim and tempo cap"
             result = pipeline._repair_overlong_tts([segment], root / "tts", 2.0)
             self.assertEqual(result["overlong_before"], 1)
             self.assertEqual(result["shortened"], 1)
-            self.assertEqual(result["still_overlong"], [])
             self.assertEqual(segment.text_bn, "ছোট বাক্য।")
             self.assertAlmostEqual(segment.tts_duration, 0.6)

@@ -45,10 +45,14 @@ def validate_config(config):
         raise ValueError(
             f"gemini_max_retries 1–10 এর মধ্যে হতে হবে, পাওয়া গেছে: {self.gemini_max_retries}"
         )
-    if self.gemini_batch_size < 1:
+    if int(self.gemini_batch_size) < 1:
         raise ValueError("gemini_batch_size অন্তত 1 হতে হবে।")
-    if self.gemini_max_chars_per_request < 500:
-        raise ValueError("gemini_max_chars_per_request অন্তত 500 হতে হবে।")
+    if int(self.gemini_max_chars_per_request) < 0:
+        raise ValueError("gemini_max_chars_per_request ০ অথবা ধনাত্মক হতে হবে।")
+    if int(self.gemini_max_input_tokens) < 1000:
+        raise ValueError(
+            "gemini_max_input_tokens অন্তত 1000 হতে হবে, যাতে prompt নির্দেশনা ও একটি সম্পূর্ণ chunk পাঠানো যায়।"
+        )
     if self.gemini_requests_per_minute < 1:
         raise ValueError("gemini_requests_per_minute অন্তত 1 হতে হবে।")
     if not 0.0 <= self.gemini_temperature <= 2.0:
@@ -65,10 +69,10 @@ def validate_config(config):
             "retry delay অবৈধ: gemini_retry_base_delay > 0 এবং "
             "gemini_retry_max_delay >= gemini_retry_base_delay হতে হবে।"
         )
-    if not 1.0 <= float(self.tts_unit_max_seconds) <= 25.0:
+    if not 2.0 <= float(self.tts_unit_max_seconds) <= 5.0:
         raise ValueError(
-            "tts_unit_max_seconds ১–২৫ এর মধ্যে হতে হবে "
-            f"(পাওয়া গেছে: {self.tts_unit_max_seconds})"
+            "tts_unit_max_seconds ২–৫ এর মধ্যে হতে হবে (অনুবাদ chunk সর্বোচ্চ ৫ সেকেন্ড), "
+            f"পাওয়া গেছে: {self.tts_unit_max_seconds}"
         )
     if not 40 <= int(self.tts_unit_max_chars) <= 800:
         raise ValueError(
@@ -96,10 +100,10 @@ def validate_config(config):
             f"tts_engine হতে হবে {SUPPORTED_TTS_ENGINES}, পাওয়া গেছে: '{self.tts_engine}'"
         )
 
-    if not (0.5 <= self.min_tempo <= 1.0 < self.max_tempo <= 2.0):
+    if not (0.90 <= self.min_tempo <= 1.0 < self.max_tempo <= 1.15):
         raise ValueError(
             f"tempo সীমা অবৈধ: min_tempo={self.min_tempo}, max_tempo={self.max_tempo} "
-            f"(শর্ত: 0.5 <= min_tempo <= 1 < max_tempo <= 2)"
+            f"(শর্ত: 0.90 <= min_tempo <= 1 < max_tempo <= 1.15)"
         )
     if self.slot_gap_ms < 0 or self.borrow_silence_ms < 0:
         raise ValueError("slot_gap_ms ও borrow_silence_ms ঋণাত্মক হতে পারবে না।")

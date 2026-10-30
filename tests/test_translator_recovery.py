@@ -40,49 +40,31 @@ class TestTranslatorRecovery(unittest.TestCase):
 
 
 class TestTranslatorExpandPass(unittest.TestCase):
-    """বড় ফাঁকের জন্য লাইন ভরাট করা (expand pass)।"""
+    """কথার ফাঁক ভরাতে Gemini-কে text বাড়াতে বলা হয় না।"""
 
-    def _translator(self, grow_with: str):
-        def responder(contents, _n):
-            lines = _lines_from_contents(contents)
-            return json.dumps({"translations": [line + grow_with for line in lines]})
+    def test_expand_pass_is_disabled_without_a_gemini_request(self):
+        translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
+        seg = Segment(index=0, start=0.0, end=4.0, text_en="x", text_bn="খুব ছোট।")
+        with mock.patch.object(translator, "_run_batches") as run:
+            changed = translator.expand_to_fit([seg], [4.0])
+        self.assertEqual(changed, 0)
+        self.assertEqual(seg.text_bn, "খুব ছোট।")
+        run.assert_not_called()
 
-        return _make_translator(_FakeClient(responder)), _FakeClient(responder)
+    def test_measured_shorten_retry_sends_text_only_paragraphs(self):
+        translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
+        original = "এটি অনেক লম্বা একটি বাংলা অনুবাদ।"
+        seg = Segment(index=0, start=0.0, end=1.0, text_en="x", text_bn=original)
+        captured = {}
 
-    def test_short_line_is_expanded_within_slot(self):
-        def responder(contents, _n):
-            lines = _lines_from_contents(contents)
-            return json.dumps({"translations": [line + " আসলে পুরো সময়টা জুড়ে কথা বলা যায়।" for line in lines]})
+        def batches(items, instruction, task, description):
+            captured.update(items=list(items), instruction=instruction, task=task)
+            return ["ছোট বাক্য।"]
 
-        client = _FakeClient(responder)
-        translator = _make_translator(client)
-        seg = Segment(index=0, start=0.0, end=12.6, text_en="x", text_bn="খুব ছোট।")
-        seg.tts_duration = 1.0
-        changed = translator.expand_to_fit([seg], [12.5])
+        with mock.patch.object(translator, "_run_batches", side_effect=batches):
+            changed = translator.shorten_to_durations([seg], [0.75])
         self.assertEqual(changed, 1)
-        self.assertGreater(len(seg.text_bn), 20)
-        self.assertTrue(seg.text_bn.startswith("খুব ছোট।"))
-
-    def test_absurdly_long_answer_is_rejected(self):
-        def responder(_contents, _n):
-            return json.dumps({"translations": ["অ" * 5000]})
-
-        translator = _make_translator(_FakeClient(responder))
-        seg = Segment(index=0, start=0.0, end=4.0, text_en="x", text_bn="ছোট।")
-        self.assertEqual(translator.expand_to_fit([seg], [4.0]), 0)
-        self.assertEqual(seg.text_bn, "ছোট।")
-
-    def test_failure_keeps_old_text(self):
-        client = _FakeClient(lambda c, n: (_ for _ in ()).throw(RuntimeError("boom")))
-        translator = _make_translator(client, max_retries=1)
-        seg = Segment(index=0, start=0.0, end=9.0, text_en="x", text_bn="ছোট।")
-        with mock.patch("proxmax.translator.time.sleep"):
-            self.assertEqual(translator.expand_to_fit([seg], [8.0]), 0)
-        self.assertEqual(seg.text_bn, "ছোট।")
-
-    def test_empty_texts_are_skipped(self):
-        client = _FakeClient(lambda c, n: json.dumps({"translations": ["কিছু"]}))
-        translator = _make_translator(client)
-        seg = Segment(index=0, start=0.0, end=5.0, text_en="x", text_bn="  ")
-        self.assertEqual(translator.expand_to_fit([seg], [5.0]), 0)
-        self.assertEqual(client.calls, [])
+        self.assertEqual(captured["items"], [(original, 0.0)])
+        prompt_text = f"{captured['instruction']} {captured['task']}"
+        self.assertNotRegex(prompt_text.lower(), r"duration|seconds|speaking time")
+        self.assertEqual(seg.text_bn, "ছোট বাক্য।")

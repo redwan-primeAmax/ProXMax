@@ -7,9 +7,10 @@
    স্লটের চেয়ে লম্বা হলে সে পরের বাক্যের উপর চড়ে যেত। এখন প্রতিটি
    ক্লিপের জন্য একটি **কঠোর উইন্ডো** হিসাব হয় (পরের ক্লিপ শুরুর
    আগেই শেষ), আর বসানোর আগে ওভারল্যাপ গাণিতিকভাবে যাচাই করা হয়।
-2. **রোবটে/ধাতব কণ্ঠ ও বাক্য-কাটা** — tempo-র সীমা থাকে; TTS ক্লিপ window-তে
-   না আঁটলে আগে মাপা সময় অনুযায়ী সংক্ষিপ্ত অনুবাদ/TTS retry হয়। তবুও না
-   আঁটলে sentence tail কেটে দেওয়ার বদলে clip-টি বাদ দিয়ে review flag হয়।
+2. **রোবটে/ধাতব কণ্ঠ ও বাক্য-কাটা** — tempo ০.৯০×–১.১৫× সীমায় থাকে; আগে
+   edge silence tail-first/head-second trim হয়, তারপর measured TTS সময়কে window-তে
+   fit করার চেষ্টা হয়। Pipeline কেবল এরপরও unfit clip-এর translation/TTS retry করে;
+   তবুও না আঁটলে sentence tail কাটার বদলে clip-টি বাদ দিয়ে review flag হয়।
    ``rubberband`` থাকলে pitch/formant-সহ time-stretch হয়।
 
 চূড়ান্ত ট্র্যাক NumPy দিয়ে সাজানো হয় (pydub নয়) — কম মেমরি, কোনো
@@ -20,58 +21,53 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 
 from . import audio_fx
 from .models import Segment
+from .sync_assembly import SyncAssemblyMixin
 from .utils import ensure_tool, get_logger, run_ffmpeg
 from .sync_math import (
-    available_filters, build_atempo_filter, compute_tempo, find_overlaps, plan_windows,
+    build_atempo_filter, build_stretch_filter, compute_tempo, find_overlaps, plan_windows,
 )
+from .sync_silence import trim_edge_silence_for_overrun
 
 logger = get_logger(__name__)
 
 
-def build_stretch_filter(tempo: float, sample_rate: int, prefer_rubberband: bool = True) -> str:
-    """Build a pitch-preserving stretch chain, honoring local filter overrides."""
-    if abs(tempo - 1.0) < 0.02:
-        return f"aresample={sample_rate}"
-    if prefer_rubberband and "rubberband" in available_filters():
-        return f"rubberband=tempo={tempo:.4f},aresample={sample_rate}"
-    return f"{build_atempo_filter(tempo)},aresample={sample_rate}"
-
-
-class SyncEngine:
+class SyncEngine(SyncAssemblyMixin):
     """Builds the final, full-length Bangla audio track for a video."""
 
     def __init__(
         self,
-        min_tempo: float = 0.95,
-        max_tempo: float = 1.25,
-        slow_down_short_clips: bool = False,
+        min_tempo: float = 0.90,
+        max_tempo: float = 1.15,
+        slow_down_short_clips: bool = True,
         sample_rate: int = 24000,
         max_workers: int = 4,
         slot_gap_ms: int = 80,
         borrow_silence_ms: int = 250,
         prefer_rubberband: bool = True,
         fill_extension: float = 0.12,
+        silence_threshold_dbfs: float = -45.0,
+        silence_pad_ms: int = 25,
     ) -> None:
         """Args:
-            min_tempo: ধীর করার সর্বনিম্ন সীমা (ডিফল্টে ধীর করা হয় না)।
-            max_tempo: দ্রুত করার সর্বোচ্চ সীমা — ১.২৫-এর বেশি হলে কণ্ঠ বিকৃত শোনায়।
-            slow_down_short_clips: ছোট ক্লিপ ধীর করে স্লট ভরা হবে কি না।
+            min_tempo: ধীর করার সর্বনিম্ন সীমা (ডিফল্ট ০.৯০×)।
+            max_tempo: দ্রুত করার সর্বোচ্চ সীমা (ডিফল্ট ১.১৫×)।
+            slow_down_short_clips: ছোট ক্লিপ সর্বোচ্চ ০.৯০× পর্যন্ত ধীর হবে কি না।
             sample_rate: চূড়ান্ত ট্র্যাকের sample rate।
             max_workers: সমান্তরাল ffmpeg প্রসেস।
             slot_gap_ms: দুই ক্লিপের মাঝে ন্যূনতম ফাঁক।
             borrow_silence_ms: পরের নীরবতা থেকে সর্বোচ্চ কত ধার নেওয়া যাবে।
             prefer_rubberband: ffmpeg-এ থাকলে rubberband ব্যবহার করা হবে।
-            fill_extension: ক্লিপ স্লটের চেয়ে ছোট হলে সর্বোচ্চ এতটুকু ধীর
-                করে স্লট ভরা হয় (০.১২ = ১২%)। ``0`` = পুরোনো আচরণ (নীরবতা)।
+            fill_extension: legacy extension parameter (short clips use min_tempo).
+            silence_threshold_dbfs: edge silence শনাক্ত করার threshold.
+            silence_pad_ms: কথা শুরুর/শেষের পাশে যে padding অক্ষত থাকবে।
         """
-        self.min_tempo = float(min_tempo)
-        self.max_tempo = float(max_tempo)
+        self.min_tempo = min(1.0, max(0.90, float(min_tempo)))
+        self.max_tempo = max(1.0, min(1.15, float(max_tempo)))
         self.slow_down_short_clips = bool(slow_down_short_clips)
         self.sample_rate = int(sample_rate)
         self.max_workers = max(1, int(max_workers))
@@ -79,40 +75,70 @@ class SyncEngine:
         self.borrow_seconds = max(0.0, borrow_silence_ms / 1000.0)
         self.prefer_rubberband = bool(prefer_rubberband)
         self.fill_extension = max(0.0, min(0.5, float(fill_extension)))
+        self.silence_threshold_dbfs = float(silence_threshold_dbfs)
+        self.silence_pad_ms = max(0, int(silence_pad_ms))
         #: সর্বশেষ রানের পরিসংখ্যান (রিপোর্টে ব্যবহৃত)
         self.last_stats: Dict[str, object] = {}
 
     # ------------------------------------------------------------------
     def _stretch_one(self, seg: Segment, window: Tuple[float, float], out_path: Path) -> Optional[Path]:
-        """Time-stretch one TTS clip to fit its window (pitch preserved)."""
+        """Trim edge silence, then fit one clip within the configured tempo limits."""
         source = Path(seg.tts_audio_path) if seg.tts_audio_path else None
         if source is None or not source.is_file():
             seg.sync_issue = "TTS audio file missing"
             return None
-        window_length = max(0.12, window[1] - window[0])
-        tts_duration = seg.tts_duration or 0.0
-        if tts_duration <= 0:
-            try:
-                clip, rate = audio_fx.read_wav(source)
-                tts_duration = clip.size / float(rate or self.sample_rate)
-                seg.tts_duration = tts_duration
-            except Exception as exc:
-                seg.sync_issue = f"TTS audio unreadable ({type(exc).__name__})"
-                logger.warning("Segment %d-এর TTS অডিও পড়া যাচ্ছে না: %s", seg.index, exc)
-                return None
+        try:
+            clip, rate = audio_fx.read_wav(source)
+        except Exception as exc:
+            seg.sync_issue = f"TTS audio unreadable ({type(exc).__name__})"
+            logger.warning("Segment %d-এর TTS অডিও পড়া যাচ্ছে না: %s", seg.index, exc)
+            return None
 
+        rate = int(rate or self.sample_rate)
+        raw_duration = clip.size / float(rate)
+        seg.tts_duration = raw_duration
+        window_length = max(0.12, window[1] - window[0])
+        overrun = max(0.0, raw_duration - window_length)
+        seg.sync_overrun_before_seconds = overrun
+        seg.sync_trimmed_head_seconds = 0.0
+        seg.sync_trimmed_tail_seconds = 0.0
+        if overrun > 0.001:
+            logger.info(
+                "Segment %d overrun: %.3fs (TTS %.3fs, window %.3fs); tail silence আগে scan/trim করা হচ্ছে।",
+                seg.index, overrun, raw_duration, window_length,
+            )
+            clip, trim_head, trim_tail = trim_edge_silence_for_overrun(
+                clip, rate, overrun,
+                threshold_dbfs=self.silence_threshold_dbfs,
+                pad_ms=self.silence_pad_ms,
+            )
+            seg.sync_trimmed_head_seconds = trim_head
+            seg.sync_trimmed_tail_seconds = trim_tail
+            if trim_head or trim_tail:
+                prepared = out_path.with_name(f"{out_path.stem}_edge_trimmed.wav")
+                audio_fx.write_wav(prepared, clip, rate)
+                source = prepared
+                logger.info(
+                    "Segment %d: trailing silence %.3fs, leading silence %.3fs বাদ; অবশিষ্ট %.3fs।",
+                    seg.index, trim_tail, trim_head, clip.size / float(rate),
+                )
+
+        fit_duration = clip.size / float(rate)
         tempo = compute_tempo(
-            tts_duration, window_length,
+            fit_duration, window_length,
             min_tempo=self.min_tempo, max_tempo=self.max_tempo,
             slow_down_short_clips=self.slow_down_short_clips,
             fill_extension=self.fill_extension,
             fill_gap_seconds=self.slot_gap_seconds,
         )
+        logger.debug(
+            "Segment %d fit: raw=%.3fs, usable=%.3fs, target=%.3fs, tempo=%.3f×, projected=%.3fs.",
+            seg.index, raw_duration, fit_duration, window_length, tempo,
+            fit_duration / max(tempo, 0.01),
+        )
 
-        if abs(tempo - 1.0) < 0.02:
-            # stretch লাগবে না — সরাসরি WAV কপি (সবচেয়ে দ্রুত, কোনো ক্ষতি নেই)
+        if tempo <= 1.0 and abs(tempo - 1.0) < 0.005:
             try:
-                clip, rate = audio_fx.read_wav(source)
                 if rate != self.sample_rate:
                     clip = self._resample(clip, rate, self.sample_rate)
                 audio_fx.write_wav(out_path, clip, self.sample_rate)
@@ -146,19 +172,9 @@ class SyncEngine:
             clip, rate = audio_fx.read_wav(out_path)
             seg.stretched_duration = clip.size / float(rate or self.sample_rate)
         except Exception:  # pragma: no cover - এইমাত্র লেখা ফাইল
-            seg.stretched_duration = tts_duration / max(tempo, 0.01)
-
-        seg.tempo_used = tempo  # type: ignore[attr-defined]  # রিপোর্টের জন্য
+            seg.stretched_duration = fit_duration / max(tempo, 0.01)
+        seg.tempo_used = tempo
         return out_path
-
-    @staticmethod
-    def _resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
-        """NumPy linear resample (শুধু দরকার হলে)।"""
-        if src_rate == dst_rate or audio.size == 0:
-            return audio
-        target = max(1, int(round(audio.size * dst_rate / float(src_rate))))
-        index = np.linspace(0.0, audio.size - 1.0, num=target, dtype=np.float64)
-        return np.interp(index, np.arange(audio.size), audio).astype(np.float32)
 
     # ------------------------------------------------------------------
     def build_final_track(
@@ -189,6 +205,9 @@ class SyncEngine:
             segment.placed_duration = None
             segment.sync_issue = None
             segment.tempo_used = 1.0
+            segment.sync_overrun_before_seconds = 0.0
+            segment.sync_trimmed_head_seconds = 0.0
+            segment.sync_trimmed_tail_seconds = 0.0
         if total_duration <= 0:
             total_duration = max(s.end for s in usable) + 0.5
 
@@ -216,6 +235,20 @@ class SyncEngine:
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             list(pool.map(lambda job: self._stretch_one(*job), jobs))
 
+        head_trim = sum(s.sync_trimmed_head_seconds for s in usable)
+        tail_trim = sum(s.sync_trimmed_tail_seconds for s in usable)
+        self.last_stats.update({
+            "overrun_before_silence_trim_seconds": round(
+                sum(s.sync_overrun_before_seconds for s in usable), 3
+            ),
+            "silence_trimmed_clips": sum(
+                1 for s in usable if s.sync_trimmed_head_seconds + s.sync_trimmed_tail_seconds > 0
+            ),
+            "silence_trimmed_head_seconds": round(head_trim, 3),
+            "silence_trimmed_tail_seconds": round(tail_trim, 3),
+            "silence_trimmed_seconds": round(head_trim + tail_trim, 3),
+        })
+
         # Failed clips are reported explicitly; their source slots remain silent.
         for segment in usable:
             if segment.stretched_audio_path is None and segment.sync_issue:
@@ -238,19 +271,21 @@ class SyncEngine:
 
         tempos = [float(getattr(s, "tempo_used", 1.0) or 1.0) for s in stretched]
         max_tempo = max(tempos) if tempos else 1.0
-        aggressive = sum(1 for t in tempos if t > 1.15)
+        aggressive = sum(1 for t in tempos if t > 1.10)
         slowed = sum(1 for t in tempos if t < 0.98)
         speech_seconds = sum(float(s.placed_duration or 0.0) for s in stretched)
         silence = max(0.0, float(total_duration) - speech_seconds)
+        previous_stats = dict(self.last_stats)
         self.last_stats = {
+            **previous_stats,
             "clips": len(stretched),
             "overlaps": 0,
             "max_tempo": max_tempo,
             "aggressive_stretch": aggressive,
             "slowed_to_fill": slowed,
-            "trimmed": int(self.last_stats.get("trimmed", 0)),
-            "unplaced": int(self.last_stats.get("unplaced", 0)),
-            "sync_issues": list(self.last_stats.get("sync_issues", [])),
+            "trimmed": int(previous_stats.get("trimmed", 0)),
+            "unplaced": int(previous_stats.get("unplaced", 0)),
+            "sync_issues": list(previous_stats.get("sync_issues", [])),
             "speech_seconds": round(speech_seconds, 2),
             "silence_seconds": round(silence, 2),
             "silence_percent": round(100.0 * silence / total_duration, 1) if total_duration else 0.0,
@@ -261,105 +296,13 @@ class SyncEngine:
             output_wav.name, total_duration, len(stretched), max_tempo, aggressive, slowed,
             silence, self.last_stats["silence_percent"],
         )
+        logger.info(
+            "Silence-fit: আগে মোট overrun %.3fs; tail-first trim %.3fs, head trim %.3fs; %d clip; unplaced %d.",
+            self.last_stats["overrun_before_silence_trim_seconds"],
+            self.last_stats["silence_trimmed_tail_seconds"],
+            self.last_stats["silence_trimmed_head_seconds"],
+            self.last_stats["silence_trimmed_clips"], self.last_stats["unplaced"],
+        )
         return output_wav
 
     # ------------------------------------------------------------------
-    def _assemble(
-        self,
-        pairs: Sequence[Tuple[Segment, Tuple[float, float]]],
-        total_duration: float,
-    ) -> np.ndarray:
-        """সব stretched ক্লিপ নির্দিষ্ট সময়ে বসিয়ে একটাই ট্র্যাক বানায়।
-
-        ``pairs`` = ``(segment, window)`` — উইন্ডো আগেই ওভারল্যাপ-মুক্ত।
-        কোনো clip window-তে না আঁটলে সেটি কেটে দেওয়ার বদলে unplaced issue
-        হিসেবে নথিভুক্ত হয়, তাই sentence tail নীরবে বাদ যায় না।
-        """
-        sr = self.sample_rate
-        canvas = np.zeros(int(total_duration * sr) + int(0.1 * sr), dtype=np.float32)
-
-        clips: List[Tuple[Segment, np.ndarray, float]] = []
-        levels: List[float] = []
-        for seg, window in pairs:
-            try:
-                clip, rate = audio_fx.read_wav(seg.stretched_audio_path)  # type: ignore[arg-type]
-            except Exception as exc:
-                seg.sync_issue = f"stretched clip unreadable ({type(exc).__name__})"
-                self.last_stats["unplaced"] = int(self.last_stats.get("unplaced", 0)) + 1
-                self.last_stats.setdefault("sync_issues", []).append({
-                    "segment_index": int(seg.index),
-                    "start": round(float(seg.start), 3),
-                    "reason": seg.sync_issue,
-                })
-                logger.warning("Segment %d ক্লিপ পড়া যায়নি: %s", seg.index, exc)
-                continue
-            if rate != sr:
-                clip = self._resample(clip, rate, sr)
-            max_samples = max(1, int(round((window[1] - seg.start) * sr)))
-            if clip.size > max_samples:
-                overrun = (clip.size - max_samples) / float(sr)
-                seg.sync_issue = f"stretched clip exceeds safe window by {overrun:.3f}s; not truncated"
-                self.last_stats["unplaced"] = int(self.last_stats.get("unplaced", 0)) + 1
-                self.last_stats.setdefault("sync_issues", []).append({
-                    "segment_index": int(seg.index),
-                    "start": round(float(seg.start), 3),
-                    "overrun_seconds": round(overrun, 3),
-                    "reason": "overlong clip left unplaced to avoid mid-sentence cutoff",
-                })
-                logger.error(
-                    "🛑 Segment %d-এর অডিও window-এর চেয়ে %.3fs লম্বা — বাক্য কেটে না দিয়ে clip বাদ ও review flag করা হলো।",
-                    seg.index, overrun,
-                )
-                continue
-            clips.append((seg, clip, seg.start))
-            level = audio_fx.rms_dbfs(clip)
-            if level > -60:
-                levels.append(level)
-
-        # --- লাউডনেস মিলিয়ে নেওয়া (এক কণ্ঠ উঁচু, আরেকটি নিচু শোনাবে না) --------
-        target_level = float(np.median(levels)) if levels else -20.0
-        target_level = max(-28.0, min(-14.0, target_level))
-
-        spans: List[Tuple[float, float]] = []
-        for seg, clip, start in clips:
-            level = audio_fx.rms_dbfs(clip)
-            if level > -60:
-                gain_db = max(-6.0, min(6.0, target_level - level))
-                clip = np.clip(clip * audio_fx.db_to_amp(gain_db), -1.0, 1.0).astype(np.float32)
-
-            start_sample = int(start * sr)
-            end_sample = start_sample + clip.size
-            if start_sample >= canvas.size:
-                seg.sync_issue = "clip starts beyond final track bounds"
-                self.last_stats["unplaced"] = int(self.last_stats.get("unplaced", 0)) + 1
-                self.last_stats.setdefault("sync_issues", []).append({
-                    "segment_index": int(seg.index),
-                    "start": round(float(seg.start), 3),
-                    "reason": seg.sync_issue,
-                })
-                logger.warning("Segment %d ভিডিওর শেষের পরে শুরু — unplaced হিসেবে নথিভুক্ত।", seg.index)
-                continue
-            if end_sample > canvas.size:
-                seg.sync_issue = "clip exceeds final track bounds; not truncated"
-                self.last_stats["unplaced"] = int(self.last_stats.get("unplaced", 0)) + 1
-                self.last_stats.setdefault("sync_issues", []).append({
-                    "segment_index": int(seg.index),
-                    "start": round(float(seg.start), 3),
-                    "overrun_seconds": round((end_sample - canvas.size) / float(sr), 3),
-                    "reason": "clip extends beyond final track bounds",
-                })
-                continue
-            # যোগ নয়, বসানো — কিন্তু উইন্ডো আগেই ওভারল্যাপ-মুক্ত রাখা হয়েছে
-            canvas[start_sample:end_sample] += clip
-            seg.placed_duration = float(clip.size / sr)
-            spans.append((start_sample / sr, end_sample / sr))
-
-        spans.sort()
-        problems = find_overlaps(spans)
-        if problems:  # pragma: no cover - প্রতিরক্ষামূলক
-            logger.error("⚠️ বসানোর সময় %d জায়গায় ওভারল্যাপ ধরা পড়েছে!", len(problems))
-
-        peak = float(np.max(np.abs(canvas))) if canvas.size else 0.0
-        if peak > 0.99:
-            canvas = (canvas * (0.99 / peak)).astype(np.float32)
-        return canvas

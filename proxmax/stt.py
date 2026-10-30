@@ -40,6 +40,7 @@ class SpeechToText(WhisperModelMixin):
         compute_type: str = "float16",
         beam_size: int = 5,
         vad_min_silence_ms: int = 300,
+        sentence_max_seconds: float = 5.0,
         chunk_min_seconds: float = 18.0,
         chunk_max_seconds: float = 28.0,
         chunk_pad_ms: int = 120,
@@ -59,6 +60,7 @@ class SpeechToText(WhisperModelMixin):
         self.requested_compute_type = compute_type
         self.beam_size = max(1, int(beam_size))
         self.vad_min_silence_ms = int(vad_min_silence_ms)
+        self.sentence_max_seconds = max(0.1, float(sentence_max_seconds))
         self.chunk_min_seconds = float(chunk_min_seconds)
         self.chunk_max_seconds = float(chunk_max_seconds)
         self.chunk_pad_seconds = max(0.0, chunk_pad_ms / 1000.0)
@@ -156,7 +158,7 @@ class SpeechToText(WhisperModelMixin):
         if self.seam_repair_enabled and len(chunks) > 1:
             words, repaired = self._repair_seams(words, audio, sample_rate, chunks)
 
-        segments = build_sentences(words)
+        segments = build_sentences(words, max_seconds=self.sentence_max_seconds)
         if not segments:
             raise ValueError("শব্দ পাওয়া গেছে কিন্তু কোনো পূর্ণ বাক্য তৈরি করা যায়নি।")
 

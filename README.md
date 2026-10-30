@@ -12,7 +12,7 @@
 |---|---|---|
 | **১. অডিও এক্সট্রাক্ট** | `ffmpeg` (progress + stall watchdog) | সোর্স ভিডিও কেবল **একবারই** পড়ে ১৬ kHz মনো WAV তৈরি করে; ড্রাইভ ফ্রিজ হলে পরিষ্কার বার্তা দেয় |
 | **২. Speech-to-Text (ইংরেজি)** | `faster-whisper` (`large-v3`, প্রি-লোডেড ক্যাশ, নীরবতা-সচেতন ১৮–২৮s চাঙ্কিং + সীমান্ত মেরামত + `hotwords.txt`) | সেটআপ ধাপেই মডেল ক্যাশ হয়; context-aware hotword prompt FC Mobile UI, event, gameplay ও curated player-name spelling-এ সাহায্য করে—তবে নাম শনাক্তকরণ probabilistic এবং তালিকাটি exhaustive নয় |
-| **৩. অনুবাদ (EN → BN)** | **Google Gemini API** (`google-genai`, ডিফল্ট `gemini-3.5-flash-lite`, bounded glossary ও speech-window budget) | প্রতিটি লাইনের মাপা speech interval ধরে বাংলা অনুবাদ ছোট/ভরাট করে; পরের দীর্ঘ source pause-কে অনুবাদের সময় হিসেবে ধরে না |
+| **৩. অনুবাদ (EN → BN)** | **Google Gemini API** (`google-genai`, ডিফল্ট `gemini-3.5-flash-lite`, bounded glossary ও input-token budget) | সর্বোচ্চ ৫ সেকেন্ডের সম্পূর্ণ chunk word-boundary-তে ভাগ হয়; token cap-এর নিচে পুরো paragraph batch হয়, Gemini-কে source time range বা duration hint পাঠানো হয় না |
 | **৪. বাংলা ভয়েস (TTS)** | **বিল্ট-ইন বাংলা neural ভয়েস** (`edge-tts` — পুরুষ কণ্ঠ `bn-BD-PradeepNeural` ডিফল্ট, নারী `bn-BD-NabanitaNeural`) | কোনো নমুনা রেকর্ডিং বা অতিরিক্ত টোকেন ছাড়াই সাথে সাথে স্পষ্ট বাংলা কণ্ঠ তৈরি হয় |
 | **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | কণ্ঠের পিচ অক্ষুণ্ণ রেখে মূল টাইমস্ট্যাম্পে বসায়; clip overlap করে না এবং কোনো clip নিরাপদ window-তে না আঁটলে sentence কেটে না দিয়ে review flag করে |
 | **৬. ভিডিও মাক্সিং** | `ffmpeg -c:v copy -c:a aac` | ভিডিও রি-এনকোড না করেই নতুন বাংলা অডিও যুক্ত করে — মান ১০০% অক্ষুণ্ণ ও অত্যন্ত দ্রুত |
@@ -22,9 +22,10 @@
 
 - `hotwords.txt`-এ UI/button actions (যেমন **Exchange**, **Play**), modes, events, gameplay terms, Skill Moves, PlayStyles এবং বাছাই করা current/legend player names ও aliases আছে। এটি **curated, exhaustive roster নয়**—সব card/player বা সব উচ্চারণভেদ অন্তর্ভুক্ত থাকার দাবি করে না।
 - পুরো hotword list Gemini-তে পাঠানো হয় না। Gemini-র প্রতিটি translation batch-এ শুধু source text-এ boundary-aware exact match পাওয়া term যায়; সর্বোচ্চ **২০টি term / ৬০০ অক্ষর**।
+- Colab-এর ধাপ ৪-এ **সর্বোচ্চ Gemini input token** editable (ডিফল্ট **৫,০০০**, minimum **১,০০০**); conservative local estimate-এ instruction, glossary ও পুরো paragraph ধরা হয়। Exact tokenization Gemini নির্ধারণ করে; budget ছাড়ালে chunk ভাঙা/কাটা নয়—নতুন request-এ সরানো হয়, আর একা fit না হলে কেবল সেটি বাদ যায়।
 - Whisper-কে সর্বোচ্চ **১,৬০০ অক্ষরের** bounded prompt দেওয়া হয়; game terms অগ্রাধিকার পায় এবং chunk/video context-এ থাকা নামগুলো নির্বাচন করা হয়। এগুলো recognition-এ সাহায্য করে, নির্ভুলতার নিশ্চয়তা দেয় না।
 - ডাবের window detected source speech interval ও configured ছোট borrow-এর মধ্যে সীমিত থাকে (ডিফল্ট **২৫০ ms**); পরের বক্তব্যের আগে থাকা ২–৫ সেকেন্ডের pause আর পুরোপুরি ব্যবহার করা হয় না। এটি ওই ধরনের drift কমায় এবং প্রকৃত pause ধরে রাখে, কিন্তু ভুল STT timestamp বা speech boundary থেকে হওয়া সব sync error দূর করার নিশ্চয়তা দেয় না।
-- মাপা TTS duration নিরাপদ window-তে না আঁটলে pipeline সংক্ষিপ্ত অনুবাদ/TTS retry করে; তাতেও না আঁটলে পুরো clip বাদ দিয়ে report-এ review issue দেয়—sentence tail নীরবে ছাঁটে না। শেষ mux-এর পর Bengali ASR token/tail coverage-ও পরীক্ষা হয়; এটি heuristic, নিখুঁত alignment বা semantic validation নয়, তাই flagged সময় শুনে যাচাই করা উচিত।
+- বাংলা TTS তৈরি হওয়ার পর প্রকৃত WAV duration মেপে source timeline window-র সাথে মেলানো হয়। Overrun হলে কেবল শনাক্ত edge silence—আগে trailing, পরে leading—প্রয়োজনমতো বাদ যায়; তারপর tempo ০.৯০×–১.১৫× সীমায় রাখা হয় (১.০× পছন্দ, ছোট clip সর্বোচ্চ ০.৯০× ধীর)। এরপরও কোনো clip fit না হলে কেবল সেই clip-এর অনুবাদ ছোট করে TTS retry হয়; তাতেও না আঁটলে clip কাটা নয়, review flag। ছোট clip ভরাতে text বাড়ানো হয় না। শেষ mux-এর পর Bengali ASR token/tail coverage-ও পরীক্ষা হয়; এটি heuristic, নিখুঁত alignment বা semantic validation নয়, তাই flagged সময় শুনে যাচাই করা উচিত।
 
 ---
 

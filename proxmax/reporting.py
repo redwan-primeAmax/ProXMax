@@ -89,7 +89,11 @@ def write_detailed_report(
         f"- **Approximate generated speech:** {float((data.get('sync') or {}).get('speech_seconds', 0.0) or 0.0):.2f} s; "
         f"**remaining track silence:** {float((data.get('sync') or {}).get('silence_seconds', 0.0) or 0.0):.2f} s "
         "(includes intentional source pauses and any unfilled windows; not all is an error).",
-        f"- **Recorded trimmed clips:** {int((data.get('sync') or {}).get('trimmed', 0) or 0)}; "
+        f"- **Detected edge silence removed:** {float((data.get('sync') or {}).get('silence_trimmed_seconds', 0.0) or 0.0):.3f} s "
+        f"(tail {float((data.get('sync') or {}).get('silence_trimmed_tail_seconds', 0.0) or 0.0):.3f} s; "
+        f"head {float((data.get('sync') or {}).get('silence_trimmed_head_seconds', 0.0) or 0.0):.3f} s, "
+        f"{int((data.get('sync') or {}).get('silence_trimmed_clips', 0) or 0)} clips); "
+        f"**unplaced clips:** {int((data.get('sync') or {}).get('unplaced', 0) or 0)}; "
         f"**overlaps:** {int((data.get('sync') or {}).get('overlaps', 0) or 0)}.",
         "",
         "## Media metadata",

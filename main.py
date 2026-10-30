@@ -88,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gemini API key (না দিলে GEMINI_API_KEY environment variable পড়া হবে)",
     )
     parser.add_argument(
+        "--gemini-max-input-tokens", type=int, default=None,
+        help="প্রতি Gemini request-এর সর্বোচ্চ ইনপুট টোকেন (ডিফল্ট: 5000; ন্যূনতম: 1000)",
+    )
+    parser.add_argument(
         "--tts-engine", default=None, choices=["edge", "auto"],
         help="TTS ইঞ্জিন: edge (ডিফল্ট — বিল্ট-ইন বাংলা ভয়েস)",
     )
@@ -126,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             "translator_backend": args.translator,
             "gemini_model": args.gemini_model,
             "gemini_api_key": args.gemini_api_key,
+            "gemini_max_input_tokens": args.gemini_max_input_tokens,
             "tts_engine": args.tts_engine,
             "tts_voice": args.voice,
             "tts_gender": ("custom" if args.voice else args.gender),

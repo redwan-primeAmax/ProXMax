@@ -73,21 +73,69 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertIsNone(translator._fatal_error)
 
-    def test_shorten_to_fit(self):
-        def responder(contents, _n):
-            return json.dumps(
-                {"translations": ["ছোট" for _ in _lines_from_contents(contents)]}
-            )
+    def test_pre_tts_shorten_predictor_is_disabled(self):
+        translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
+        original = "এটি একটি বেশ লম্বা বাক্য যা হয়তো পরে fit করবে"
+        segment = Segment(index=0, start=0.0, end=0.5, text_bn=original)
+        with mock.patch.object(translator, "_run_batches") as run:
+            changed = translator.shorten_to_fit([segment], max_tempo=1.15)
+        self.assertEqual(changed, 0)
+        self.assertEqual(segment.text_bn, original)
+        run.assert_not_called()
 
-        client = _FakeClient(responder)
+    def test_normal_gemini_request_uses_text_only_paragraphs(self):
+        client = _FakeClient(lambda contents, _n: json.dumps({"translations": ["বাংলা।"]}))
         translator = _make_translator(client)
-        segment = Segment(
-            index=0, start=0.0, end=0.5,
-            text_bn="এটি একটি বেশ লম্বা বাক্য যা সময়ে আঁটবে না",
+        segment = Segment(index=0, start=12.5, end=16.0, text_en="Welcome to FC Mobile.")
+        translator.translate_segments([segment])
+        contents = client.calls[0]["contents"]
+        self.assertIn("Input paragraphs:\nParagraph 1:\nWelcome to FC Mobile.", contents)
+        self.assertNotIn("12.5", contents)
+        self.assertNotIn("16.0", contents)
+        self.assertNotIn("Input lines:", contents)
+
+    def test_token_budget_packs_complete_paragraphs_and_pipeline_groups(self):
+        translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
+        texts = [f"Commentary {index}: " + ("play " * 700) for index in range(2)]
+        items = [(text, 0.0) for text in texts]
+        singles = [translator._estimate_input_tokens([item]) for item in items]
+        combined = translator._estimate_input_tokens(items)
+        self.assertGreater(combined, max(singles))
+        translator.max_input_tokens = max(singles)
+
+        batches = translator._make_batches(items)
+        self.assertEqual([[text for text, _ in batch] for batch in batches], [[texts[0]], [texts[1]]])
+        segments = [
+            Segment(index=i, start=i * 2.0, end=i * 2.0 + 1.0, text_en=text)
+            for i, text in enumerate(texts)
+        ]
+        self.assertEqual(
+            [[segment.text_en for segment in group] for group in translator.batch_segments(segments)],
+            [[texts[0]], [texts[1]]],
         )
-        changed = translator.shorten_to_fit([segment], max_tempo=1.25)
-        self.assertEqual(changed, 1)
-        self.assertEqual(segment.text_bn, "ছোট")
+
+    def test_single_oversized_paragraph_is_kept_whole_then_skipped(self):
+        client = _FakeClient(lambda _c, _n: "unexpected")
+        translator = _make_translator(client, max_input_tokens=1000)
+        long_text = "FC Mobile event " * 2000
+        batches = translator._make_batches([(long_text, 0.0)])
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0][0][0], long_text)
+        self.assertGreater(translator._estimate_input_tokens(batches[0]), 1000)
+        self.assertEqual(translator._run_batches([(long_text, 0.0)]), [""])
+        self.assertEqual(client.calls, [])
+        self.assertEqual(translator._skipped_lines, 1)
+
+    def test_measured_shortening_request_contains_no_duration_hints(self):
+        client = _FakeClient(lambda contents, _n: json.dumps({"translations": ["ছোট বাক্য।"]}))
+        translator = _make_translator(client)
+        segment = Segment(index=0, start=12.5, end=16.0, text_bn="এটি অনেক লম্বা একটি বাংলা বাক্য।")
+        translator.shorten_to_durations([segment], [0.72])
+        contents = client.calls[0]["contents"]
+        self.assertIn("Paragraph 1:", contents)
+        self.assertIn("এটি অনেক লম্বা একটি বাংলা বাক্য।", contents)
+        self.assertNotIn("0.72", contents)
+        self.assertNotRegex(contents.lower(), r"duration|seconds|speaking time|timestamp")
 
     # ---- ফরম্যাট ভুল: অপেক্ষা নেই, শুধু বাকি লাইন আবার ------------------
     def test_format_error_retries_without_long_sleep(self):
@@ -153,7 +201,7 @@ class TestTranslatorCalls(unittest.TestCase):
         with mock.patch("proxmax.translator.time.sleep"):
             result = translator.translate_text("Hello")
         self.assertTrue(result.startswith("বাংলা:"), result)
-        self.assertTrue(any("numbered lines" in c["contents"] for c in client.calls[2:]),
+        self.assertTrue(any("numbered translations" in c["contents"] for c in client.calls[2:]),
                         [c["contents"][:60] for c in client.calls])
 
     def test_truncated_answer_only_retries_missing_lines(self):
@@ -258,7 +306,7 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertNotIn("Unrelated Player Name", contents)
         self.assertNotIn("Aitana Bonmati", contents)
         glossary = contents.split("Recognized football/FC Mobile terms in this batch", 1)[1]
-        glossary = glossary.split("\n{", 1)[0]
+        glossary = glossary.split("\nInput paragraphs:", 1)[0]
         self.assertLessEqual(len(glossary), 650)
 
     def test_gemini_glossary_caps_match_count_and_characters(self):
@@ -279,7 +327,7 @@ class TestTranslatorCalls(unittest.TestCase):
                 contents = client.calls[0]["contents"]
                 marker = "(keep names/terms accurate in Bangla): "
                 self.assertIn(marker, contents)
-                glossary = contents.split(marker, 1)[1].split("\n{", 1)[0].rstrip(".")
+                glossary = contents.split(marker, 1)[1].split("\nInput paragraphs:", 1)[0].rstrip(".")
                 matched = glossary.split(", ")
                 self.assertLessEqual(len(matched), 20)
                 self.assertLessEqual(len(glossary), 600)
@@ -288,19 +336,18 @@ class TestTranslatorCalls(unittest.TestCase):
                 else:
                     self.assertLess(len(matched), 20)
 
-    def test_shorten_budget_uses_speech_span_not_following_pause(self):
-        translator = _make_translator(_FakeClient(lambda c, n: "{}"))
+    def test_pre_tts_predictor_does_not_use_following_pause_or_call_gemini(self):
+        translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
         long_line = "বাংলা বাক্য অনুবাদ " * 12
         first = Segment(index=0, start=0.0, end=1.0, text_en="A line.", text_bn=long_line)
         second = Segment(index=1, start=5.0, end=6.0, text_en="Next line.", text_bn="ছোট।")
-        with mock.patch.object(translator, "_run_batches", return_value=["ছোট।"]) as run:
+        with mock.patch.object(translator, "_run_batches") as run:
             changed = translator.shorten_to_fit(
-                [first, second], max_tempo=1.25, slot_gap=0.08, borrow=0.25
+                [first, second], max_tempo=1.15, slot_gap=0.08, borrow=0.25
             )
-        self.assertEqual(changed, 1)
-        items = run.call_args.args[0]
-        self.assertEqual(len(items), 1)
-        self.assertAlmostEqual(items[0][1], 1.25, places=3)
+        self.assertEqual(changed, 0)
+        self.assertEqual(first.text_bn, long_line)
+        run.assert_not_called()
 
     def test_output_budget_grows_with_batch_size(self):
         translator = _make_translator(_FakeClient(lambda c, n: "{}"))

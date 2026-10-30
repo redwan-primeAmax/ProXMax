@@ -1,21 +1,9 @@
-"""Measure how fast a TTS voice actually speaks Bangla (chars per second).
+"""Optional TTS speech-rate diagnostic, retained for legacy callers.
 
-কেন দরকার
----------
-অনুবাদ "সময়-সচেতন" — Gemini-কে বলা হয় একটি লাইন ``d`` সেকেন্ডে শেষ হতে
-হবে, আর ধরে নেওয়া হয় বাংলা কণ্ঠ সেকেন্ডে ``char_rate`` অক্ষর বলে। ধরা
-মানটি **ভুল হলে** সব লাইনই ভুল দৈর্ঘ্যের হয়:
-
-* ধরা মান আসলের চেয়ে **বেশি** হলে (যেমন ১৪, আসল ১২) → অনুবাদ লম্বা হয়ে
-  যায় → sync-এ ১.২৫× পর্যন্ত দ্রুত করা হয় এবং শেষটা কেটে ফেলা হয় →
-  কণ্ঠ তাড়াহুড়ো ও অসম্পূর্ণ শোনায় (বাস্তব লগে ২১৩টি ক্লিপের ১৭০টিই
-  জোরালো stretch পেয়েছিল)।
-* ধরা মান **কম** হলে → অনুবাদ অযথা ছোট হয়ে অর্থ হারায়।
-
-তাই প্রথম ভিডিওর শুরুতেই আসল কণ্ঠ দিয়ে ২টি ছোট বাংলা বাক্য বলে
-**সত্যিকারের গতি মাপা হয়** (≈১–২ সেকেন্ড খরচ) এবং সেই হার দিয়ে অনুবাদের
-সময়-বাজেট হিসাব করা হয়। edge-tts (Nabanita/Pradeep)-এর প্রতিটি ভয়েসের
-জন্য আলাদা করে মাপা হয়, কারণ গতি আলাদা।
+The current pipeline deliberately avoids pre-synthesis duration prediction and
+sends no source time range or duration hint to Gemini. It measures the generated
+WAV directly during sync, so it does not run this calibration before translating.
+These helpers remain available for explicit diagnostics and compatibility tests.
 """
 
 from __future__ import annotations

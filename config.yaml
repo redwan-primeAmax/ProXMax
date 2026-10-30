@@ -45,14 +45,12 @@ translation:
   # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (আগে requirements-indictrans2.txt)
   backend: "gemini"
 
-  # বাংলা কথার স্বাভাবিক গতি (অক্ষর/সেকেন্ড) — duration-aware অনুবাদের ভিত্তি।
+  # Legacy speech-rate setting; Gemini-কে কোনো duration hint পাঠানো হয় না।
   char_rate: 12.0
-  # শুরুতেই (প্রতি ব্যাচে একবার) কণ্ঠের প্রকৃত গতি মাপা — ১–২ সেকেন্ড খরচ
-  calibrate_speech_rate: true
-  # সময়ে না আঁটা লাইন Gemini দিয়ে আবার ছোট করে লেখানো হবে
-  shorten_pass: true
-  # স্লটের চেয়ে অনেক ছোট হয়ে যাওয়া লাইন Gemini দিয়ে আরও ভরাট করে লেখানো হবে
-  expand_pass: true
+  # Legacy compatibility; pre-TTS calibration/prediction and text expansion are disabled.
+  calibrate_speech_rate: false
+  shorten_pass: false
+  expand_pass: false
   expand_min_gap: 0.9
 
   indictrans2_model: "ai4bharat/indictrans2-en-indic-1B"
@@ -62,8 +60,9 @@ gemini:
   # API key নিন: https://aistudio.google.com/app/apikey
   api_key: ""
   model: "gemini-3.5-flash-lite"
-  batch_size: 25                # এক API request-এ কতটি segment অনুবাদ হবে
-  max_chars_per_request: 12000  # এক request-এ সর্বোচ্চ অক্ষর
+  batch_size: 2048              # item safety cap; প্রকৃত batching input-token budget অনুযায়ী
+  max_chars_per_request: 0      # 0 = character cap বন্ধ; token budget ব্যবহার
+  max_input_tokens: 5000        # প্রতি API request-এ input-token cap (কনজারভেটিভ local estimate)
   max_retries: 7                # সর্বোচ্চ ৭ বার চেষ্টা
   retry_base_delay: 0.5         # নেটওয়ার্ক/429-এ প্রথম অপেক্ষা (সেকেন্ড)
   retry_max_delay: 2.0          # ব্যাকঅফের সর্বোচ্চ (সেকেন্ড)
@@ -78,7 +77,7 @@ tts:
   engine: "edge"
 
   # — এক clip-এ পুরো বাক্য (prosody) —
-  unit_max_seconds: 12.0      # এক clip-এ সর্বোচ্চ কত সেকেন্ড কথা
+  unit_max_seconds: 5.0       # অনুবাদ/TTS-এর প্রতিটি chunk সর্বোচ্চ ৫ সেকেন্ড
   unit_max_chars: 240         # এক clip-এ সর্বোচ্চ অক্ষর
   unit_max_gap: 0.6           # এই সেকেন্ডের কম বিরতি হলে দুই segment একসাথে
 
@@ -86,8 +85,8 @@ tts:
   gender: "male"
   # gender=custom হলেই কেবল এই ভয়েস ব্যবহার হয়
   voice: ""
-  # TTS ক্লিপের দুই প্রান্তের নীরবতা ছাঁটা
-  trim_silence: true
+  # পূর্ণ edge trim বন্ধ; overrun হলে sync-এ শুধু প্রয়োজনীয় silence (tail first) বাদ যায়
+  trim_silence: false
   trim_pad_ms: 25
   rate: "+0%"
   volume: "+0%"
@@ -98,10 +97,10 @@ tts:
 # --- Audio-Video Sync (time-stretch) -------------------------------------------
 sync:
   # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
-  min_tempo: 0.95           # সাধারণ slow-down-এর সীমা
-  max_tempo: 1.25           # এর বেশি দ্রুত করলে কণ্ঠ বিকৃত হয় — hard cap
-  fill_extension: 0.12      # ক্লিপ স্লটের চেয়ে ছোট হলে এতটা পর্যন্ত ধীর করে স্লট ভরা হয়
-  slow_down_short_clips: false
+  min_tempo: 0.90           # সর্বোচ্চ ১০% ধীর; এর বেশি করা হবে না
+  max_tempo: 1.15           # সর্বোচ্চ ১৫% দ্রুত; ১× রাখা অগ্রাধিকার
+  fill_extension: 0.12      # legacy fallback; slow_down_short_clips চালু থাকলে ব্যবহৃত হয় না
+  slow_down_short_clips: true
   slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
   borrow_silence_ms: 250    # পরের নীরবতা থেকে সর্বোচ্চ কতটুকু ধার নেওয়া যাবে
   prefer_rubberband: true   # ffmpeg-এ থাকলে rubberband (formant রক্ষা করে)

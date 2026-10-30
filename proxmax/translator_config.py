@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Tuple
 
-DEFAULT_GEMINI_BATCH_SIZE = 25
+DEFAULT_GEMINI_BATCH_SIZE = 2048
 
-DEFAULT_MAX_CHARS_PER_REQUEST = 12_000
+DEFAULT_MAX_CHARS_PER_REQUEST = 0  # token budget supersedes the legacy character cap
 
 DEFAULT_MAX_RETRIES = 7
 
@@ -21,60 +21,41 @@ FALLBACK_GEMINI_MODELS: Tuple[str, ...] = (
 
 SYSTEM_INSTRUCTION = (
     "You are a professional English-to-Bengali (Bangla) dubbing writer for YouTube "
-    "videos. Translate each input line into Bangla that sounds like a real person "
-    "speaking, not like a textbook. "
-    "Each input line has a speaking time in seconds ('d'); aim for a line that a "
-    "narrator reads comfortably in about d seconds at a normal conversational pace "
-    "(roughly the number of Bangla characters given as 'c'). "
+    "videos. Each input paragraph is one complete translation chunk. Translate it "
+    "into natural spoken Bangla, not textbook language. Do not include timestamps, "
+    "duration labels, or explanations. "
     "Rules: "
-    "1) ALWAYS finish every sentence with proper Bangla punctuation (। ? !) — never end "
-    "a line mid-word or mid-phrase, even if that makes it slightly longer than 'c'. "
-    "A complete, natural sentence is more important than the exact character count. "
-    "Do not come in far BELOW 'c' either: if your line would be much shorter than c, "
-    "say the same thing with fuller everyday phrasing (a natural connective, a spoken "
-    "filler like তো/আসলে/মানে, or the implied detail spelled out) so the speech fills "
-    "the time. Filling the slot is better than leaving a long silence. "
-    "2) If a line must be shortened, compress by choosing shorter everyday words and "
-    "dropping filler; never drop facts, numbers, names or the main idea. "
+    "1) Keep every paragraph separate and in the same order; never merge, split, "
+    "summarise, or omit a paragraph. Return exactly one translation per paragraph. "
+    "2) Preserve every fact, number, name, opinion, and the main idea. Use concise, "
+    "complete sentences; never end mid-word or mid-phrase. Finish sentences with "
+    "proper Bangla punctuation (। ? !). "
     "3) Keep football player names, club names, FC Mobile event names, and game terms "
     "(OVR, TOTY, UTOTY, TOTS, UTOTS, Icon, Heroes, Star Pass, Mascherano, Skill Boost, "
     "VSA, H2H, Ballon d'Or) accurate — write player names and terms in Bangla script "
     "the way Bangla speakers say them (e.g. স্টার পাস, ওভিআর, ব্যালন ডি'অর, মেসি, রোনালদো, "
-    "এমবাপ্পে), but do not turn ordinary English verbs into Bangla-letter "
-    "transliterations (translate 'giveaway' as ভাগ করে দেওয়া/উপহার, not গিভঅ্যাওয়ে). "
-    "4) Numbers take as long to say as their Bengali words (125 is spoken "
-    "'একশ পঁচিশ'), so count a number as its spoken length, not its digits. "
-    "5) Use conversational Bangla as spoken by young Bangladeshi speakers; short "
-    "sentences, natural rhythm, no literary or overly formal words. "
-    "6) Never add, remove, merge, split, summarise or explain content; keep the same "
-    "number of lines in the same order. "
-    "7) If a line is already Bangla or empty, return it as is. "
-    "Return only the translations."
+    "এমবাপ্পে), but do not transliterate ordinary English verbs (translate 'giveaway' "
+    "as ভাগ করে দেওয়া/উপহার, not গিভঅ্যাওয়ে). "
+    "4) Numbers should be written so a Bangladeshi Bangla voice can pronounce them "
+    "naturally; preserve their exact value. "
+    "5) Use conversational Bangla as spoken by young Bangladeshi speakers, with "
+    "natural rhythm and no literary or overly formal wording. "
+    "6) If a paragraph is already Bangla or empty, return it as is. "
+    "Return only the translations in the requested structured format."
 )
 
 EXPAND_INSTRUCTION = (
-    "You lengthen Bengali (Bangla) dubbing lines that are too SHORT for their "
-    "speaking slot. Each input line's 't' is the existing Bangla line, 'd' is its "
-    "speaking time in seconds and 'c' roughly how many Bangla characters fit in it. "
-    "Rewrite each line so that spoken at a "
-    "natural pace it fills close to d seconds (about c characters), WITHOUT adding any "
-    "new fact, number, name, opinion or promise. Do it the way a live commentator "
-    "fills time: natural spoken connectives (তো, আসলে, মানে, দেখুন, বন্ধুরা), a "
-    "descriptive detail that is already implied, or a fuller but equivalent phrasing. "
-    "Keep every fact of the original line, keep it one complete sentence ending with "
-    "। ? or !, do not merge or split lines, keep the same number of lines in the same "
-    "order. Never pad with meaningless repeated words. Return only the Bangla lines."
+    "Do not lengthen or pad Bengali (Bangla) dubbing lines. Keep each translation "
+    "concise, complete, and faithful to its meaning. Return only the Bangla paragraphs."
 )
 
 SHORTEN_INSTRUCTION = (
-    "You shorten Bengali (Bangla) dubbing lines. Each input line has a target speaking "
-    "time in seconds ('d') and roughly how many Bangla characters fit ('c'). Rewrite "
-    "each line so it is spoken comfortably within d seconds, keeping the original "
-    "meaning, tone, numbers and names. Remove filler and use shorter everyday words. "
-    "Never cut a word or leave a sentence unfinished — every output line must be a "
-    "complete sentence ending with ।, ? or !. Do not add new information; do not merge "
-    "or split lines; keep the same number of lines in the same order. Return only the "
-    "shortened Bangla lines."
+    "Make each Bengali (Bangla) dubbing paragraph more concise while preserving its "
+    "meaning, tone, numbers, names, and all key facts. Remove filler and prefer shorter "
+    "everyday wording. Never cut a word or leave a sentence unfinished; every output "
+    "must be a complete sentence ending with ।, ? or !. Do not add information or merge "
+    "or split paragraphs. Return exactly one shortened Bangla paragraph per input, in "
+    "the same order, with no timestamps or explanations."
 )
 
 _RESPONSE_SCHEMA: Dict[str, Any] = {

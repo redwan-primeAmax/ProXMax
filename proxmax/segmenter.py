@@ -6,7 +6,7 @@
 তাই এখানে **শব্দ ও পাংচুয়েশন দেখে পূর্ণ বাক্যে** ভাগ করা হয়:
 
 * বাক্য শেষ হয় ``. ! ? । …`` -এ,
-* খুব লম্বা বাক্য কমা/সেমিকোলনে ভাগ হয়,
+* পাঁচ সেকেন্ড ছাড়ালে শব্দের সীমানায় ভাগ হয় (কমা/বিরতি আগে বেছে),
 * বড় বিরতি (ডিফল্ট ০.৭s) থাকলে সেখানেও ভাগ হয়,
 * খুব ছোট টুকরো প্রতিবেশীর সাথে জোড়া লাগানো হয়।
 
@@ -83,10 +83,43 @@ def _best_split_index(words: Sequence[Word], min_words: int = 3,
     return best_index
 
 
+def _split_overlong_group(words: Sequence[Word], max_seconds: float) -> List[List[Word]]:
+    """Enforce the duration cap at word boundaries, preferring pauses/punctuation."""
+    remaining = list(words)
+    pieces: List[List[Word]] = []
+    while len(remaining) > 1 and remaining[-1].end - remaining[0].start > max_seconds:
+        limit = float(remaining[0].start) + max_seconds
+        possible = [
+            index for index in range(1, len(remaining))
+            if float(remaining[index - 1].end) <= limit
+        ]
+        if not possible:
+            pieces.append(remaining[:1])
+            remaining = remaining[1:]
+            continue
+        soft = [index for index in possible if _ends_soft(remaining[index - 1].word)]
+        pauses = [
+            (index, float(remaining[index].start) - float(remaining[index - 1].end))
+            for index in possible
+            if float(remaining[index].start) - float(remaining[index - 1].end) >= 0.16
+        ]
+        if soft:
+            split_at = soft[-1]
+        elif pauses:
+            split_at = max(pauses, key=lambda item: (item[1], item[0]))[0]
+        else:
+            split_at = possible[-1]
+        pieces.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    if remaining:
+        pieces.append(remaining)
+    return pieces
+
+
 def build_sentences(
     words: Sequence[Word],
     max_words: int = 18,
-    max_seconds: float = 12.0,
+    max_seconds: float = 5.0,
     pause_gap: float = 0.7,
     min_words: int = 3,
     min_seconds: float = 0.9,
@@ -109,6 +142,8 @@ def build_sentences(
     if not collected:
         return []
 
+    max_seconds = max(0.1, float(max_seconds))
+    max_words = max(1, int(max_words))
     groups: List[List[Word]] = []
     current: List[Word] = []
 
@@ -145,14 +180,27 @@ def build_sentences(
     if current:
         groups.append(current)
 
+    # The greedy sentence pass can meet its word-count limit on a long word;
+    # enforce the hard duration bound at safe word boundaries before merging.
+    groups = [
+        piece for group in groups for piece in _split_overlong_group(group, max_seconds)
+    ]
+
     # --- খুব ছোট টুকরো প্রতিবেশীর সাথে জোড়া লাগানো ------------------------
     merged: List[List[Word]] = []
     for group in groups:
         duration = group[-1].end - group[0].start
         is_tiny = len(group) < min_words or duration < min_seconds
-        if merged and is_tiny and len(merged[-1]) + len(group) <= max_words + 4:
-            merged[-1] = merged[-1] + group
-        elif merged and (len(merged[-1]) < min_words) and len(merged[-1]) + len(group) <= max_words + 4:
+        combined_words = len(merged[-1]) + len(group) if merged else 0
+        combined_duration = (
+            float(group[-1].end) - float(merged[-1][0].start) if merged else 0.0
+        )
+        can_merge = (
+            merged
+            and combined_words <= max_words + 4
+            and combined_duration <= max_seconds
+        )
+        if can_merge and (is_tiny or len(merged[-1]) < min_words):
             merged[-1] = merged[-1] + group
         else:
             merged.append(group)

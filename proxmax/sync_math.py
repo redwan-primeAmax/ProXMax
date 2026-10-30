@@ -57,7 +57,7 @@ def build_stretch_filter(tempo: float, sample_rate: int, prefer_rubberband: bool
     ``rubberband`` pitch ও formant দুটোই ধরে রাখে, তাই কণ্ঠ অনেক কম
     "ধাতব" শোনায়। না থাকলে সর্বজনীন ``atempo`` ব্যবহৃত হয়।
     """
-    if abs(tempo - 1.0) < 0.02:
+    if abs(tempo - 1.0) < 1e-6:
         return f"aresample={sample_rate}"
     if prefer_rubberband and "rubberband" in available_filters():
         return f"rubberband=tempo={tempo:.4f},aresample={sample_rate}"
@@ -66,9 +66,9 @@ def build_stretch_filter(tempo: float, sample_rate: int, prefer_rubberband: bool
 def compute_tempo(
     tts_duration: float,
     target_duration: float,
-    min_tempo: float = 0.95,
-    max_tempo: float = 1.25,
-    slow_down_short_clips: bool = False,
+    min_tempo: float = 0.90,
+    max_tempo: float = 1.15,
+    slow_down_short_clips: bool = True,
     fill_extension: float = 0.0,
     fill_gap_seconds: float = 0.05,
 ) -> float:
@@ -76,11 +76,13 @@ def compute_tempo(
 
     tempo > 1 মানে দ্রুত করা (বাংলা অডিও লম্বা), tempo < 1 মানে ধীর করা।
 
-    ``fill_extension`` > 0 হলে ক্লিপ স্লটের চেয়ে ছোট থাকলে সেটি **ধীর করে
-    স্লট ভরা হয়** (সর্বোচ্চ ``fill_extension`` গুণ, যেমন ০.১২ = ১২% ধীর),
-    যাতে বাক্যের পর অযথা নীরবতা না থাকে। খুব ছোট ক্লিপকে অস্বাভাবিক ধীর
-    করা হয় না — ওই সীমার বাইরে গেলে স্বাভাবিক গতিতেই থাকে।
+    Pipeline defaults to ``slow_down_short_clips=True``: short clips are slowed
+    only within ``min_tempo`` (normally 0.90×), and are never expanded by rewriting
+    text. ``fill_extension`` remains only for legacy callers that explicitly disable
+    the preferred slowdown behavior.
     """
+    min_tempo = min(1.0, max(0.90, float(min_tempo)))
+    max_tempo = max(1.0, min(1.15, float(max_tempo)))
     if tts_duration <= 0 or target_duration <= 0:
         return 1.0
     tempo = tts_duration / target_duration
@@ -93,7 +95,11 @@ def compute_tempo(
             max(target_duration - fill_gap_seconds, 0.05),
             tts_duration * (1.0 + float(fill_extension)),
         )
-        return min(1.0, max(tts_duration / max(longest, 0.05), 1.0 / (1.0 + float(fill_extension))))
+        legacy_tempo = min(
+            1.0,
+            max(tts_duration / max(longest, 0.05), 1.0 / (1.0 + float(fill_extension))),
+        )
+        return max(min_tempo, legacy_tempo)
     return min(max(tempo, min_tempo), max_tempo)
 
 def plan_windows(

@@ -38,6 +38,11 @@ class TestNotebookRequirements(unittest.TestCase):
         # ৫. Gemini API key সেলেই লাইভ API যাচাই হয়
         self.assertIn("verify_gemini_api", full_source)
 
+        # ৬. Editable Gemini input-token budget has a 5000 default and 1000 minimum
+        self.assertIn("GEMINI_MAX_INPUT_TOKENS = 5000", full_source)
+        self.assertIn("GEMINI_MAX_INPUT_TOKENS < 1000", full_source)
+        self.assertIn("PROXMAX_GEMINI_MAX_INPUT_TOKENS", full_source)
+
     def test_every_python_module_is_at_most_400_lines(self):
         excluded = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
         oversized = []

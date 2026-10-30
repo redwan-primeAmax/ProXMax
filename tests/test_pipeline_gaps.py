@@ -11,8 +11,8 @@ from tests._support import *
 
 
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
-class TestGapFilling(unittest.TestCase):
-    """বড় ফাঁক ভরানোর ধাপ: ছোট লাইন ভরাট করে শুধু সেগুলোরই আবার TTS।"""
+class TestNoTextExpansion(unittest.TestCase):
+    """ছোট clip-এর জন্য অনুবাদ বাড়ানো হয় না; sync tempo-ই fit করে।"""
 
     class _Translator(_FakeTranslator):
         def __init__(self, expand: bool = True):
@@ -37,7 +37,13 @@ class TestGapFilling(unittest.TestCase):
     class _PaddedTTS(_FakeTTS):
         """edge-tts-এর মতো দুই প্রান্তে নীরবতা জোড়া ক্লিপ (trim হবে)।"""
 
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
         def synthesize(self, segments, output_dir):
+            self.calls += 1
+            self.texts = [segment.text_bn for segment in segments]
             from proxmax.tts.base import BaseTTSEngine
 
             class _Trimmer(BaseTTSEngine):
@@ -77,9 +83,9 @@ class TestGapFilling(unittest.TestCase):
 
             def transcribe(self, _path):
                 return [
-                    Segment(0, 0.3, 12.9, "a long english sentence about the squad", ""),
-                    Segment(1, 12.9, 18.0, "and another short one here", ""),
-                    Segment(2, 18.0, 23.0, "the final line of this clip", ""),
+                    Segment(0, 0.3, 2.5, "a short line about the squad", ""),
+                    Segment(1, 5.0, 7.0, "and another short one here", ""),
+                    Segment(2, 12.0, 13.0, "the final line of this clip", ""),
                 ]
 
             def release(self):
@@ -113,23 +119,18 @@ class TestGapFilling(unittest.TestCase):
         pipeline.muxer = VideoMuxer(use_hwaccel=False)
         return pipeline
 
-    def test_short_lines_are_filled_and_resynthesized(self):
+    def test_short_lines_are_not_expanded_even_if_legacy_flag_is_true(self):
         with tempfile.TemporaryDirectory() as tmp:
             translator = self._Translator()
-            pipeline = self._pipeline(Path(tmp), translator, self._PaddedTTS())
-            summary = pipeline.run_batch()
-            self.assertEqual(len(summary.succeeded), 1, summary.failed)
-            self.assertEqual(translator.expand_calls, 1)
-            self.assertGreater(summary.succeeded[0].stats.get("filled_lines", 0), 0)
-            self.assertEqual(summary.succeeded[0].stats["sync"]["overlaps"], 0)
-
-    def test_expansion_can_be_disabled(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            translator = self._Translator()
-            pipeline = self._pipeline(Path(tmp), translator, self._PaddedTTS())
-            pipeline.config.translation_expand_pass = False
+            tts = self._PaddedTTS()
+            pipeline = self._pipeline(Path(tmp), translator, tts)
+            pipeline.config.translation_expand_pass = True
             pipeline.config = pipeline.config.validate()
             summary = pipeline.run_batch()
             self.assertEqual(len(summary.succeeded), 1, summary.failed)
             self.assertEqual(translator.expand_calls, 0)
-            self.assertNotIn("filled_lines", summary.succeeded[0].stats)
+            self.assertEqual(tts.calls, 1)
+            result = summary.succeeded[0]
+            self.assertNotIn("filled_lines", result.stats)
+            self.assertEqual(tts.texts, ["ছোট।"] * 3)
+            self.assertEqual(result.stats["sync"]["overlaps"], 0)
