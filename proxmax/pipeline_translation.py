@@ -13,6 +13,7 @@ from typing import List, Optional, Set
 from .audio_quality import assess_bengali_coverage
 from .models import Segment
 from .pipeline_helpers import _usable
+from .pipeline_validation import bengali_validator
 from .sync_engine import plan_windows
 from .sync_silence import measured_fit_durations
 from .translation_quality import assess_fit_rewrite
@@ -159,14 +160,18 @@ class PipelineTranslationMixin:
         for segment, (start, end) in zip(ordered, windows):
             window_length = max(0.0, end - start)
             safe_window = max(min(0.01, window_length), window_length - 0.04)
-            remains_unfit = "stretched clip exceeds safe window" in (segment.sync_issue or "")
+            issue = segment.sync_issue or ""
+            remains_unfit = "stretched clip exceeds safe window" in issue
+            impossible_window = "sync window has no positive duration" in issue
             eligible = eligible_indexes is None or segment.index in eligible_indexes
-            if only_unfit and remains_unfit and eligible:
-                if not segment.sync_tempo_cap_measured:
+            if only_unfit and (remains_unfit or impossible_window) and eligible:
+                if remains_unfit and not segment.sync_tempo_cap_measured:
                     awaiting_cap.append(int(segment.index))
                     continue
                 overlong.append(segment)
-                targets.append(safe_window)
+                # A zero-length window is impossible regardless of translation;
+                # request a modest target and allow the final scheduler to shift.
+                targets.append(max(0.15, safe_window) if impossible_window else safe_window)
         summary = {
             "checked": len(ordered),
             "overlong_before": len(overlong),
@@ -301,10 +306,12 @@ class PipelineTranslationMixin:
         self, output_path: Path, work_dir: Path, segments: List[Segment], total_duration: float
     ) -> dict:
         """Run a best-effort Bengali ASR coverage check on the muxed output."""
-        validator = getattr(self.stt, "transcribe_words_in_language", None)
-        if not callable(validator):
-            return {"status": "unavailable", "reason": "STT backend has no multilingual validator"}
+        validation_stt, owned = None, False
         try:
+            validation_stt, owned = bengali_validator(self.stt, self.config)
+            validator = getattr(validation_stt, "transcribe_words_in_language", None)
+            if not callable(validator):
+                return {"status": "unavailable", "reason": "STT backend has no multilingual validator"}
             audio_path = self.extractor.extract(
                 output_path,
                 work_dir / "post_mux_audio_16k.wav",
@@ -327,6 +334,12 @@ class PipelineTranslationMixin:
                 type(exc).__name__,
             )
             return {"status": "unavailable", "reason": type(exc).__name__}
+        finally:
+            if owned and validation_stt is not None:
+                try:
+                    validation_stt.release()
+                except Exception as exc:
+                    logger.warning("Could not release optional Bengali validator: %s", type(exc).__name__)
 
     def _synthesize(self, group: List[Segment], tts_dir: Path) -> None:
         """এক গ্রুপ segment-এর Bangla কণ্ঠ তৈরি করে।"""

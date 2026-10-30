@@ -11,11 +11,11 @@
 | ধাপ | প্রযুক্তি | কেন এটি বেছে নেওয়া হয়েছে |
 |---|---|---|
 | **১. অডিও এক্সট্রাক্ট** | `ffmpeg` (progress + stall watchdog) | সোর্স ভিডিও কেবল **একবারই** পড়ে ১৬ kHz মনো WAV তৈরি করে; ড্রাইভ ফ্রিজ হলে পরিষ্কার বার্তা দেয় |
-| **২. Speech-to-Text (ইংরেজি)** | `faster-whisper` (`large-v3`, প্রি-লোডেড ক্যাশ, নীরবতা-সচেতন ১৮–২৮s চাঙ্কিং + সীমান্ত মেরামত + `hotwords.txt`) | সেটআপ ধাপেই মডেল ক্যাশ হয়; context-aware hotword prompt FC Mobile UI, event, gameplay ও curated player-name spelling-এ সাহায্য করে—তবে নাম শনাক্তকরণ probabilistic এবং তালিকাটি exhaustive নয় |
+| **২. Speech-to-Text (ইংরেজি)** | `faster-whisper` (`distil-large-v3` ডিফল্ট, `large-v3` বিকল্প, প্রি-লোডেড ক্যাশ, নীরবতা-সচেতন ১৮–২৮s চাঙ্কিং + সীমান্ত মেরামত + `hotwords.txt`) | সেটআপ ধাপেই মডেল ক্যাশ হয়; context-aware hotword prompt FC Mobile UI, event, gameplay ও curated player-name spelling-এ সাহায্য করে—তবে নাম শনাক্তকরণ probabilistic এবং তালিকাটি exhaustive নয় |
 | **৩. অনুবাদ (EN → BN)** | **Google Gemini API** (`google-genai`, ডিফল্ট `gemini-3.5-flash-lite`, bounded glossary ও input-token budget) | সর্বোচ্চ ৫ সেকেন্ডের paragraph, request-এ সর্বোচ্চ ১২টি; stable paragraph ID দিয়ে output order যাচাই হয়, প্রথম অনুবাদে কোনো timing hint পাঠানো হয় না |
 | **৪. বাংলা ভয়েস (TTS)** | **বিল্ট-ইন বাংলা neural ভয়েস** (`edge-tts` — পুরুষ কণ্ঠ `bn-BD-PradeepNeural` ডিফল্ট, নারী `bn-BD-NabanitaNeural`) | কোনো নমুনা রেকর্ডিং বা অতিরিক্ত টোকেন ছাড়াই সাথে সাথে স্পষ্ট বাংলা কণ্ঠ তৈরি হয় |
-| **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | কণ্ঠের পিচ অক্ষুণ্ণ রেখে মূল টাইমস্ট্যাম্পে বসায়; clip overlap করে না এবং কোনো clip নিরাপদ window-তে না আঁটলে sentence কেটে না দিয়ে review flag করে |
-| **৬. ভিডিও মাক্সিং** | `ffmpeg -c:v copy -c:a aac` | ভিডিও রি-এনকোড না করেই নতুন বাংলা অডিও যুক্ত করে — মান ১০০% অক্ষুণ্ণ ও অত্যন্ত দ্রুত |
+| **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | মাপা WAV দিয়ে প্রথমে সীমিত গতি, তারপর একবার rewrite; শেষে প্রয়োজনে uncapped tempo বা timestamp shift—কোনো voice-over overlap নয় |
+| **৬. ভিডিও মাক্সিং** | `ffmpeg -c:v copy -c:a aac` | সাধারণত ভিডিও copy করে; বাড়তি সময় দরকার হলে শেষ frame ধরে রাখতে ভিডিও re-encode ও stream duration যাচাই করে |
 | **৭. ডিটেইল রিপোর্ট** | secret-safe Markdown (`*_report.markdown`) | source ও dubbed media metadata, ইংরেজি/বাংলা transcript, timestamp, word timing, TTS/sync window ও audio activity এক ফাইলে দেয়; ঐচ্ছিক post-mux Bengali ASR coverage চালু থাকলে যোগ হয়; আলাদা SRT তৈরি করে না |
 
 ### FC Mobile হটওয়ার্ড ও timing safeguards
@@ -27,13 +27,30 @@
 - Gemini-র output-এ source-এর **অঙ্কে লেখা সংখ্যা** ও অপ্রত্যাশিত লিপির সীমিত heuristic পরীক্ষা হয়। একটিমাত্র স্পষ্ট বাদ-পড়া অঙ্ক কখনো স্থানীয়ভাবে ঠিক হয়; অনির্দিষ্ট সমস্যা থাকলে কেবল সংশ্লিষ্ট paragraph আবার অনুবাদ হয়। সমাধান না হলে report-এ review flag, আর স্বয়ংক্রিয় পরিবর্তনে note থাকে। কথায় লেখা সব সংখ্যা, নাম বা বাক্যের অর্থ এভাবে যাচাই হয় না; source STT ভুল হলেও তা ঠিক বলে ধরে নেওয়া যায় না।
 - অনুবাদের প্রথম ব্যাচ পাওয়া মাত্রই TTS শুরু হয়। প্রস্তুত ব্যাচগুলো সীমিত আকারে একত্র করা হয়, যাতে আগের ১২টি clip-এর সবচেয়ে ধীরটির জন্য পরের সব clip অপেক্ষা না করে। ডিফল্টে একসঙ্গে সর্বোচ্চ **১২টি** Edge TTS request চলে; `config.yaml`-এর `tts.concurrency` বা নোটবুকে `config.tts_concurrency` দিয়ে বদলানো যায়। ব্যর্থ clip কম concurrency-তে পুনরায় চেষ্টা হয়; অনেক clip ব্যর্থ হলে ওই ভিডিওর বাকি অংশে concurrency ৫-এ নেমে যায়। প্রতিটি clip-এর টেক্সট, ভয়েস ও timestamp আলাদা থাকে। প্রকৃত সময় Edge সার্ভিস ও ইন্টারনেটের গতির উপর নির্ভর করে।
 - Whisper-কে সর্বোচ্চ **৪০০ অক্ষরের** bounded hotword prompt দেওয়া হয়, যাতে context window-তে transcript-এর জন্য জায়গা থাকে; game terms অগ্রাধিকার পায় এবং chunk/video context-এ থাকা নামগুলো নির্বাচন করা হয়। এগুলো recognition-এ সাহায্য করে, নির্ভুলতার নিশ্চয়তা দেয় না। Seam re-decode আংশিক হলে পুরোনো শব্দ রেখে দেওয়া হয়; শুধু একই সময়ে প্রায় সম্পূর্ণ overlap করা একই শব্দ deduplicate হয়, পাশাপাশি বাস্তব পুনরাবৃত্তি নয়।
-- নির্ভুলতা অগ্রাধিকার হলে Colab-এর ধাপ ৩-এ `WHISPER_MODEL = "large-v3"` রাখুন (`config.yaml`-এ `stt.model`); `distil-large-v3` দ্রুততর হতে পারে, তবে ভিডিওভেদে বেশি ভুল করতে পারে। Report কম recognizer-confidence শব্দগুলো review cue হিসেবে চিহ্নিত করে, এটি ভুল বা নির্ভুলতার প্রমাণ নয়। যেকোনো মডেলের transcript মূল অডিওর সঙ্গে যাচাই করা দরকার।
-- ডাবের window detected source speech interval ও configured ছোট borrow-এর মধ্যে সীমিত থাকে (ডিফল্ট **২৫০ ms**); পরের বক্তব্যের আগে থাকা ২–৫ সেকেন্ডের pause আর পুরোপুরি ব্যবহার করা হয় না। এটি ওই ধরনের drift কমায় এবং প্রকৃত pause ধরে রাখে, কিন্তু ভুল STT timestamp বা speech boundary থেকে হওয়া সব sync error দূর করার নিশ্চয়তা দেয় না।
-- বাংলা TTS-এর প্রকৃত WAV duration প্রতিটি source timeline window-র সাথে মেলানো হয় (১০ সেকেন্ড কোনো বাঁধা দৈর্ঘ্য নয়)। Overrun হলে শেষ থেকে শুরুর দিকে আগে tail, তারপর ভেতরের দীর্ঘ বিরতি এবং শেষে head-এর **শনাক্ত silence** শুধু যতটুকু দরকার বাদ যায়। ১০ ms peak frame ও সর্বোচ্চ −55 dBFS threshold ব্যবহার হয়; শনাক্ত কথার দুই পাশে ডিফল্ট ২৫ ms করে padding রেখে বাকি নীরবতা প্রয়োজনমতো সরানো যায়। তবুও খুব নিচু স্বর নীরবতা হিসেবে ভুল শনাক্ত হতে পারে—report-এর trim flag শুনে যাচাই করুন।
-- নীরবতা কমিয়েও না আঁটলে tempo সর্বোচ্চ **১.২০×** পর্যন্ত বাড়ে; ছোট clip আগে যেমন সর্বোচ্চ ০.৯০× ধীর হতে পারে। `sync.max_tempo` কম সেট করা থাকলে সেই কম সীমাই মানা হয়। FFmpeg-এর প্রকৃত output duration আলাদা হতে পারে বলে দরকার হলে অনুমোদিত সর্বোচ্চ tempo-তে পুনরায় render ও মাপা হয়; তা মাপা না গেলে rewrite না করে review flag দেওয়া হয়। Frame rounding-এর জন্য সর্বোচ্চ ১০ ms শুধু সংরক্ষিত ফাঁক বা ভিডিওর বাকি সময় থেকে ব্যবহার হতে পারে, ভিডিওর শেষ বা পরের clip পেরিয়ে নয়।
-- সর্বোচ্চ অনুমোদিত tempo-তেও clip fit না হলে কেবল সেই clip-এর ইংরেজি source ও আগের বাংলা দিয়ে অর্থ বজায় রেখে measured-fit rewrite এবং নতুন TTS চাওয়া হয়। নতুন WAV-এর প্রকৃত duration ও প্রয়োজনীয় silence বাদ দেওয়ার পর অবশিষ্ট সময় মাপা হয়, তারপর একই window-তে আবার fit পরীক্ষা হয়। সংখ্যা/লিপি/নেতিবাচক অর্থে স্পষ্ট সমস্যা, অত্যধিক ছোট rewrite বা বাস্তবে উন্নতি না হওয়া audio বাতিল করে আগের text/audio রাখা হয়। প্রথম গ্রহণযোগ্য rewrite-ও unfit থাকলে সর্বোচ্চ আরেকটি retry হতে পারে। চূড়ান্ত report-এ আগের বাংলা ও review note থাকে। এসব heuristic অর্থ অক্ষুণ্ণ থাকার প্রমাণ নয়; তবুও না আঁটলে speech কেটে না দিয়ে clip unplaced ও review flag হয়।
-- Sync retry-তে অপরিবর্তিত clip-এর source/artifact signature, নির্দিষ্ট window ও settings মিললে আগের প্রস্তুত audio reuse হয়; placement ও loudness আবার হিসাব করা হয়। Report-এ sync pass ও fit retry-র সময়, overlap হওয়া translation/TTS call time এবং আলাদা mux ও output-copy সময় দেখায়—overlapping সময়গুলো যোগ করলে মোট সময় হয় না।
-- ছোট clip ভরাতে text বাড়ানো হয় না। Post-mux Bengali ASR coverage check ঐচ্ছিক এবং default-এ বন্ধ—এটি পুরো dubbed audio আরেকবার Whisper-এ চালায় বলে সময় উল্লেখযোগ্য বাড়ে; চালু করলে ফল heuristic, semantic validation নয়, তাই flagged সময় শুনে যাচাই করা উচিত।
+- ডিফল্ট `distil-large-v3` শুধু ইংরেজি সমর্থন করে এবং কম resource/সময় লাগতে পারে; Colab-এর ধাপ ৩-এ `large-v3` বেছে নেওয়া যায়। দুটিই `faster-whisper` backend ব্যবহার করে। Distil কিছু ভিডিওতে বেশি ভুল করতে পারে; একই accuracy বা speed সব ভিডিওতে নিশ্চিত নয়। নাম/শব্দের ক্ষেত্রে source শুনে দেখুন।
+- প্রথম sync pass-এ source window ও স্বল্প borrow (ডিফল্ট ২৫০ ms) ধরে silence-fit ও সর্বোচ্চ **১.২০×** tempo ব্যবহার হয়; ছোট clip সর্বোচ্চ ০.৯০× ধীর হতে পারে। ১০ ms peak-frame ও −৭০ dBFS threshold দিয়ে tail/internal/head silence শনাক্ত হয়, তবে অতি নিচু speech নীরবতা হিসেবে ভুল ধরা এখনও সম্ভব।
+- প্রথম fit ব্যর্থ হলে source ও বাংলা দুটো বিবেচনায় নিয়ে সর্বোচ্চ **একবার** Gemini shortening এবং নতুন TTS মাপা হয়। সংখ্যা/লিপি/negation সমস্যা, অত্যধিক সংক্ষিপ্ত বা বাস্তবে ছোট না হওয়া audio বাতিল করে আগেরটি রাখা হয়। অর্থ ও নাম অক্ষুণ্ণ থাকার সম্পূর্ণ নিশ্চয়তা heuristic দেয় না।
+- এরপরও unfit **সব** clip (rewrite ব্যর্থ/বাতিল হলেও) untouched TTS থেকে মাপা শেষ fallback পায়। প্রকৃত পরের gap ব্যবহার করে যতটা সম্ভব কম গতি বাড়ানো হয়; **এই শেষ ধাপে কোনো tempo cap নেই**। FFmpeg-এর প্রকৃত ফল পরীক্ষা করে প্রয়োজন হলে আবার মূল TTS থেকে render হয়। অস্বাভাবিক ছোট/অবিশ্বস্ত render বা শূন্য/অতি ছোট slot হলে পুরো মূল clip রেখে পরের speech সরানো হয়; দরকার হলে ভিডিওর শেষ frame বাড়ানো হয়। Voice overlap বা ইচ্ছাকৃত truncation করা হয় না; অডিও উদ্ধার অসম্ভব হলে ভিডিওকে failed দেখায়, নীরব অংশসহ success নয়। খুব দ্রুত speech দুর্বোধ্য হতে পারে, আর waveform-duration পরীক্ষা নিখুঁত pronunciation বা অর্থ নিশ্চিত করে না।
+- Timing shift-এর ফলে dubbing পরের source picture থেকে পিছিয়ে যেতে পারে; report-এ original source ও প্রকৃত placed timestamp, recovery কারণ, speed এবং video extension থাকে। ভিডিও বাড়ালে শেষ frame clone করে re-encode হয়, তাই সাধারণ copy-এর তুলনায় সময় বেশি লাগতে পারে ও picture quality বদলাতে পারে। সাধারণ ক্ষেত্রে video copy থাকে। `ffprobe` দিয়ে picture stream-এর সময়ও যাচাই হয়।
+- খুব ছোট/শূন্য STT segment-ও ফেলা হয় না। অনুপস্থিত translation বা TTS কেবল সংশ্লিষ্ট segment-এ retry হয়; না পেলে স্পষ্ট failure। আগের report-এ unplaced/অনুপস্থিত unit জানা থাকলে `skip_existing` চালু থাকলেও পুনরায় প্রসেস হয়; পুরোনো report-এ তথ্য না থাকলে `--force` ব্যবহার করুন। Sync retry-তে অপরিবর্তিত clip-এর মাপা প্রস্তুত audio ও settings মিললে reuse হয়। Report-এর translation ও TTS call time overlap হতে পারে, তাই একসাথে যোগ করে wall time ধরবেন না।
+- TTS-এ শুধু আলাদা `দিব` শব্দ কথ্য `দিবো` হিসেবে পাঠানো হয়; প্রদর্শিত অনুবাদ বদলায় না, নাম বা সব `ব`-শেষ শব্দ স্বয়ংক্রিয়ভাবে বদলায় না। শেষের fade ৫০ ms থেকে ৮ ms করা হয়েছে। `output.keep_temp_files: true` দিলে raw Edge MP3 এবং প্রস্তুত WAV রেখে source/transcript, Edge pronunciation, silence trim, stretch ও mux তুলনা করে শুনতে পারবেন। `ইয়াসিন`-এর মতো নামের উচ্চারণ সঠিক হবে—এমন নিশ্চয়তা নেই।
+- Post-mux Bengali ASR coverage ঐচ্ছিক, ডিফল্ট বন্ধ। ইংরেজি-only Distil নির্বাচিত থাকলে এই পরীক্ষা চালু করলে আলাদা multilingual `large-v3` নামানো/লোড ও আরেকটি সম্পূর্ণ pass হতে পারে; সময়/VRAM বাড়ে। ফল কেবল review signal, semantic বা pronunciation validation নয়।
+
+### Source audio ও মডেল তুলনা
+
+ডিফল্ট extraction অপরিবর্তিত ১৬ kHz mono; source-এর গতি বদলানো বা বাধ্যতামূলক denoise করা হয় না। পরীক্ষামূলক `stt.audio_filter: highpass60` ৬০ Hz high-pass ব্যবহার করে, কিন্তু বাস্তব speech/নাম শনাক্তকরণে ক্ষতি বা লাভ হতে পারে—নিজের ডেটায় যাচাই ছাড়া চালু করবেন না।
+
+প্রতিনিধিত্বমূলক ভিডিও ও হাতে যাচাই করা **ইংরেজি** transcript দিয়ে নিজের মেশিনে গতি ও word-error rate তুলনা করুন (মডেল প্রথমবার download হতে পারে):
+
+```json
+[{"audio": "/path/to/video.mp4", "reference": "Manually checked spoken English"}]
+```
+
+```bash
+python benchmarks/stt_compare.py --manifest /path/to/manifest.json
+```
+
+স্ক্রিপ্ট উভয় মডেল ও `none`/`highpass60` তুলনা করে; model-load time আলাদা এবং extraction + STT realtime factor ও aggregated WER দেখায়। নেটওয়ার্ক ও hardware ভেদে একই sample কয়েকবার পরীক্ষা করুন। Benchmark বা automated checks উচ্চারণ/semantic accuracy প্রমাণ করে না; এই repo-তে ব্যবহারকারীর আসল অডিও ছাড়া accuracy বা runtime regression নেই বলে দাবি করা যাচ্ছে না।
 
 ---
 
@@ -82,7 +99,7 @@ ProXMax/
 4. নোটবুকের **৫টি ধাপ** উপর থেকে নিচে চালান:
    - **ধাপ ১:** Google Drive মাউন্ট
    - **ধাপ ২:** রিপোজিটরি ক্লোন ও ফোল্ডার প্রস্তুত
-   - **ধাপ ৩:** দ্রুত ডিপেন্ডেন্সি ইনস্টল ও Whisper `large-v3` প্রি-ডাউনলোড (যাতে ভিডিও প্রসেসিংয়ের সময় ডাউনলোড না হয়)
+   - **ধাপ ৩:** dependency install ও নির্বাচিত Whisper (`distil-large-v3` ডিফল্ট / `large-v3`) প্রি-ডাউনলোড (যাতে ভিডিও প্রসেসিংয়ের সময় ডাউনলোড না হয়)
    - **ধাপ ৪:** Gemini API Key প্রদান ও **তাৎক্ষণিক লাইভ যাচাই** (পুরুষ `male` বা নারী `female` কণ্ঠ নির্বাচন)
    - **ধাপ ৫:** সব ভিডিও বাংলায় ডাব করুন!
 

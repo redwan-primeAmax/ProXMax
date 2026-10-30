@@ -71,7 +71,7 @@ class AppConfig:
     work_dir: str = "auto"
 
     # --- speech-to-text (faster-whisper) ------------------------------------
-    whisper_model: str = "large-v3"        # best accuracy; speed দরকার হলে "medium"
+    whisper_model: str = "distil-large-v3" # English-only; large-v3 is selectable
     whisper_device: str = "auto"           # auto = CUDA থাকলে GPU, না থাকলে CPU
     whisper_compute_type: str = "float16"  # GPU-এর জন্য; CPU fallback-এ int8 হয়
     whisper_beam_size: int = 5
@@ -147,7 +147,7 @@ class AppConfig:
     # --- audio-video sync ----------------------------------------------------
     min_tempo: float = 0.90                # সর্বোচ্চ ১০% ধীর
     fill_extension: float = 0.12
-    max_tempo: float = 1.20                 # সর্বোচ্চ ২০% দ্রুত
+    max_tempo: float = 1.20                 # প্রথম fit-এ সর্বোচ্চ; শেষ fallback সীমাহীন
     slow_down_short_clips: bool = True
     slot_gap_ms: int = 80
     borrow_silence_ms: int = 250
@@ -172,6 +172,8 @@ class AppConfig:
     #: ঐচ্ছিক full-video Whisper pass; ডিফল্টে বন্ধ, কারণ এটি ধীর
     validate_dub_audio: bool = False
     audio_validation_min_coverage: float = 0.58
+    #: Optional source high-pass; default leaves the waveform unchanged.
+    stt_audio_filter: str = "none"
 
     # ---------------------------------------------------------------------------
     @property
@@ -234,7 +236,7 @@ class AppConfig:
         section_aliases: Dict[str, Dict[str, str]] = {
             "paths": {"input": "input_dir", "output": "output_dir", "work": "work_dir"},
             "stt": {
-                "model": "whisper_model", "device": "whisper_device",
+                "model": "whisper_model", "device": "whisper_device", "audio_filter": "stt_audio_filter",
                 "compute_type": "whisper_compute_type", "beam_size": "whisper_beam_size",
                 "vad_min_silence_ms": "vad_min_silence_ms",
                 "chunk_min_seconds": "chunk_min_seconds",

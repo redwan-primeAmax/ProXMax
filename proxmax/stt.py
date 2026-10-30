@@ -35,7 +35,7 @@ class SpeechToText(WhisperModelMixin):
 
     def __init__(
         self,
-        model_size: str = "large-v3",
+        model_size: str = "distil-large-v3",
         device: str = "auto",
         compute_type: str = "float16",
         beam_size: int = 5,

@@ -9,7 +9,7 @@ import numpy as np
 
 # Protect very quiet speech more conservatively than the historical edge-only
 # detector. This is still a waveform heuristic, not a speech recognizer.
-CONSERVATIVE_SILENCE_DBFS = -55.0
+CONSERVATIVE_SILENCE_DBFS = -70.0
 # By default, retain only the speech-protection padding on both sides of a pause.
 # Callers may request additional pause preservation if desired.
 MIN_INTERNAL_PAUSE_MS = 0

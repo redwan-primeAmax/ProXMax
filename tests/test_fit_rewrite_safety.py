@@ -165,7 +165,7 @@ class TestFitRewriteSafety(unittest.TestCase):
 
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
 class TestFitRetryOrchestration(unittest.TestCase):
-    def test_second_measured_round_reuses_unchanged_clip_and_places_rewrite(self):
+    def test_one_rewrite_reuses_unchanged_clip_then_completes_fallback(self):
         class Extractor:
             def extract(self, video, destination, duration_seconds=None):
                 make_audio(destination, 3.0)
@@ -212,7 +212,7 @@ class TestFitRetryOrchestration(unittest.TestCase):
                     segment.tts_audio_path, segment.tts_duration = path, duration
 
         class Muxer:
-            def mux(self, source, audio, output):
+            def mux(self, source, audio, output, **_kwargs):
                 Path(output).write_bytes(b"synthetic video")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,12 +225,12 @@ class TestFitRetryOrchestration(unittest.TestCase):
             with mock.patch("proxmax.pipeline_process.get_media_duration", return_value=3.0), \
                  mock.patch("proxmax.pipeline_process.build_units", return_value=[]):
                 segments, timings, stats = pipeline._run_steps(root / "video.mp4", root, root / "out.mp4")
-            self.assertEqual(pipeline.translator.calls, 2)
-            self.assertEqual(len(stats["tts_fit_retry"]["rounds"]), 2)
+            self.assertEqual(pipeline.translator.calls, 1)
+            self.assertEqual(len(stats["tts_fit_retry"]["rounds"]), 1)
             self.assertEqual(stats["sync"]["unplaced"], 0)
-            self.assertEqual([item["prepared_reused"] for item in stats["sync_passes"]], [0, 1, 1])
+            self.assertEqual([item["prepared_reused"] for item in stats["sync_passes"]], [0, 1, 0])
             self.assertEqual(segments[0].original_text_bn, "আমাদের কাছে এখানে ১২৬ ওভিআর এবং ৫ স্টার আছে।")
-            self.assertEqual(segments[0].text_bn, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।")
+            self.assertEqual(segments[0].text_bn, "আমাদের কাছে ১২৬ ওভিআর এবং ৫ স্টার আছে।")
             self.assertTrue(segments[0].tts_audio_path.is_file())
             self.assertGreater(timings.translate_tts_wall, 0)
 

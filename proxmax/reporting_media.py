@@ -105,6 +105,7 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "device": getattr(config, "whisper_device", None),
             "compute_type": getattr(config, "whisper_compute_type", None),
             "beam_size": getattr(config, "whisper_beam_size", None),
+            "source_audio_filter": getattr(config, "stt_audio_filter", None),
             "chunk_min_seconds": getattr(config, "chunk_min_seconds", None),
             "chunk_max_seconds": getattr(config, "chunk_max_seconds", None),
             "seam_repair": getattr(config, "seam_repair", None),
@@ -117,7 +118,7 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "gemini_input_token_budget": getattr(config, "gemini_max_input_tokens", None),
             "gemini_max_paragraphs_per_request": getattr(config, "gemini_batch_size", None),
             "pre_tts_duration_prediction": False,
-            "shorten_retry_policy": "source-aware after measured TTS, end-first silence trim, and measured allowed tempo cap; at most two rounds",
+            "shorten_retry_policy": "source-aware after measured TTS and initial tempo cap; one rewrite, then uncapped measured recovery with shifts/extension if necessary",
             "text_expansion_to_fill_gaps": False,
         },
         "TTS": {

@@ -141,8 +141,14 @@ def normalise_bangla(text: str) -> str:
 
 
 def prepare_for_speech(text: str) -> str:
-    """TTS-এ পাঠানোর চূড়ান্ত রূপ: পরিষ্কার + সংখ্যা কথায়।"""
-    return normalise_bangla(verbalize_numbers(normalise_bangla(text)))
+    """TTS-only cleanup, numbers, and a narrowly scoped spoken-form fix.
+
+    Written subtitles/translations are not changed. Do not alter names or apply
+    a blanket suffix to every word ending in ব. The explicit Bengali range
+    includes combining vowel signs, so e.g. দিবস/দিবা are not partial matches.
+    """
+    spoken = normalise_bangla(verbalize_numbers(normalise_bangla(text)))
+    return re.sub(r"(?<![\w\u0980-\u09FF])দিব(?![\w\u0980-\u09FF])", "দিবো", spoken)
 
 
 def estimate_speech_seconds(

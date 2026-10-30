@@ -14,6 +14,23 @@ from .utils import get_logger
 logger = get_logger(__name__)
 _CUDA_LIBS_READY = False
 
+
+def is_english_only_model(model_size: str) -> bool:
+    """Identify built-in English-only checkpoints, including local cache paths."""
+    name = Path(str(model_size or "")).name.lower()
+    return "distil-" in name or name.endswith(".en")
+
+
+def _canonical_model_name(name: str) -> str:
+    """Normalize known repository prefixes without conflating distil and large."""
+    base = Path(str(name or "").rstrip("/")).name.lower()
+    if base.startswith("faster-distil-whisper-"):
+        return "distil-" + base[len("faster-distil-whisper-"):]
+    if base.startswith("faster-whisper-"):
+        return base[len("faster-whisper-"):]
+    return base
+
+
 def _default_whisper_cache_dir() -> Optional[str]:
     """Return an explicit cache directory if configured via environment."""
     env_dir = (os.environ.get("PROXMAX_WHISPER_CACHE") or "").strip()
@@ -37,12 +54,10 @@ def _resolve_cached_model_path(
 
     env_path = (os.environ.get("PROXMAX_WHISPER_MODEL_PATH") or "").strip()
     env_name = (os.environ.get("PROXMAX_WHISPER_MODEL_NAME") or "").strip()
-    if env_path and (
-        not env_name
-        or env_name == model_size
-        or Path(env_name).name.endswith(model_size)
-        or Path(env_path).name.endswith(model_size)
-    ):
+    # A suffix check is unsafe: "distil-large-v3" ends with "large-v3" but
+    # is English-only. Match the actual model identity, not a shared suffix.
+    cache_identity = env_name or env_path
+    if env_path and _canonical_model_name(cache_identity) == _canonical_model_name(model_size):
         p = Path(env_path)
         if p.is_dir() and (p / "model.bin").is_file():
             return str(p.resolve())
@@ -63,7 +78,7 @@ def _resolve_cached_model_path(
     return None
 
 def ensure_whisper_model(
-    model_size: str = "large-v3",
+    model_size: str = "distil-large-v3",
     cache_dir: Optional[str | Path] = None,
 ) -> str:
     """Pre-download and cache the faster-whisper model once during setup.

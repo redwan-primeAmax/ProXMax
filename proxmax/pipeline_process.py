@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import queue
-import re
 import shutil
-import threading
 import time
 from pathlib import Path
 from typing import List, Optional
 
 from .models import Segment, StageTimings, VideoResult
 from .prosody import build_units, unit_summary
+from .pipeline_integrity import recover_invalid_waveforms, recover_missing_speech
+from .sync_fallback import build_complete_track
 from .pipeline_helpers import (
-    _TOTAL_STEPS, _clock, _report_is_usable, _safe_dirname, existing_output_is_usable, _usable,
+    _TOTAL_STEPS, _report_is_usable, _safe_dirname, existing_output_is_usable, _usable,
 )
 from .reporting import write_detailed_report
-from .sync_engine import plan_windows
 from .utils import format_duration, get_logger, get_media_duration, output_filename_for
 
 logger = get_logger(__name__)
@@ -53,7 +51,7 @@ class PipelineProcessingMixin:
                         stats={"report": report_path.name} if self.config.save_report else {},
                     )
                 logger.warning(
-                    "⚠️ ব্যবহারযোগ্য ভিডিও আছে কিন্তু বিস্তারিত রিপোর্ট নেই — রিপোর্টসহ আবার প্রসেস করা হবে।"
+                    "⚠️ রিপোর্ট নেই, অসম্পূর্ণ অথবা অনুপস্থিত speech দেখায় — ভিডিওটি আবার প্রসেস করা হবে।"
                 )
             else:
                 logger.warning(
@@ -163,7 +161,10 @@ class PipelineProcessingMixin:
             if not segments:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
             stats["stt"] = dict(getattr(self.stt, "last_stats", {}) or {})
-            english_chars = sum(len(s.text_en or "") for s in segments)
+            missing_source = [s.index for s in segments if s.words and not (s.text_en or "").strip()]
+            if missing_source:
+                raise RuntimeError(f"Recognized source words have no transcript in segments {missing_source}")
+            english_chars = sum(len((s.text_en or "").strip()) for s in segments)
             if english_chars == 0:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
         timings.stt = time.perf_counter() - marker
@@ -201,26 +202,12 @@ class PipelineProcessingMixin:
             translate_seconds, tts_seconds = self._translate_and_synthesize(
                 segments, tts_dir
             )
-            translated = [s for s in segments if (s.text_bn or "").strip()]
-            if not translated:
-                raise RuntimeError("কোনো segment-এরই বাংলা অনুবাদ পাওয়া যায়নি।")
-            if len(translated) < len(segments):
-                lost = [s for s in segments if not (s.text_bn or "").strip()]
-                logger.warning(
-                    "⚠️ %dটি segment-এর অনুবাদ নেই — ওই speech window নীরব থাকবে; "
-                    "source pause অপরিবর্তিত থাকবে। সময়: %s",
-                    len(lost),
-                    ", ".join(f"{_clock(s.start)}–{_clock(s.end)}" for s in lost[:8])
-                    + (" …" if len(lost) > 8 else ""),
-                )
-                stats["untranslated_seconds"] = round(
-                    sum(float(s.duration or 0.0) for s in lost), 2
-                )
-            synthesized = [s for s in translated if s.tts_audio_path]
+            recovered_translate, recovered_tts = recover_missing_speech(self, segments, tts_dir)
+            translate_seconds += recovered_translate
+            tts_seconds += recovered_tts
+            synthesized = _usable(segments)
             if not synthesized:
-                raise RuntimeError(
-                    "একটি segment-এরও Bangla অডিও তৈরি হয়নি — TTS ইঞ্জিন যাচাই করুন।"
-                )
+                raise RuntimeError("একটি segment-এরও Bangla অডিও তৈরি হয়নি।")
 
         timings.translate_tts_wall = time.perf_counter() - marker
         timings.translate = translate_seconds
@@ -243,7 +230,8 @@ class PipelineProcessingMixin:
             def build_track():
                 started = time.perf_counter()
                 output = self.sync_engine.build_final_track(
-                    segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
+                    segments, total_duration, work_dir, work_dir / "final_audio_bn.wav",
+                    allow_empty_intermediate=True,
                 )
                 current = dict(getattr(self.sync_engine, "last_stats", {}) or {})
                 stats["sync"] = current
@@ -256,62 +244,64 @@ class PipelineProcessingMixin:
                 return output
 
             final_audio = build_track()
-            rounds = []
-            eligible = None
-            for retry_round in (1, 2):
-                if not int(stats["sync"].get("unplaced", 0) or 0):
-                    break
+            invalid_tts_seconds = 0.0
+            if int(stats["sync"].get("unplaced", 0) or 0):
+                invalid_tts_seconds, repaired = recover_invalid_waveforms(self, segments, tts_dir)
+                if repaired:
+                    timings.tts += invalid_tts_seconds
+                    stats["tts"]["recovered_invalid_waveforms"] = repaired
+                    final_audio = build_track()
+            if int(stats["sync"].get("unplaced", 0) or 0):
+                # Exactly one semantic fit rewrite. Failed/rejected rewrites retain
+                # their prior text and TTS and still reach the final fallback.
                 result = self._repair_overlong_tts(
-                    segments, tts_dir, total_duration, only_unfit=True,
-                    retry_round=retry_round, eligible_indexes=eligible,
+                    segments, tts_dir, total_duration, only_unfit=True, retry_round=1,
                 )
-                if result["overlong_before"] or result.get("awaiting_tempo_cap"):
-                    rounds.append(result)
                 if result["shortened"]:
-                    eligible = set(result["shortened_segments"])
                     final_audio = build_track()
                 result["still_unfit_after_sync"] = [
                     int(segment.index) for segment in segments
-                    if segment.index in result["overlong_segments"]
-                    and "stretched clip exceeds safe window" in (segment.sync_issue or "")
+                    if segment.placed_duration is None
                 ]
-                if not result["shortened"]:
-                    break
+                if result["overlong_before"] or result.get("awaiting_tempo_cap"):
+                    fit_stats = dict(result)
+                    fit_stats["rounds"] = [dict(result)]
+                    stats["tts_fit_retry"] = fit_stats
+
+            if int(stats["sync"].get("unplaced", 0) or 0):
+                started = time.perf_counter()
+                final_audio = build_complete_track(
+                    self.sync_engine, segments, total_duration, work_dir,
+                    work_dir / "final_audio_bn.wav",
+                )
+                stats["sync"] = dict(self.sync_engine.last_stats)
+                sync_passes.append({
+                    "phase": "complete_fallback", "seconds": round(time.perf_counter() - started, 3),
+                    "unplaced": int(stats["sync"].get("unplaced", 0) or 0),
+                    "prepared_reused": 0, "prepared_computed": 0,
+                })
             stats["sync_passes"] = sync_passes
-            if rounds:
-                fit_stats = dict(rounds[0])
-                fit_stats["rounds"] = rounds
-                fit_stats["shortened"] = sum(item["shortened"] for item in rounds)
-                fit_stats["translation_seconds"] = round(sum(item["translation_seconds"] for item in rounds), 3)
-                fit_stats["tts_seconds"] = round(sum(item["tts_seconds"] for item in rounds), 3)
-                fit_stats["audio_check_seconds"] = round(sum(item["audio_check_seconds"] for item in rounds), 3)
-                fit_stats["retry_seconds"] = round(
-                    fit_stats["translation_seconds"] + fit_stats["tts_seconds"] + fit_stats["audio_check_seconds"], 3
-                )
-                fit_stats["retry_failed"] = sorted({index for item in rounds for index in item["retry_failed"]})
-                fit_stats["not_shorter_audio"] = sorted({index for item in rounds for index in item["not_shorter_audio"]})
-                fit_stats["awaiting_tempo_cap"] = sorted({index for item in rounds for index in item.get("awaiting_tempo_cap", [])})
-                fit_stats["still_unfit_after_sync"] = [
-                    int(issue.get("segment_index", -1))
-                    for issue in stats["sync"].get("sync_issues", [])
-                    if "still overlong" in str(issue.get("reason", ""))
-                    or "exceeds safe window" in str(issue.get("reason", ""))
-                ]
-                stats["tts_fit_retry"] = fit_stats
-            unplaced = int(stats["sync"].get("unplaced", 0) or 0)
-            if unplaced:
-                logger.warning(
-                    "⚠️ %dটি clip final track-এ place হয়নি; শনাক্ত silence ও অনুমোদিত tempo fit চেষ্টা হয়েছে, speech কাটা হয়নি। বিস্তারিতের জন্য report review করুন।",
-                    unplaced,
-                )
+            missing = [int(s.index) for s in _usable(segments) if s.placed_duration is None]
+            if "tts_fit_retry" in stats:
+                fit_stats["still_unfit_before_fallback"] = fit_stats["still_unfit_after_sync"]
+                fit_stats["still_unfit_after_sync"] = list(missing)
+            if missing or int(stats["sync"].get("unplaced", 0) or 0) or stats["sync"].get("overlaps"):
+                raise RuntimeError(f"Incomplete or overlapping dubbing; unplaced segments: {missing}")
+            timeline_duration = max(
+                total_duration,
+                max((s.actual_start + float(s.placed_duration or 0.0) for s in segments), default=0.0),
+            )
+            stats["sync"]["timeline_duration_seconds"] = timeline_duration
+            stats["sync"]["video_extension_seconds"] = max(0.0, timeline_duration - total_duration)
 
         retry_translation = float(fit_stats.get("translation_seconds", 0.0))
         retry_tts = float(fit_stats.get("tts_seconds", 0.0))
         timings.fit_audio_check = float(fit_stats.get("audio_check_seconds", 0.0))
         timings.translate += retry_translation
         timings.tts += retry_tts
-        timings.sync = max(0.0, time.perf_counter() - marker - retry_translation - retry_tts - timings.fit_audio_check)
-        if fit_stats.get("shortened"):
+        timings.sync = max(0.0, time.perf_counter() - marker - retry_translation - retry_tts
+                           - invalid_tts_seconds - timings.fit_audio_check)
+        if fit_stats.get("shortened") or invalid_tts_seconds:
             stats["tts"]["total_audio_seconds"] = round(
                 sum(float(s.tts_duration or 0.0) for s in synthesized), 2
             )
@@ -321,7 +311,8 @@ class PipelineProcessingMixin:
         with self._step(5, "Final Muxing (ভিডিও + Bangla অডিও)"):
             local_output = work_dir / output_filename_for(video_path)
             mux_started = time.perf_counter()
-            self.muxer.mux(video_path, final_audio, local_output)
+            speech_end = max((s.actual_start + float(s.placed_duration or 0.0) for s in segments), default=0.0)
+            self.muxer.mux(video_path, final_audio, local_output, required_video_duration=speech_end)
             timings.mux_processing = time.perf_counter() - mux_started
             output_path.parent.mkdir(parents=True, exist_ok=True)
             copy_started = time.perf_counter()
@@ -333,7 +324,7 @@ class PipelineProcessingMixin:
         if cfg.validate_dub_audio:
             validation_started = time.perf_counter()
             stats["audio_validation"] = self._validate_dub_audio(
-                output_path, work_dir, segments, total_duration
+                output_path, work_dir, segments, timeline_duration
             )
             timings.validation = time.perf_counter() - validation_started
 
@@ -342,4 +333,5 @@ class PipelineProcessingMixin:
         )
         stats["units"] = sum(1 for unit in segments if getattr(unit, "is_unit", False)) or len(segments)
         stats["audio_seconds"] = round(total_duration, 2)
+        stats["output_timeline_seconds"] = round(timeline_duration, 3)
         return segments, timings, stats

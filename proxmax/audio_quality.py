@@ -60,11 +60,12 @@ def assess_bengali_coverage(
         expected_tokens = _tokens(segment.text_bn)
         if not expected_tokens:
             continue
-        start = max(0.0, float(segment.start) - max(0.0, boundary_tolerance))
+        actual_start = segment.actual_start
+        start = max(0.0, actual_start - max(0.0, boundary_tolerance))
         duration = segment.placed_duration
         if duration is None:
             duration = segment.stretched_duration or segment.tts_duration or segment.duration
-        end = float(segment.start) + max(0.0, float(duration)) + max(0.0, boundary_tolerance)
+        end = actual_start + max(0.0, float(duration)) + max(0.0, boundary_tolerance)
         actual_words = [word for word in ordered_words if start <= float(word.start) <= end]
         actual_tokens = [token for word in actual_words for token in _tokens(word.word)]
         coverage = _sequence_coverage(expected_tokens, actual_tokens)
@@ -79,7 +80,8 @@ def assess_bengali_coverage(
             status = "likely_complete"
         units.append({
             "segment_index": int(segment.index),
-            "start": round(float(segment.start), 3),
+            "start": round(actual_start, 3),
+            "source_start": round(float(segment.start), 3),
             "end": round(end, 3),
             "status": status,
             "coverage": round(coverage, 3),

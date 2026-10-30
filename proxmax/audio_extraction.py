@@ -36,6 +36,7 @@ class AudioExtractor:
         use_hwaccel: bool = False,
         sample_rate: int = 16000,
         stall_timeout: float = 90.0,
+        audio_filter: str = "none",
     ) -> None:
         """
         Args:
@@ -47,6 +48,9 @@ class AudioExtractor:
         """
         self.use_hwaccel = use_hwaccel
         self.sample_rate = sample_rate
+        if audio_filter not in {"none", "highpass60"}:
+            raise ValueError(f"Unsupported source audio filter: {audio_filter}")
+        self.audio_filter = audio_filter
         self.stall_timeout = float(stall_timeout)
         #: সর্বশেষ extraction-এ জানা ভিডিওর দৈর্ঘ্য (সেকেন্ড) — না জানলে ``None``
         self.last_duration: Optional[float] = None
@@ -92,9 +96,10 @@ class AudioExtractor:
                 "-vn",                       # ভিডিও stream বাদ
                 "-ac", "1",                  # mono
                 "-ar", str(self.sample_rate),
-                "-c:a", "pcm_s16le",
-                str(output_wav),
             ]
+            if self.audio_filter == "highpass60":
+                cmd += ["-af", "highpass=f=60"]
+            cmd += ["-c:a", "pcm_s16le", str(output_wav)]
             return cmd
 
         attempts = [self.use_hwaccel]

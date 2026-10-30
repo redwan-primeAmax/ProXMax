@@ -14,7 +14,8 @@ paths:
 
 # --- Speech-to-Text (faster-whisper) --------------------------------------
 stt:
-  model: "large-v3"         # সর্বোচ্চ accuracy (ডিফল্ট); speed দরকার হলে "medium"
+  model: "distil-large-v3"  # ডিফল্ট English model; বিকল্প: "large-v3"
+  audio_filter: "none"      # পরীক্ষামূলক বিকল্প: highpass60; accuracy যাচাই করে চালান
   device: "auto"            # auto = CUDA GPU থাকলে GPU, না থাকলে CPU fallback
   compute_type: "float16"   # GPU-এর জন্য দ্রুততম; CPU হলে নিজে থেকেই int8 হবে
   beam_size: 5              # বেশি = বেশি accuracy, একটু ধীর
@@ -99,7 +100,7 @@ tts:
 sync:
   # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
   min_tempo: 0.90           # সর্বোচ্চ ১০% ধীর; এর বেশি করা হবে না
-  max_tempo: 1.20           # সর্বোচ্চ ২০% দ্রুত; ১× রাখা অগ্রাধিকার
+  max_tempo: 1.20           # প্রথম fit-এর সর্বোচ্চ গতি; চূড়ান্ত fallback-এ কোনো cap নেই
   fill_extension: 0.12      # legacy fallback; slow_down_short_clips চালু থাকলে ব্যবহৃত হয় না
   slow_down_short_clips: true
   slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
@@ -122,7 +123,7 @@ output:
   use_hwaccel: true         # ffmpeg hardware acceleration চেষ্টা
   skip_existing: true       # output-এ ফাইল থাকলে আবার প্রসেস না করা (resume)
   save_report: true          # প্রতি ভিডিওর বিস্তারিত, secret-safe Markdown রিপোর্ট সেভ
-  keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, TTS ক্লিপ) থেকে যাবে
+  keep_temp_files: false    # true করলে intermediate WAV ও raw Edge MP3 থেকে যাবে
   log_level: "INFO"         # DEBUG দিলে আরও বিস্তারিত লগ
 
 # --- Dubbed-audio quality validation ----------------------------------------

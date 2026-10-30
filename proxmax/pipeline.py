@@ -39,6 +39,7 @@ class DubbingPipeline(
         self.extractor = AudioExtractor(
             use_hwaccel=False,
             stall_timeout=cfg.extract_stall_seconds,
+            audio_filter=cfg.stt_audio_filter,
         )
         self.stt = SpeechToText(
             model_size=cfg.whisper_model,
