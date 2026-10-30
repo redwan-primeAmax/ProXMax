@@ -21,7 +21,7 @@ from .hotword_repair import (
 )
 
 DEFAULT_HOTWORDS_FILENAME = "hotwords.txt"
-DEFAULT_WHISPER_PROMPT_CHARS = 1600
+DEFAULT_WHISPER_PROMPT_CHARS = 400
 
 #: Terms worth prioritising in the Whisper prompt for FC Mobile commentary.
 #: The full list is deliberately not dumped into every prompt.

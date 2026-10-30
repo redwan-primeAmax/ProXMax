@@ -131,39 +131,70 @@ class WhisperModelMixin:
             )
         self.last_hotwords_prompt = hotwords_prompt
 
+        prompt = initial_prompt or None
+        attempts: List[Tuple[Optional[str], str]] = []
         if hotwords_prompt and self._supports_hotwords:
-            # পুরোনো faster-whisper-এ ``hotwords`` নেই — TypeError হলে একবারই বাদ দেওয়া হয়
+            attempts.append((prompt, hotwords_prompt))
+        attempts.append((prompt, ""))
+        if prompt is not None:
+            attempts.append((None, ""))
+
+        for attempt_index, (prompt_text, attempt_hotwords) in enumerate(attempts):
+            call_options = dict(options)
+            call_options["initial_prompt"] = prompt_text
             try:
-                segments, _info = self._model.transcribe(
-                    samples, hotwords=hotwords_prompt, **options
-                )
-            except TypeError:  # pragma: no cover - পুরোনো সংস্করণ
-                logger.info(
-                    "এই faster-whisper সংস্করণে hotwords নেই — সাধারণ ডিকোড চলবে।"
-                )
-                self._supports_hotwords = False
-                self.hotwords = ""
-                segments, _info = self._model.transcribe(samples, **options)
-        else:
-            segments, _info = self._model.transcribe(samples, **options)
-        words: List[Word] = []
-        texts: List[str] = []
-        for segment in segments:
-            text = (segment.text or "").strip()
-            if text:
-                texts.append(text)
-            for word in (segment.words or []):
-                if not (word.word or "").strip():
-                    continue
-                words.append(
-                    Word(
-                        start=float(offset) + float(word.start),
-                        end=float(offset) + float(word.end),
-                        word=word.word,
-                        probability=getattr(word, "probability", None),
+                if attempt_hotwords:
+                    try:
+                        segments, _info = self._model.transcribe(
+                            samples, hotwords=attempt_hotwords, **call_options
+                        )
+                    except TypeError as exc:  # pragma: no cover - older faster-whisper
+                        if "hotword" not in str(exc).lower():
+                            raise
+                        logger.info(
+                            "এই faster-whisper সংস্করণে hotwords নেই — সাধারণ ডিকোড চলবে।"
+                        )
+                        self._supports_hotwords = False
+                        self.hotwords = ""
+                        continue
+                else:
+                    segments, _info = self._model.transcribe(samples, **call_options)
+
+                words: List[Word] = []
+                texts: List[str] = []
+                for segment in segments:
+                    text = (segment.text or "").strip()
+                    if text:
+                        texts.append(text)
+                    for word in (segment.words or []):
+                        if not (word.word or "").strip():
+                            continue
+                        words.append(
+                            Word(
+                                start=float(offset) + float(word.start),
+                                end=float(offset) + float(word.end),
+                                word=word.word,
+                                probability=getattr(word, "probability", None),
+                            )
+                        )
+                self.last_hotwords_prompt = attempt_hotwords
+                return words, " ".join(texts)
+            except ValueError as exc:
+                if "maximum decoding length must be > 0" not in str(exc).lower():
+                    raise
+                if attempt_index + 1 >= len(attempts):
+                    raise
+                next_prompt, next_hotwords = attempts[attempt_index + 1]
+                if attempt_hotwords and not next_hotwords:
+                    logger.warning(
+                        "Whisper decoder prompt window পূর্ণ হয়ে গেছে — এই chunk hotwords ছাড়া retry হবে।"
                     )
-                )
-        return words, " ".join(texts)
+                elif prompt_text is not None and next_prompt is None:
+                    logger.warning(
+                        "Whisper decoder prompt এখনো বড় — এই chunk hotwords ও context ছাড়া retry হবে।"
+                    )
+
+        raise RuntimeError("Whisper decode কোনো fallback ফলাফল ফেরত দেয়নি।")
 
     def set_context_hint(self, text: str, max_chars: int = 200) -> None:
         """প্রথম chunk-এ দেওয়ার জন্য সংক্ষিপ্ত প্রসঙ্গ (ভিডিওর নাম) বসায়।"""
