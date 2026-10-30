@@ -46,6 +46,8 @@ class Segment:
     placed_duration: Optional[float] = None
     #: sync ধাপে ব্যবহৃত tempo (১.০ = স্বাভাবিক গতি)
     tempo_used: float = 1.0
+    #: clip নিরাপদে বসানো যায়নি বা মেরামত দরকার হলে report-এ কারণ দেখায়
+    sync_issue: Optional[str] = None
     #: ``True`` হলে এটি একাধিক segment মিলিয়ে বানানো "speech unit"
     #: (এক clip-এ পুরো বাক্য — স্বাভাবিক prosody, মাঝপথে থামা নেই)
     is_unit: bool = False
@@ -81,6 +83,7 @@ class StageTimings:
     mux: float = 0.0
     total: float = 0.0
     audio_seconds: float = 0.0
+    validation: float = 0.0
 
     @property
     def realtime_factor(self) -> float:
