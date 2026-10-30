@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
 from .hotwords import load_hotwords
+from .translator_config import DEFAULT_GEMINI_BATCH_SIZE
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -97,7 +98,8 @@ class AppConfig:
     translator_backend: str = "gemini"      # "gemini" | "indictrans2"
     gemini_api_key: str = ""                # খালি হলে GEMINI_API_KEY / GOOGLE_API_KEY env
     gemini_model: str = DEFAULT_GEMINI_MODEL
-    gemini_batch_size: int = 2048           # token budget-এর পাশাপাশি item-count safety cap
+    #: ছোট Gemini batch paragraph-to-output alignment নিরাপদ রাখে
+    gemini_batch_size: int = DEFAULT_GEMINI_BATCH_SIZE
     gemini_max_chars_per_request: int = 0    # 0 = legacy character cap বন্ধ; input-token cap ব্যবহার
     gemini_max_input_tokens: int = 5000     # প্রতি Gemini request-এর conservative input-token cap
     gemini_max_retries: int = 7             # সর্বোচ্চ ৭ বার চেষ্টা
@@ -163,7 +165,8 @@ class AppConfig:
     log_level: str = "INFO"
 
     # --- post-mux speech quality checks -------------------------------------
-    validate_dub_audio: bool = True
+    #: ঐচ্ছিক full-video Whisper pass; ডিফল্টে বন্ধ, কারণ এটি ধীর
+    validate_dub_audio: bool = False
     audio_validation_min_coverage: float = 0.58
 
     # ---------------------------------------------------------------------------

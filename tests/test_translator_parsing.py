@@ -22,6 +22,40 @@ class TestTranslatorParsing(unittest.TestCase):
         raw = json.dumps({"translations": [{"bn": "এক"}, {"text": "দুই"}]})
         self.assertEqual(parse_translations(raw, 2), ["এক", "দুই"])
 
+    def test_explicit_paragraph_ids_restore_order(self):
+        raw = json.dumps({"translations": [
+            {"id": 2, "translation": "দুই"},
+            {"id": 1, "translation": "এক"},
+        ]})
+        self.assertEqual(parse_translations(raw, 2, require_ids=True), ["এক", "দুই"])
+
+    def test_required_ids_reject_positional_json_arrays(self):
+        raw = json.dumps({"translations": ["এক", "দুই"]})
+        with self.assertRaises(TranslationError):
+            parse_translations(raw, 2, require_ids=True)
+
+    def test_required_ids_reject_duplicate_or_missing_ids(self):
+        for items in (
+            [{"id": 1, "translation": "এক"}, {"id": 1, "translation": "দুই"}],
+            [{"id": 1, "translation": "এক"}, {"id": 3, "translation": "দুই"}],
+        ):
+            with self.subTest(items=items), self.assertRaises(TranslationError):
+                parse_translations(json.dumps({"translations": items}), 2, require_ids=True)
+
+    def test_partial_id_salvage_keeps_only_contiguous_input_prefix(self):
+        raw = (
+            '{"translations": [{"id": 1, "translation": "এক"}, '
+            '{"id": 2, "translation": "দুই"}, '
+            '{"id": 3, "translation": "তিন'
+        )
+        self.assertEqual(salvage_translations(raw, 3, require_ids=True), ["এক", "দুই"])
+        reordered = (
+            '{"translations": [{"id": 2, "translation": "দুই"}, '
+            '{"id": 1, "translation": "এক"}, '
+            '{"id": 3, "translation": "তিন'
+        )
+        self.assertEqual(salvage_translations(reordered, 3, require_ids=True), [])
+
     def test_parse_count_mismatch(self):
         with self.assertRaises(TranslationError):
             parse_translations(json.dumps({"translations": ["এক"]}), 2)

@@ -38,3 +38,5 @@ class TestWhisperPromptRecovery(unittest.TestCase):
         self.assertEqual(text, "Hello.")
         self.assertAlmostEqual(words[0].start, 2.1)
         self.assertEqual(stt.last_hotwords_prompt, "")
+        self.assertEqual(stt._prompt_fallback_stats["without_hotwords"], 1)
+        self.assertEqual(stt._prompt_fallback_stats["without_context"], 1)

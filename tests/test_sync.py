@@ -173,6 +173,18 @@ class TestNoSentenceTruncation(unittest.TestCase):
             self.assertIn("not truncated", segment.sync_issue)
             self.assertLess(float(np.max(np.abs(audio))), 1e-6)
 
+    def test_rounding_overrun_within_reserved_gap_is_placed_without_truncation(self):
+        segment = Segment(index=0, start=0.0, end=1.0)
+        segment.stretched_audio_path = Path("rounded.wav")
+        clip = np.full(24000 + 120, 0.1, dtype=np.float32)  # 5 ms beyond the 1 s window
+        engine = SyncEngine(sample_rate=24000, slot_gap_ms=80)
+        engine.last_stats = {"unplaced": 0, "trimmed": 0, "sync_issues": []}
+        with mock.patch("proxmax.sync_assembly.audio_fx.read_wav", return_value=(clip, 24000)):
+            track = engine._assemble([(segment, (0.0, 1.0))], 1.0)
+        self.assertGreater(float(np.max(np.abs(track))), 0.09)
+        self.assertEqual(engine.last_stats["unplaced"], 0)
+        self.assertAlmostEqual(segment.placed_duration, 1.005, delta=1 / 24000)
+
     def test_unreadable_stretched_clip_is_reported_as_unplaced(self):
         segment = Segment(index=8, start=0.0, end=1.0, text_bn="শেষ বাক্য।")
         segment.stretched_audio_path = Path("missing-stretched.wav")

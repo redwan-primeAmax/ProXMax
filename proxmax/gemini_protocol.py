@@ -97,9 +97,9 @@ class GeminiProtocolMixin:
     ) -> int:
         """Fast local estimate of system instruction, task, glossary, and full payload."""
         count_hint = (
-            f"IMPORTANT: the input has exactly {len(items)} paragraphs — return exactly "
-            f"{len(items)} translations, one per paragraph, in the same order."
-            f"{self._glossary_hint(items)}"
+            f"IMPORTANT: the input has paragraph IDs 1 through {len(items)}. Return one "
+            "translation object for every ID, preserve the exact IDs, and do not omit "
+            f"or duplicate one.{self._glossary_hint(items)}"
         )
         text = f"{instruction}\n{task}\n{count_hint}\nInput paragraphs:\n{self._payload(items)}"
         return estimate_gemini_input_tokens(text)
@@ -136,13 +136,12 @@ class GeminiProtocolMixin:
             "temperature": self.temperature if mode == "json" else 0.0,
             "max_output_tokens": self._output_token_budget(items),
         }
-        noun = "paragraphs"
-        singular = "paragraph"
         label = "Input paragraphs:"
         glossary_hint = self._glossary_hint(items)
         count_hint = (
-            f"IMPORTANT: the input has exactly {len(items)} {noun} — return exactly "
-            f"{len(items)} translations, one per {singular}, in the same order.{glossary_hint}"
+            f"IMPORTANT: the input has paragraph IDs 1 through {len(items)}. Return one "
+            "translation object for every ID, preserve the exact IDs, and do not omit "
+            f"or duplicate one.{glossary_hint}"
         )
         payload = self._payload(items)
         if mode == "json":
@@ -153,14 +152,16 @@ class GeminiProtocolMixin:
         elif mode == "json_plain":
             contents = (
                 f"{task}\n"
-                f'Return ONLY a JSON object like {{"translations": ["<bangla 1>", "<bangla 2>"]}} '
-                f"with exactly {len(items)} strings in the same order. No other text.\n"
+                'Return ONLY JSON shaped like {"translations": '
+                '[{"id": 1, "translation": "<Bangla>"}]}. Use every input ID once. '
+                "No other text.\n"
                 f"{count_hint}\n{label}\n{payload}"
             )
         else:
             contents = (
                 f"{task}\n"
-                f"Answer with exactly {len(items)} numbered translations, one per {singular}. "
+                f"Answer with exactly {len(items)} numbered translations; each line must "
+                f"start with that paragraph's ID (1 through {len(items)}). "
                 "No JSON, timestamps, or explanation.\n"
                 f"{count_hint}\n{label}\n{self._payload_numbered(items)}"
             )
@@ -240,10 +241,14 @@ class GeminiProtocolMixin:
 
         try:
             if mode == "lines":
-                return parse_numbered_lines(raw, len(items))
-            return parse_translations(raw, len(items))
+                return parse_numbered_lines(raw, len(items), require_numbered=True)
+            return parse_translations(
+                raw, len(items), require_ids=len(items) > 1
+            )
         except _ResponseFormatError as exc:
-            recovered = salvage_translations(raw, len(items))
+            recovered = salvage_translations(
+                raw, len(items), require_ids=len(items) > 1
+            )
             if 0 < len(recovered) < len(items):
                 reason = "উত্তর মাঝপথে কেটে গেছে" if truncated else "উত্তর অসম্পূর্ণ"
                 raise _PartialBatchError(recovered, len(items), reason) from exc

@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from .audio_quality import assess_bengali_coverage
 from .models import Segment, StageTimings, VideoResult
 from .prosody import build_units, unit_summary
 from .pipeline_helpers import (

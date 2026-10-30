@@ -85,6 +85,7 @@ class SpeechToText(WhisperModelMixin):
             self.hotwords = select_whisper_hotwords(self.hotwords_list)
         self._supports_hotwords = True
         self.last_hotwords_prompt = ""
+        self._prompt_fallback_stats = {"without_hotwords": 0, "without_context": 0}
         #: প্রথম chunk-এ শুধু একবার দেওয়া প্রসঙ্গ (ভিডিওর নাম/বিষয়)
         self.context_hint = ""
         self.compression_ratio_threshold = float(compression_ratio_threshold)
@@ -105,6 +106,7 @@ class SpeechToText(WhisperModelMixin):
         """Transcribe an in-memory waveform (already decoded at ``sample_rate``)."""
         self._load()
         started = time.perf_counter()
+        self._prompt_fallback_stats = {"without_hotwords": 0, "without_context": 0}
         total_seconds = audio.size / float(sample_rate) if sample_rate else 0.0
 
         chunks, method = plan_chunks(
@@ -177,6 +179,8 @@ class SpeechToText(WhisperModelMixin):
             "words": len(words),
             "sentences": len(segments),
             "seam_repairs": repaired,
+            "decoder_retries_without_hotwords": self._prompt_fallback_stats["without_hotwords"],
+            "decoder_retries_without_context": self._prompt_fallback_stats["without_context"],
             "device": self.device,
         }
         logger.info(
