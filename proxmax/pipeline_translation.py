@@ -7,12 +7,13 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from .audio_quality import assess_bengali_coverage
 from .models import Segment
 from .pipeline_helpers import _usable
 from .sync_engine import plan_windows
+from .tts.base import TTSError
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -55,17 +56,15 @@ class PipelineTranslationMixin:
 
         def producer() -> None:
             started = time.perf_counter()
-            pending: Optional[List[Segment]] = None
             try:
                 for group in groups:
                     if stop.is_set():
                         break
                     self.translator.translate_segments(group)
-                    if pending is not None:
-                        outbox.put(pending)
-                    pending = group
-                if pending is not None and not stop.is_set():
-                    outbox.put(pending)
+                    if stop.is_set():
+                        break
+                    # No look-ahead is needed: each translated group is ready for TTS.
+                    outbox.put(group)
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -76,14 +75,42 @@ class PipelineTranslationMixin:
         worker.start()
 
         tts_started = time.perf_counter()
+        # Combine ready groups to keep TTS slots busy across Gemini batch boundaries.
+        # Keep the work bounded so a later translation error is noticed promptly.
+        max_ready_segments = max(1, int(cfg.tts_concurrency)) * 4
         try:
             while True:
                 item = outbox.get()
                 if item is sentinel:
                     break
+                first_group = list(item)  # type: ignore[arg-type]
+                ready = list(first_group)
+                ready_groups = [first_group]
+                producer_done = False
+                while len(ready) < max_ready_segments:
+                    try:
+                        item = outbox.get_nowait()
+                    except queue.Empty:
+                        break
+                    if item is sentinel:
+                        producer_done = True
+                        break
+                    group = list(item)  # type: ignore[arg-type]
+                    ready_groups.append(group)
+                    ready.extend(group)
                 if errors:
                     break
-                self._synthesize(list(item), tts_dir)  # type: ignore[arg-type]
+                self._synthesize(ready, tts_dir)
+                # Coalescing must not hide the failure of an entire original group.
+                for group in ready_groups:
+                    translated = [s for s in group if (s.text_bn or "").strip()]
+                    if translated and not any(s.tts_audio_path for s in translated):
+                        raise TTSError(
+                            f"অনুবাদ batch-এর কোনো TTS ক্লিপ তৈরি হয়নি "
+                            f"(segment {translated[0].index}–{translated[-1].index})."
+                        )
+                if producer_done:
+                    break
         except BaseException:
             stop.set()
             raise

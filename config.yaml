@@ -91,7 +91,7 @@ tts:
   rate: "+0%"
   volume: "+0%"
   pitch: "+0Hz"
-  concurrency: 5
+  concurrency: 12             # একসাথে সর্বোচ্চ Edge TTS request; throttling হলে কমান
   max_retries: 3
 
 # --- Audio-Video Sync (time-stretch) -------------------------------------------

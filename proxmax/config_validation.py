@@ -107,6 +107,8 @@ def validate_config(config):
         raise ValueError(
             f"tts_engine হতে হবে {SUPPORTED_TTS_ENGINES}, পাওয়া গেছে: '{self.tts_engine}'"
         )
+    if int(self.tts_concurrency) < 1:
+        raise ValueError("tts_concurrency অন্তত 1 হতে হবে।")
 
     if not (0.90 <= self.min_tempo <= 1.0 < self.max_tempo <= 1.15):
         raise ValueError(
