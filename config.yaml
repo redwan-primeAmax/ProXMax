@@ -45,7 +45,8 @@ translation:
   # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (আগে requirements-indictrans2.txt)
   backend: "gemini"
 
-  # Legacy speech-rate setting; Gemini-কে কোনো duration hint পাঠানো হয় না।
+  # Legacy speech-rate setting; initial translation-এ কোনো timing hint যায় না।
+  # শুধু measured TTS-fit retry-তে আপেক্ষিক length goal যেতে পারে, timestamp নয়।
   char_rate: 12.0
   # Legacy compatibility; pre-TTS calibration/prediction and text expansion are disabled.
   calibrate_speech_rate: false

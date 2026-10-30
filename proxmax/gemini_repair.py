@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import List, Sequence
 
 from .models import Segment
 from .text_utils import normalise_bangla
 from .translation_errors import TranslationError
+from .translation_quality import assess_fit_rewrite
 from .translator_config import SHORTEN_INSTRUCTION
 from .utils import get_logger
 
@@ -29,30 +31,54 @@ class GeminiRepairMixin:
     def shorten_to_durations(
         self, segments: List[Segment], targets: Sequence[float]
     ) -> int:
-        """Measured TTS overshoot-এর জন্য line-level সংক্ষিপ্ত পুনঃঅনুবাদ।"""
-        paired_segments = [
-            segment for segment, _target in zip(segments, targets)
+        """Rephrase measured unfit clips using the source, not Bangla alone."""
+        pairs = [
+            (segment, float(target)) for segment, target in zip(segments, targets)
             if (segment.text_bn or "").strip()
         ]
-        if not paired_segments:
+        if not pairs:
             return 0
+
+        items = []
+        for segment, target in pairs:
+            reference = normalise_bangla(segment.original_text_bn or segment.text_bn)
+            payload = {
+                "english_source": (segment.text_en or "").strip(),
+                "current_bangla": normalise_bangla(segment.text_bn),
+                "reference_bangla": reference,
+            }
+            measured = float(segment.stretched_duration or 0.0)
+            if measured > target > 0:
+                # A heuristic goal based on a real failed fit, never an absolute timestamp.
+                payload["target_percent"] = max(65, min(96, int(100 * target / measured)))
+            items.append((json.dumps(payload, ensure_ascii=False), 0.0))
         try:
             shortened = self._run_batches(
-                [(normalise_bangla(segment.text_bn), 0.0) for segment in paired_segments],
+                items,
                 instruction=SHORTEN_INSTRUCTION,
-                task="Make each Bangla translation more concise while preserving its meaning, facts, and names.",
+                task="Make each current Bangla translation more concise without losing source meaning.",
                 description="  TTS fit retry (Gemini)",
             )
         except TranslationError as exc:
             logger.warning("মাপা TTS সময়ে অনুবাদ ছোট করা যায়নি (%s)।", exc)
+            for segment, _target in pairs:
+                segment.translation_notes.append("Fit-retry translation failed; prior text retained.")
             return 0
 
         changed = 0
-        for segment, candidate in zip(paired_segments, shortened):
-            cleaned = normalise_bangla(candidate)
-            if cleaned and len(cleaned) < len(segment.text_bn.strip()):
-                segment.text_bn = cleaned
-                changed += 1
+        for (segment, _target), candidate in zip(pairs, shortened):
+            current = normalise_bangla(segment.text_bn)
+            reference = normalise_bangla(segment.original_text_bn or current)
+            result = assess_fit_rewrite(segment.text_en, reference, current, candidate)
+            if result.issues:
+                logger.warning("Segment %d-এর সংক্ষিপ্ত অনুবাদ গ্রহণ করা হয়নি: %s", segment.index,
+                               "; ".join(result.issues))
+                segment.translation_notes.append(
+                    "Fit-retry text rejected; prior text retained: " + "; ".join(result.issues)
+                )
+                continue
+            segment.text_bn = result.text
+            changed += 1
         return changed
 
     def expand_to_fit(

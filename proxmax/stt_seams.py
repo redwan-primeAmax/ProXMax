@@ -42,18 +42,27 @@ def merge_windows(
 def replace_in_window(
     words: Sequence[Word], replacement: Sequence[Word], start: float, end: float
 ) -> List[Word]:
-    """উইন্ডোর ভেতরের শব্দ বদলে দেয় (বাইরের শব্দ অপরিবর্তিত থাকে)।"""
-    kept = [
-        w for w in words
-        if not (start <= (w.start + w.end) / 2.0 <= end)
-    ]
-    inside = [
-        w for w in replacement
-        if start - 0.35 <= (w.start + w.end) / 2.0 <= end + 0.35
-    ]
-    combined = kept + inside
-    combined.sort(key=lambda w: (w.start, w.end))
-    return combined
+    """Replace only the same window, rejecting empty or clearly partial redecodes."""
+    def in_window(word: Word) -> bool:
+        return start <= (word.start + word.end) / 2.0 <= end
+
+    original = [word for word in words if in_window(word)]
+    inside = [word for word in replacement if in_window(word)]
+    if not inside:
+        return list(words)
+    if original:
+        original_start = min(word.start for word in original)
+        original_end = max(word.end for word in original)
+        replacement_start = min(word.start for word in inside)
+        replacement_end = max(word.end for word in inside)
+        # A partial decode must not delete valid material at either edge. Small
+        # timestamp differences are expected when Whisper decodes a new window.
+        if replacement_start > original_start + 0.35 or replacement_end < original_end - 0.35:
+            return list(words)
+        if len(original) >= 3 and len(inside) < len(original) * 0.75:
+            return list(words)
+    kept = [word for word in words if not in_window(word)]
+    return sorted(kept + inside, key=lambda word: (word.start, word.end))
 
 def _tail_context(text: str, limit: int) -> str:
     """Prompt carry-এর জন্য শেষ কয়েক অক্ষর (সম্ভব হলে বাক্যের শুরু থেকে)।"""

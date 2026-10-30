@@ -29,12 +29,15 @@ class TestDetailedReport(unittest.TestCase):
             audio_fx.write_wav(work_dir / "final_audio_bn.wav", dub, rate)
 
             child = Segment(index=0, start=1.0, end=2.0, text_en="Hello world.")
-            child.words = [Word(1.0, 1.35, "Hello", .95), Word(1.4, 1.9, "world.", .92)]
+            child.words = [Word(1.0, 1.35, "Hello", .25), Word(1.4, 1.9, "world.", .92)]
             unit = Segment(
                 index=0, start=1.0, end=2.0, text_en="Hello world.", text_bn="হ্যালো বিশ্ব।",
                 words=list(child.words), tts_audio_path=work_dir / "tts.wav", tts_duration=1.2,
                 stretched_audio_path=work_dir / "stretched.wav", stretched_duration=1.1,
                 placed_duration=.9, tempo_used=1.2, is_unit=True, children=[child],
+                original_text_bn="হ্যালো আমার বিশ্ব।",
+                translation_issues=["Explicit source number needs review"],
+                translation_notes=["Fit rewrite needs review"],
             )
             cfg = AppConfig(gemini_api_key="DO_NOT_PUT_THIS_IN_REPORT").validate()
             probe = {
@@ -44,7 +47,8 @@ class TestDetailedReport(unittest.TestCase):
                              "width": 320, "height": 240, "avg_frame_rate": "25/1"}],
             }
             timings = StageTimings(extract=.1, stt=.2, translate=.3, tts=.4, sync=.5,
-                                   mux=.6, total=1.0, audio_seconds=4.0)
+                                   mux=.6, total=1.0, audio_seconds=4.0,
+                                   translate_tts_wall=.45, mux_processing=.35, output_copy=.25)
             with mock.patch("proxmax.reporting._probe_media", return_value=probe):
                 report = write_detailed_report(
                     video_path=source, output_video_path=output_video, output_dir=output_dir,
@@ -67,6 +71,16 @@ class TestDetailedReport(unittest.TestCase):
             self.assertEqual(report.name, "source_report.markdown")
             self.assertIn("Hello world.", text)
             self.assertIn("হ্যালো বিশ্ব।", text)
+            self.assertIn("Original Bengali before fit rewrite:** হ্যালো আমার বিশ্ব।", text)
+            self.assertIn("Translation review issue:** Explicit source number needs review", text)
+            self.assertIn("Translation review note:** Fit rewrite needs review", text)
+            self.assertIn("Low-confidence source words (review cues, not proof):** Hello", text)
+            self.assertIn("1 units have at least one recognizer word probability below 0.35", text)
+            self.assertIn("1 units with unresolved number/script signals", text)
+            self.assertIn("TTS call time excludes waiting for translation queue items", text)
+            self.assertIn("| Initial translation + TTS combined elapsed | 0.450 |", text)
+            self.assertIn("| Mux processing | 0.350 |", text)
+            self.assertIn("| Output file copy | 0.250 |", text)
             self.assertIn("Source word timestamps", text)
             self.assertIn('"gemini_max_paragraphs_per_request": 12', text)
             self.assertIn('"post_mux_bengali_asr_validation": false', text)

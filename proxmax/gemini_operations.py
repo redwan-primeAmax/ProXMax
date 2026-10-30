@@ -6,9 +6,9 @@ import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import Segment
-from .text_utils import normalise_bangla
 from .translation_errors import TranslationError, _PartialBatchError, _ResponseFormatError, _error_message
 from .translation_parsing import normalise_text
+from .translation_quality import TranslationAssessment, assess_translation
 from .translator_config import SYSTEM_INSTRUCTION
 from .utils import get_logger
 
@@ -72,6 +72,43 @@ class GeminiOperationsMixin:
                 )
         return results
 
+    def _translate_checked(
+        self, items: Sequence[Tuple[str, float]], description: str = "  Translate (Gemini)"
+    ) -> List[TranslationAssessment]:
+        """Repair obvious digit errors and recheck only lines with unresolved issues."""
+        translations = self._run_batches(items, description=description)
+        checked = [assess_translation(source, text) for (source, _), text in zip(items, translations)]
+        for result in checked:
+            for note in result.notes:
+                logger.warning("অনুবাদের স্বয়ংক্রিয় সংশোধন review করুন: %s", note)
+        suspect = [index for index, result in enumerate(checked) if result.text and result.issues]
+        if not suspect:
+            return checked
+
+        logger.warning("⚠️ %dটি অনুবাদে সংখ্যা/লিপির সমস্যা — শুধু সেগুলো আবার যাচাই হচ্ছে।", len(suspect))
+        try:
+            retried = self._run_batches(
+                [items[index] for index in suspect],
+                task=("Translate each input paragraph faithfully into Bangla. Preserve all "
+                      "explicit digits exactly and avoid unrelated writing systems."),
+                description="  Translation quality recheck (Gemini)",
+            )
+        except TranslationError as exc:
+            # _run_batches already used the configured retry policy for API errors.
+            logger.warning("অনুবাদের quality recheck ব্যর্থ (%s) — আগের ফল review-এ থাকবে।", exc)
+            retried = []
+        for index, candidate in zip(suspect, retried):
+            second = assess_translation(items[index][0], candidate)
+            if second.text and len(second.issues) < len(checked[index].issues):
+                checked[index] = TranslationAssessment(
+                    second.text, second.issues,
+                    ("Retranslated after a number/script review signal; compare with the source.",) + second.notes,
+                )
+        for index in suspect:
+            if checked[index].issues:
+                logger.warning("অনুবাদ review দরকার: %s", "; ".join(checked[index].issues))
+        return checked
+
     def verify_api(self) -> Dict[str, Any]:
         """API key এবং মডেল সত্যিই কাজ করছে কি না তা একটি ছোট টেস্ট কলের মাধ্যমে যাচাই করে।
 
@@ -100,11 +137,12 @@ class GeminiOperationsMixin:
             cached = self._cache.get(original)
         if cached is not None:
             return cached
-        result = normalise_bangla(self._run_batches([(original, 0.0)])[0])
-        if result:
+        checked = self._translate_checked([(original, 0.0)])[0]
+        if checked.text and not checked.issues:
             with self._cache_lock:
-                self._cache[original] = result
-        return result
+                self._cache[original] = checked.text
+                self._cache_notes[original] = checked.notes
+        return checked.text
 
     def _make_batches(
         self,
@@ -162,14 +200,19 @@ class GeminiOperationsMixin:
         items: List[Tuple[str, float]] = []
 
         for seg in segments:
+            seg.translation_issues = []
+            seg.translation_notes = []
+            seg.original_text_bn = None
             text = normalise_text(seg.text_en)
             if not text:
                 seg.text_bn = ""
                 continue
             with self._cache_lock:
                 cached = self._cache.get(text)
+                cached_notes = self._cache_notes.get(text, ())
             if cached is not None:
                 seg.text_bn = cached
+                seg.translation_notes = list(cached_notes)
                 continue
             if text not in groups:
                 groups[text] = []
@@ -177,16 +220,18 @@ class GeminiOperationsMixin:
             groups[text].append(seg)
 
         if items:
-            translations = self._run_batches(
+            checked = self._translate_checked(
                 items, description=f"  Translate (Gemini, {len(items)} lines)"
             )
             with self._cache_lock:
-                for (text, _duration), translated in zip(items, translations):
-                    cleaned = normalise_bangla(translated)
-                    if cleaned:
-                        self._cache[text] = cleaned
+                for (text, _duration), result in zip(items, checked):
+                    if result.text and not result.issues:
+                        self._cache[text] = result.text
+                        self._cache_notes[text] = result.notes
                     for seg in groups[text]:
-                        seg.text_bn = cleaned
+                        seg.text_bn = result.text
+                        seg.translation_issues = list(result.issues)
+                        seg.translation_notes = list(result.notes)
 
         missing = [s for s in segments
                    if not (s.text_bn or "").strip() and normalise_text(s.text_en)]
@@ -225,7 +270,7 @@ class GeminiOperationsMixin:
         recovered = 0
         try:
             self.batch_size = min(4, saved_batch)
-            translations = self._run_batches(items, description="  Retry missing")
+            checked = self._translate_checked(items, description="  Retry missing")
         except Exception as exc:
             logger.warning("উদ্ধার-পাস ব্যর্থ (%s) — ওই লাইনগুলো বাদ দিয়ে এগোনো হচ্ছে।", exc)
             return 0
@@ -233,13 +278,16 @@ class GeminiOperationsMixin:
             self.batch_size = saved_batch
 
         with self._cache_lock:
-            for (text, _duration), translated in zip(items, translations):
-                cleaned = normalise_bangla(translated)
-                if not cleaned:
+            for (text, _duration), result in zip(items, checked):
+                if not result.text:
                     continue
-                self._cache[text] = cleaned
+                if not result.issues:
+                    self._cache[text] = result.text
+                    self._cache_notes[text] = result.notes
                 for seg in by_text[text]:
-                    seg.text_bn = cleaned
+                    seg.text_bn = result.text
+                    seg.translation_issues = list(result.issues)
+                    seg.translation_notes = list(result.notes)
                 recovered += 1
         if recovered:
             logger.info("✅ %dটি লাইন উদ্ধার করা হলো।", recovered)

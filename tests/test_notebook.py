@@ -43,8 +43,13 @@ class TestNotebookRequirements(unittest.TestCase):
         self.assertIn("GEMINI_MAX_INPUT_TOKENS < 1000", full_source)
         self.assertIn("PROXMAX_GEMINI_MAX_INPUT_TOKENS", full_source)
 
-        # TTS concurrency can be adjusted from the Colab processing cell.
+        # TTS concurrency and reprocessing existing outputs can be adjusted.
         self.assertIn("config.tts_concurrency = 5", full_source)
+        self.assertIn("config.skip_existing = False", full_source)
+        self.assertIn('WHISPER_MODEL = "large-v3"', full_source)
+        for index, cell in enumerate(cells):
+            if cell.get("cell_type") == "code":
+                compile("".join(cell.get("source", [])), f"notebook cell {index}", "exec")
 
     def test_every_python_module_is_at_most_400_lines(self):
         excluded = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}

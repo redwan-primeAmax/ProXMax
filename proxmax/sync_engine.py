@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 from . import audio_fx
 from .models import Segment
 from .sync_assembly import SyncAssemblyMixin
+from .sync_cache import PreparedClipCache
 from .utils import ensure_tool, get_logger, run_ffmpeg
 from .sync_math import (
     build_atempo_filter, build_stretch_filter, compute_tempo, find_overlaps, plan_windows,
@@ -79,6 +80,7 @@ class SyncEngine(SyncAssemblyMixin):
         self.silence_pad_ms = max(0, int(silence_pad_ms))
         #: সর্বশেষ রানের পরিসংখ্যান (রিপোর্টে ব্যবহৃত)
         self.last_stats: Dict[str, object] = {}
+        self._prepared_cache = PreparedClipCache()
 
     # ------------------------------------------------------------------
     def _stretch_one(self, seg: Segment, window: Tuple[float, float], out_path: Path) -> Optional[Path]:
@@ -170,7 +172,22 @@ class SyncEngine(SyncAssemblyMixin):
         seg.stretched_audio_path = out_path
         try:
             clip, rate = audio_fx.read_wav(out_path)
-            seg.stretched_duration = clip.size / float(rate or self.sample_rate)
+            rate = int(rate or self.sample_rate)
+            duration = clip.size / float(rate)
+            tolerance = min(0.01, self.slot_gap_seconds / 2.0)
+            if duration > window_length + tolerance:
+                # A stretch filter can itself add padding. Remove only newly
+                # detected edge silence; retain all above-threshold frames and padding.
+                clip, post_head, post_tail = trim_edge_silence_for_overrun(
+                    clip, rate, duration - window_length,
+                    threshold_dbfs=self.silence_threshold_dbfs, pad_ms=self.silence_pad_ms,
+                )
+                if post_head or post_tail:
+                    audio_fx.write_wav(out_path, clip, rate)
+                    seg.sync_trimmed_head_seconds += post_head
+                    seg.sync_trimmed_tail_seconds += post_tail
+                    duration = clip.size / float(rate)
+            seg.stretched_duration = duration
         except Exception:  # pragma: no cover - এইমাত্র লেখা ফাইল
             seg.stretched_duration = fit_duration / max(tempo, 0.01)
         seg.tempo_used = tempo
@@ -228,12 +245,32 @@ class SyncEngine(SyncAssemblyMixin):
             "Sync: %dটি ক্লিপ (tempo সর্বোচ্চ %.2f, workers=%d)…",
             len(usable), self.max_tempo, self.max_workers,
         )
-        jobs = [
-            (seg, windows[i], stretch_dir / f"seg_{seg.index:04d}.wav")
-            for i, seg in enumerate(usable)
-        ]
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            list(pool.map(lambda job: self._stretch_one(*job), jobs))
+        # Retrying a few overlong clips must not rerun FFmpeg for every other
+        # unchanged clip. Exact windows, source/artifact signatures and all fit
+        # settings are checked; loudness and placement are always recalculated.
+        cache = self._prepared_cache
+        cache.begin(stretch_dir)
+        settings = (
+            self.min_tempo, self.max_tempo, self.slow_down_short_clips, self.sample_rate,
+            self.slot_gap_seconds, self.prefer_rubberband, self.fill_extension,
+            self.silence_threshold_dbfs, self.silence_pad_ms,
+        )
+        jobs = []
+        reused = 0
+        for i, seg in enumerate(usable):
+            window = windows[i]
+            path = stretch_dir / f"seg_{seg.index:04d}.wav"
+            key = cache.key(seg, window, settings)
+            if cache.restore(seg, path, key):
+                reused += 1
+            else:
+                jobs.append((seg, window, path, key))
+        if jobs:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+                list(pool.map(lambda job: self._stretch_one(*job[:3]), jobs))
+            for seg, window, path, key in jobs:
+                cache.store(seg, path, key, settings, window)
+        self.last_stats.update({"prepared_reused": reused, "prepared_computed": len(jobs)})
 
         head_trim = sum(s.sync_trimmed_head_seconds for s in usable)
         tail_trim = sum(s.sync_trimmed_tail_seconds for s in usable)

@@ -57,6 +57,10 @@ class Segment:
     is_unit: bool = False
     #: unit হলে তার ভেতরের মূল segment-গুলো (সাবটাইটেলের জন্য দরকার)
     children: List["Segment"] = field(default_factory=list)
+    #: Original Bangla before a measured-fit rewrite, and conservative review signals.
+    original_text_bn: Optional[str] = None
+    translation_issues: List[str] = field(default_factory=list)
+    translation_notes: List[str] = field(default_factory=list)
 
     @property
     def speech_seconds(self) -> float:
@@ -88,6 +92,11 @@ class StageTimings:
     total: float = 0.0
     audio_seconds: float = 0.0
     validation: float = 0.0
+    #: Initial translation+TTS elapsed wall time and the two mux substeps.
+    translate_tts_wall: float = 0.0
+    mux_processing: float = 0.0
+    output_copy: float = 0.0
+    fit_audio_check: float = 0.0
 
     @property
     def realtime_factor(self) -> float:
@@ -97,8 +106,8 @@ class StageTimings:
     def as_text(self) -> str:
         """এক লাইনের সারসংক্ষেপ।"""
         return (
-            f"extract {self.extract:.0f}s | stt {self.stt:.0f}s | translate {self.translate:.0f}s | "
-            f"tts {self.tts:.0f}s | sync {self.sync:.0f}s | mux {self.mux:.0f}s | "
+            f"extract {self.extract:.0f}s | stt {self.stt:.0f}s | translation worker {self.translate:.0f}s | "
+            f"TTS calls {self.tts:.0f}s | sync {self.sync:.0f}s | mux/copy {self.mux:.0f}s | "
             f"মোট {self.total:.0f}s (RTF {self.realtime_factor:.2f})"
         )
 

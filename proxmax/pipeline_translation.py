@@ -6,13 +6,16 @@ import copy
 import queue
 import threading
 import time
+import wave
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Set
 
 from .audio_quality import assess_bengali_coverage
 from .models import Segment
 from .pipeline_helpers import _usable
 from .sync_engine import plan_windows
+from .sync_silence import measured_active_seconds
+from .translation_quality import assess_fit_rewrite
 from .tts.base import TTSError
 from .utils import get_logger
 
@@ -74,7 +77,7 @@ class PipelineTranslationMixin:
         worker = threading.Thread(target=producer, name="proxmax-translate", daemon=True)
         worker.start()
 
-        tts_started = time.perf_counter()
+        tts_seconds = 0.0
         # Combine ready groups to keep TTS slots busy across Gemini batch boundaries.
         # Keep the work bounded so a later translation error is noticed promptly.
         max_ready_segments = max(1, int(cfg.tts_concurrency)) * 4
@@ -100,7 +103,9 @@ class PipelineTranslationMixin:
                     ready.extend(group)
                 if errors:
                     break
+                tts_started = time.perf_counter()
                 self._synthesize(ready, tts_dir)
+                tts_seconds += time.perf_counter() - tts_started
                 # Coalescing must not hide the failure of an entire original group.
                 for group in ready_groups:
                     translated = [s for s in group if (s.text_bn or "").strip()]
@@ -117,7 +122,6 @@ class PipelineTranslationMixin:
         finally:
             stop.set()
             worker.join(timeout=60)
-        tts_seconds = time.perf_counter() - tts_started
 
         if errors:
             first = errors[0]
@@ -132,13 +136,16 @@ class PipelineTranslationMixin:
         tts_dir: Path,
         total_duration: float,
         only_unfit: bool = True,
+        retry_round: int = 1,
+        eligible_indexes: Optional[Set[int]] = None,
     ) -> dict:
         """Shorten only measured clips that remain unfit after edge trim and tempo fitting."""
         ordered = [s for s in sorted(segments, key=lambda item: item.start) if s.tts_audio_path]
         if not ordered:
             return {
-                "checked": 0, "overlong_before": 0, "shortened": 0,
-                "retry_seconds": 0.0, "translation_seconds": 0.0, "tts_seconds": 0.0,
+                "checked": 0, "overlong_before": 0, "overlong_segments": [], "shortened": 0, "shortened_segments": [],
+                "retry_failed": [], "not_shorter_audio": [], "still_unfit_after_sync": [],
+                "retry_seconds": 0.0, "translation_seconds": 0.0, "tts_seconds": 0.0, "audio_check_seconds": 0.0,
             }
         windows = plan_windows(
             ordered,
@@ -151,18 +158,22 @@ class PipelineTranslationMixin:
         for segment, (start, end) in zip(ordered, windows):
             safe_window = max(0.12, end - start - 0.04)
             remains_unfit = "stretched clip exceeds safe window" in (segment.sync_issue or "")
-            if only_unfit and remains_unfit:
+            if only_unfit and remains_unfit and (eligible_indexes is None or segment.index in eligible_indexes):
                 overlong.append(segment)
-                targets.append(max(0.4, safe_window))
+                targets.append(safe_window)
         summary = {
             "checked": len(ordered),
             "overlong_before": len(overlong),
+            "overlong_segments": [int(seg.index) for seg in overlong],
             "shortened": 0,
+            "shortened_segments": [],
             "retry_failed": [],
+            "not_shorter_audio": [],
             "still_unfit_after_sync": [],
             "retry_seconds": 0.0,
             "translation_seconds": 0.0,
             "tts_seconds": 0.0,
+            "audio_check_seconds": 0.0,
         }
         if not only_unfit or not overlong:
             return summary
@@ -174,18 +185,16 @@ class PipelineTranslationMixin:
         shorten = getattr(self.translator, "shorten_to_durations", None)
         if not callable(shorten):
             summary["retry_failed"] = [int(seg.index) for seg in overlong]
+            for segment in overlong:
+                segment.translation_notes.append("Translator has no fit-retry support; prior text/audio retained.")
             return summary
 
-        replacements = [
-            copy.copy(segment) for segment in overlong
-        ]
+        # Keep measured fit metadata while asking for a rewrite, but synthesize
+        # candidates into new files so the original text/audio can be retained.
+        replacements = [copy.copy(segment) for segment in overlong]
         for replacement in replacements:
-            replacement.tts_audio_path = None
-            replacement.tts_duration = None
-            replacement.stretched_audio_path = None
-            replacement.stretched_duration = None
-            replacement.placed_duration = None
-            replacement.sync_issue = None
+            replacement.translation_issues = list(replacement.translation_issues)
+            replacement.translation_notes = list(replacement.translation_notes)
         old_texts = [segment.text_bn for segment in overlong]
         translation_started = time.perf_counter()
         try:
@@ -193,37 +202,84 @@ class PipelineTranslationMixin:
         except Exception as exc:
             logger.warning("মাপা TTS সময়ে অনুবাদ ছোট করার retry ব্যর্থ (%s)।", exc)
             summary["translation_seconds"] = round(time.perf_counter() - translation_started, 3)
+            summary["retry_seconds"] = summary["translation_seconds"]
             summary["retry_failed"] = [int(seg.index) for seg in overlong]
+            for segment in overlong:
+                segment.translation_notes.append("Fit-retry translation failed; prior text and audio retained.")
             return summary
         summary["translation_seconds"] = round(time.perf_counter() - translation_started, 3)
 
-        changed = [
-            i for i, replacement in enumerate(replacements)
-            if (replacement.text_bn or "").strip()
-            and len(replacement.text_bn.strip()) < len(old_texts[i].strip())
-        ]
+        changed = []
+        for i, replacement in enumerate(replacements):
+            original = overlong[i]
+            checked = assess_fit_rewrite(
+                original.text_en, original.original_text_bn or old_texts[i],
+                old_texts[i], replacement.text_bn,
+            )
+            if checked.issues:
+                summary["retry_failed"].append(int(original.index))
+                new_notes = replacement.translation_notes[len(original.translation_notes):]
+                original.translation_notes.extend(new_notes or [
+                    "Fit-retry text rejected; prior text retained: " + "; ".join(checked.issues)
+                ])
+                continue
+            replacement.text_bn = checked.text
+            replacement.tts_audio_path = None
+            replacement.tts_duration = None
+            replacement.stretched_audio_path = None
+            replacement.stretched_duration = None
+            replacement.placed_duration = None
+            replacement.sync_issue = None
+            changed.append(i)
         summary["retry_seconds"] = float(summary["translation_seconds"])
         if changed:
             retry_started = time.perf_counter()
-            retry_dir = tts_dir / "fit_retry"
+            retry_dir = tts_dir / f"fit_retry_{max(1, int(retry_round))}"
             try:
                 self._synthesize([replacements[i] for i in changed], retry_dir)
             except Exception as exc:
+                summary["tts_seconds"] = round(time.perf_counter() - retry_started, 3)
                 logger.warning("সংক্ষিপ্ত text-এর TTS retry ব্যর্থ (%s)। পুরোনো clip থাকবে।", exc)
-                summary["retry_failed"] = [int(overlong[i].index) for i in changed]
+                summary["retry_failed"].extend(int(overlong[i].index) for i in changed)
+                for i in changed:
+                    overlong[i].translation_notes.append("Fit-retry synthesis failed; prior text and audio retained.")
             else:
+                summary["tts_seconds"] = round(time.perf_counter() - retry_started, 3)
+                check_started = time.perf_counter()
                 for i in changed:
                     original, replacement = overlong[i], replacements[i]
-                    if replacement.tts_audio_path and replacement.tts_duration:
-                        original.text_bn = replacement.text_bn
-                        original.tts_audio_path = replacement.tts_audio_path
-                        original.tts_duration = replacement.tts_duration
-                        summary["shortened"] += 1
-                    else:
+                    if not replacement.tts_audio_path or not replacement.tts_duration:
                         summary["retry_failed"].append(int(original.index))
-            summary["tts_seconds"] = round(time.perf_counter() - retry_started, 3)
+                        original.translation_notes.append("Fit-retry synthesis produced no usable clip; prior text/audio retained.")
+                        continue
+                    try:
+                        pad = int(self.config.tts_trim_pad_ms)
+                        old_duration = measured_active_seconds(original.tts_audio_path, pad_ms=pad)
+                        new_duration = measured_active_seconds(replacement.tts_audio_path, pad_ms=pad)
+                    except (OSError, ValueError, RuntimeError, wave.Error, EOFError) as exc:
+                        logger.warning("TTS retry-এর audio মাপা যায়নি (%s); আগের clip রাখা হলো।", exc)
+                        summary["retry_failed"].append(int(original.index))
+                        original.translation_notes.append("Original or fit-retry audio was silent/unreadable; prior text/audio retained.")
+                        continue
+                    if new_duration >= old_duration - 0.005:
+                        summary["not_shorter_audio"].append(int(original.index))
+                        summary["retry_failed"].append(int(original.index))
+                        original.translation_notes.append("Fit-retry audio was not shorter; prior text/audio retained.")
+                        continue
+                    original.original_text_bn = original.original_text_bn or old_texts[i]
+                    original.text_bn = replacement.text_bn
+                    original.tts_audio_path = replacement.tts_audio_path
+                    original.tts_duration = replacement.tts_duration
+                    original.translation_issues = []
+                    original.translation_notes.append(
+                        "Bangla was rewritten after a measured TTS fit failure; review meaning against the source."
+                    )
+                    summary["shortened"] += 1
+                    summary["shortened_segments"].append(int(original.index))
+                summary["audio_check_seconds"] = round(time.perf_counter() - check_started, 3)
             summary["retry_seconds"] = round(
-                float(summary["translation_seconds"]) + float(summary["tts_seconds"]), 3
+                float(summary["translation_seconds"]) + float(summary["tts_seconds"])
+                + float(summary["audio_check_seconds"]), 3
             )
 
         return summary

@@ -69,7 +69,11 @@ class TestPipelineEndToEnd(unittest.TestCase):
             self.assertIsInstance(result.timings, StageTimings)
             self.assertGreater(result.timings.total, 0)
             self.assertGreater(result.timings.tts, 0)
+            self.assertGreater(result.timings.translate_tts_wall, 0)
+            self.assertGreater(result.timings.mux_processing, 0)
+            self.assertGreater(result.timings.output_copy, 0)
             self.assertEqual(result.stats["sync"]["overlaps"], 0)
+            self.assertTrue(result.stats["sync_passes"])
             self.assertIn("stt", result.stats)
 
             # step 4-এ Whisper unload + শেষে সবার release

@@ -51,20 +51,28 @@ class TestTranslatorExpandPass(unittest.TestCase):
         self.assertEqual(seg.text_bn, "খুব ছোট।")
         run.assert_not_called()
 
-    def test_measured_shorten_retry_sends_text_only_paragraphs(self):
+    def test_measured_shorten_retry_includes_source_and_relative_fit_goal(self):
         translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
-        original = "এটি অনেক লম্বা একটি বাংলা অনুবাদ।"
-        seg = Segment(index=0, start=0.0, end=1.0, text_en="x", text_bn=original)
+        original = "এটি একটি দীর্ঘ বাংলা অনুবাদের উদাহরণ।"
+        concise = "এটি দীর্ঘ বাংলা অনুবাদের উদাহরণ।"
+        seg = Segment(index=0, start=0.0, end=1.0,
+                      text_en="This is a long Bangla translation example.", text_bn=original)
+        seg.stretched_duration = 1.0
         captured = {}
 
         def batches(items, instruction, task, description):
             captured.update(items=list(items), instruction=instruction, task=task)
-            return ["ছোট বাক্য।"]
+            return [concise]
 
         with mock.patch.object(translator, "_run_batches", side_effect=batches):
             changed = translator.shorten_to_durations([seg], [0.75])
         self.assertEqual(changed, 1)
-        self.assertEqual(captured["items"], [(original, 0.0)])
-        prompt_text = f"{captured['instruction']} {captured['task']}"
-        self.assertNotRegex(prompt_text.lower(), r"duration|seconds|speaking time")
-        self.assertEqual(seg.text_bn, "ছোট বাক্য।")
+        payload = json.loads(captured["items"][0][0])
+        self.assertEqual(payload["english_source"], seg.text_en)
+        self.assertEqual(payload["current_bangla"], original)
+        self.assertEqual(payload["reference_bangla"], original)
+        self.assertEqual(payload["target_percent"], 75)
+        prompt_text = f"{captured['instruction']} {captured['task']} {captured['items']}"
+        self.assertNotRegex(prompt_text.lower(), r"duration|seconds|speaking time|timestamp")
+        self.assertNotIn("0.75", prompt_text)
+        self.assertEqual(seg.text_bn, concise)

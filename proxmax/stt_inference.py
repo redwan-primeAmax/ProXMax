@@ -248,17 +248,34 @@ class WhisperModelMixin:
 
     @staticmethod
     def _deduplicate_words(words: Sequence[Word]) -> List[Word]:
-        """Collapse repeated words caused by overlap between QA chunks."""
+        """Remove only the same token occupying essentially the same time span.
+
+        Nearby repeated words ("very, very") are not duplicates merely because
+        they are close together. Shared logic covers source STT and QA chunks.
+        """
         ordered = sorted(words, key=lambda word: (word.start, word.end))
         result: List[Word] = []
         for word in ordered:
             token = re.sub(r"[^\w\u0980-\u09FF]+", "", word.word.casefold())
-            if result:
-                previous = result[-1]
-                prev_token = re.sub(r"[^\w\u0980-\u09FF]+", "", previous.word.casefold())
-                if token and token == prev_token and word.start <= previous.end + 0.18:
-                    if (word.probability or 0.0) > (previous.probability or 0.0):
-                        result[-1] = word
+            match = None
+            for index in range(len(result) - 1, -1, -1):
+                previous = result[index]
+                if word.start - previous.start > 2.0:
+                    break
+                if not token or token != re.sub(r"[^\w\u0980-\u09FF]+", "", previous.word.casefold()):
                     continue
-            result.append(word)
-        return result
+                overlap = max(0.0, min(previous.end, word.end) - max(previous.start, word.start))
+                durations = (max(0.0, previous.end - previous.start), max(0.0, word.end - word.start))
+                shorter, longer = min(durations), max(durations)
+                starts_match = abs(previous.start - word.start) < 0.015
+                same_zero_span = shorter == 0.0 and starts_match and abs(previous.end - word.end) < 0.015
+                same_start_overlap = shorter > 0 and starts_match and overlap / shorter >= 0.8
+                similar_spans = longer > 0 and overlap / longer >= 0.8
+                if same_zero_span or same_start_overlap or similar_spans:
+                    match = index
+                    break
+            if match is None:
+                result.append(word)
+            elif (word.probability or 0.0) > (result[match].probability or 0.0):
+                result[match] = word
+        return sorted(result, key=lambda word: (word.start, word.end))

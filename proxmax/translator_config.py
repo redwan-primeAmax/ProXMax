@@ -46,10 +46,14 @@ SYSTEM_INSTRUCTION = (
     "the way Bangla speakers say them (e.g. স্টার পাস, ওভিআর, ব্যালন ডি'অর, মেসি, রোনালদো, "
     "এমবাপ্পে), but do not transliterate ordinary English verbs (translate 'giveaway' "
     "as ভাগ করে দেওয়া/উপহার, not গিভঅ্যাওয়ে). "
-    "4) Numbers should be written so a Bangladeshi Bangla voice can pronounce them "
-    "naturally; preserve their exact value. "
+    "4) Preserve all numbers and their exact value. Copy every number written as "
+    "digits in the input as the same digits (Bangla or ASCII digits) in the output; "
+    "never drop a digit, round it, or replace it with a different value. "
     "5) Use conversational Bangla as spoken by young Bangladeshi speakers, with "
-    "natural rhythm and no literary or overly formal wording. "
+    "natural rhythm and no literary or overly formal wording. Translate idioms and "
+    "forms of address by meaning; 'ladies and gentlemen' is a greeting to an audience, "
+    "not a person's name. Do not mistake ordinary words for names. "
+    "Use Bangla script for Bangla words; do not mix in unrelated scripts or stray characters. "
     "6) If a paragraph is already Bangla or empty, return it as is. "
     "Return only the translations in the requested structured format, preserving IDs."
 )
@@ -60,12 +64,15 @@ EXPAND_INSTRUCTION = (
 )
 
 SHORTEN_INSTRUCTION = (
-    "Make each Bengali (Bangla) dubbing paragraph more concise while preserving its "
-    "meaning, tone, numbers, names, and all key facts. Remove filler and prefer shorter "
-    "everyday wording. Preserve each paragraph ID. Do not complete a fragment, add "
-    "information, or borrow content from another paragraph. Do not merge or split "
-    "paragraphs. Return exactly one shortened Bangla paragraph for every input ID, "
-    "with no timestamps or explanations."
+    "Each labeled paragraph contains its English source and current Bangla translation. "
+    "Use the source as evidence and rewrite the Bangla more concisely only if all "
+    "meaning, names, numbers, negation, and key facts remain intact. Prefer natural "
+    "Bangladeshi spoken wording and Bangla script; remove filler, not information. "
+    "An optional target percentage is a rough length goal, not permission to omit "
+    "content; return the original Bangla unchanged if it cannot be safely shortened. "
+    "Keep all source digits unchanged. Do not complete a fragment, add information, "
+    "or borrow from another paragraph. Preserve every ID; do not merge or split. "
+    "Return only the Bangla translation for each ID, with no explanations."
 )
 
 _RESPONSE_SCHEMA: Dict[str, Any] = {
