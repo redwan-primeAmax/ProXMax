@@ -117,7 +117,7 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "gemini_input_token_budget": getattr(config, "gemini_max_input_tokens", None),
             "gemini_max_paragraphs_per_request": getattr(config, "gemini_batch_size", None),
             "pre_tts_duration_prediction": False,
-            "shorten_retry_policy": "only after measured TTS, edge-silence trim, and allowed tempo fit",
+            "shorten_retry_policy": "source-aware after measured TTS, edge-silence trim, and allowed tempo fit; at most two rounds",
             "text_expansion_to_fill_gaps": False,
         },
         "TTS": {
@@ -137,8 +137,12 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "borrow_silence_ms": getattr(config, "borrow_silence_ms", None),
             "fill_extension": getattr(config, "fill_extension", None),
             "sample_rate": getattr(config, "sync_sample_rate", None),
+            "reuse_unchanged_prepared_clips": True,
         },
         "Quality": {
+            "gemini_translation_checks": "explicit numbers and unexpected scripts; not semantic validation"
+            if getattr(config, "translator_backend", None) == "gemini" else "not applied by this backend",
+            "source_word_review_probability_below": 0.35,
             "post_mux_bengali_asr_validation": getattr(config, "validate_dub_audio", None),
             "minimum_text_coverage": getattr(config, "audio_validation_min_coverage", None),
         },

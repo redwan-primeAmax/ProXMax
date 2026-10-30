@@ -14,7 +14,7 @@ from .reporting_media import (
     _media_section, _probe_media, _safe_config, _window_rms,
 )
 from .reporting_timeline import (
-    _quality_warnings, _render_unit, _sync_windows, _unit_children, _unit_timing_rows,
+    _low_confidence_words, _quality_warnings, _render_unit, _sync_windows, _unit_children, _unit_timing_rows,
 )
 
 def write_detailed_report(
@@ -53,6 +53,10 @@ def write_detailed_report(
     translated_units = sum(bool((unit.text_bn or "").strip()) for unit in segments)
     tts_units = sum(bool(unit.tts_audio_path) for unit in segments)
     placed_units = sum(unit.placed_duration is not None for unit in segments)
+    translation_issues = sum(bool(unit.translation_issues) for unit in segments)
+    translation_notes = sum(bool(unit.translation_notes) for unit in segments)
+    rewritten_units = sum(bool(unit.original_text_bn) for unit in segments)
+    low_confidence_units = sum(bool(_low_confidence_words(unit)) for unit in segments)
     warnings = _quality_warnings(rows, data)
 
     source_format = source_info.get("format", {}) if not source_info.get("error") else {}
@@ -86,6 +90,10 @@ def write_detailed_report(
         f"(source {source_container_text}; dubbed {output_container_text}).",
         f"- **Transcript units:** {len(segments)}; **source STT pieces:** {len(children)}; "
         f"**translated units:** {translated_units}; **units with TTS clips:** {tts_units}; **placed units:** {placed_units}.",
+        f"- **Source transcription review:** {low_confidence_units} units have at least one recognizer word probability below 0.35. Confidence is an uncalibrated review cue, not proof of an error or accuracy.",
+        f"- **Translation review:** {translation_issues} units with unresolved number/script signals; "
+        f"{translation_notes} with automatic-correction or fit-retry notes; {rewritten_units} rewritten for fit. "
+        "These limited checks do not verify meaning, names, or naturalness.",
         f"- **Approximate generated speech:** {float((data.get('sync') or {}).get('speech_seconds', 0.0) or 0.0):.2f} s; "
         f"**remaining track silence:** {float((data.get('sync') or {}).get('silence_seconds', 0.0) or 0.0):.2f} s "
         "(includes intentional source pauses and any unfilled windows; not all is an error).",
@@ -105,14 +113,22 @@ def write_detailed_report(
     lines += ["", "## Pipeline stage timings", ""]
     if timings is not None:
         lines += [
+            "Translation and TTS can overlap; their worker/call times include fit retries and must not be added to obtain total elapsed time. TTS call time excludes waiting for translation queue items. The initial combined elapsed time excludes later fit retries.",
+            "",
             "| Stage | Wall time (s) |",
             "|---|---:|",
             f"| Audio extraction | {timings.extract:.3f} |",
             f"| Speech recognition | {timings.stt:.3f} |",
-            f"| Translation | {timings.translate:.3f} |",
-            f"| TTS synthesis | {timings.tts:.3f} |",
-            f"| Sync / waveform assembly | {timings.sync:.3f} |",
-            f"| Mux / copy | {timings.mux:.3f} |",
+            f"| Translation worker, including fit retries | {timings.translate:.3f} |",
+            f"| TTS calls, including fit retries | {timings.tts:.3f} |",
+            f"| Initial translation + TTS combined elapsed | {timings.translate_tts_wall:.3f} |",
+            f"| Fit-retry translation | {float((data.get('tts_fit_retry') or {}).get('translation_seconds', 0.0)):.3f} |",
+            f"| Fit-retry TTS | {float((data.get('tts_fit_retry') or {}).get('tts_seconds', 0.0)):.3f} |",
+            f"| Fit-retry audio comparison | {timings.fit_audio_check:.3f} |",
+            f"| Sync / waveform assembly, excluding fit requests and comparison | {timings.sync:.3f} |",
+            f"| Mux / copy combined | {timings.mux:.3f} |",
+            f"| Mux processing | {timings.mux_processing:.3f} |",
+            f"| Output file copy | {timings.output_copy:.3f} |",
             f"| Post-mux speech validation | {timings.validation:.3f} |",
             f"| Processing total before report rendering | {timings.total:.3f} |",
             f"| Audio duration | {timings.audio_seconds:.3f} |",

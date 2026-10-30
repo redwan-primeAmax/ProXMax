@@ -156,9 +156,15 @@ class SpeechToText(WhisperModelMixin):
         if not words:
             raise ValueError("অডিওতে কোনো English speech পাওয়া যায়নি। ভিডিওটিতে কথা আছে তো?")
 
+        before_dedup = len(words)
+        words = self._deduplicate_words(words)
+        duplicates_removed = before_dedup - len(words)
         repaired = 0
         if self.seam_repair_enabled and len(chunks) > 1:
             words, repaired = self._repair_seams(words, audio, sample_rate, chunks)
+            before_dedup = len(words)
+            words = self._deduplicate_words(words)
+            duplicates_removed += before_dedup - len(words)
 
         segments = build_sentences(words, max_seconds=self.sentence_max_seconds)
         if not segments:
@@ -179,6 +185,7 @@ class SpeechToText(WhisperModelMixin):
             "words": len(words),
             "sentences": len(segments),
             "seam_repairs": repaired,
+            "overlapping_duplicate_words_removed": duplicates_removed,
             "decoder_retries_without_hotwords": self._prompt_fallback_stats["without_hotwords"],
             "decoder_retries_without_context": self._prompt_fallback_stats["without_context"],
             "device": self.device,
@@ -229,8 +236,10 @@ class SpeechToText(WhisperModelMixin):
                 continue
             if not new_words:
                 continue
-            repaired_words = replace_in_window(repaired_words, new_words, start, end)
-            repaired += 1
+            candidate = replace_in_window(repaired_words, new_words, start, end)
+            if candidate != repaired_words:
+                repaired_words = candidate
+                repaired += 1
         return repaired_words, repaired
 
 

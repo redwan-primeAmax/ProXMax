@@ -16,9 +16,9 @@ def trim_edge_silence_for_overrun(
 ) -> Tuple[np.ndarray, float, float]:
     """Remove only edge silence, taking from the tail before the head.
 
-    The requested trim is capped by silence detected outside the active speech
-    frames. Internal pauses and the final/initial voiced frames are preserved.
-    Returns ``(audio, head_seconds, tail_seconds)``.
+    The requested trim is capped by detected silence outside above-threshold
+    frames and padding; internal pauses are preserved. Very quiet speech may be
+    misclassified as silence. Returns ``(audio, head_seconds, tail_seconds)``.
     """
     samples = np.asarray(audio, dtype=np.float32)
     rate = int(sample_rate)
@@ -55,3 +55,24 @@ def trim_edge_silence_for_overrun(
         trim_head / float(rate),
         trim_tail / float(rate),
     )
+
+
+def measured_active_seconds(path, pad_ms: int = 25, threshold_dbfs: float = -45.0) -> float:
+    """Measure the clip span after removing only detected edge silence.
+
+    Used to compare a fit-retry clip with its original; it does not alter either
+    file. Internal pauses and the protected edge padding remain intact.
+    """
+    from .audio_fx import read_wav
+
+    audio, rate = read_wav(path)
+    if rate <= 0:
+        raise ValueError("Invalid audio sample rate")
+    threshold = float(10.0 ** (float(threshold_dbfs) / 20.0))
+    if audio.size == 0 or not np.any(np.abs(audio) > threshold):
+        raise ValueError("Audio contains no detectable active frames")
+    duration = audio.size / float(rate)
+    trimmed, _, _ = trim_edge_silence_for_overrun(
+        audio, rate, duration, threshold_dbfs=threshold_dbfs, pad_ms=pad_ms
+    )
+    return trimmed.size / float(rate)

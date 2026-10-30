@@ -208,7 +208,7 @@ class TestNoSentenceTruncation(unittest.TestCase):
                 self.calls += 1
                 self.targets = list(targets)
                 for item in segments:
-                    item.text_bn = "ছোট বাক্য।"
+                    item.text_bn = "এটি লম্বা অনুবাদ।"
                 return len(segments)
 
         class TinyTTS:
@@ -217,15 +217,17 @@ class TestNoSentenceTruncation(unittest.TestCase):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 for item in segments:
                     path = output_dir / f"seg_{item.index:04d}.wav"
-                    audio_fx.write_wav(path, np.zeros(24000, dtype=np.float32), 24000)
+                    t = np.arange(24000, dtype=np.float32) / 24000
+                    audio_fx.write_wav(path, .1 * np.sin(2 * np.pi * 330 * t), 24000)
                     item.tts_audio_path = path
                     item.tts_duration = 0.6
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             original_audio = root / "long.wav"
-            audio_fx.write_wav(original_audio, np.zeros(72000, dtype=np.float32), 24000)
-            segment = Segment(index=0, start=0.0, end=1.0, text_en="Long line", text_bn="অনেক লম্বা অনুবাদ।")
+            t = np.arange(72000, dtype=np.float32) / 24000
+            audio_fx.write_wav(original_audio, .1 * np.sin(2 * np.pi * 330 * t), 24000)
+            segment = Segment(index=0, start=0.0, end=1.0, text_en="Long line", text_bn="এটি অনেক লম্বা অনুবাদ।")
             segment.tts_audio_path = original_audio
             segment.tts_duration = 3.0
             pipeline = DubbingPipeline.__new__(DubbingPipeline)
@@ -243,5 +245,6 @@ class TestNoSentenceTruncation(unittest.TestCase):
             result = pipeline._repair_overlong_tts([segment], root / "tts", 2.0)
             self.assertEqual(result["overlong_before"], 1)
             self.assertEqual(result["shortened"], 1)
-            self.assertEqual(segment.text_bn, "ছোট বাক্য।")
+            self.assertEqual(segment.text_bn, "এটি লম্বা অনুবাদ।")
+            self.assertEqual(segment.original_text_bn, "এটি অনেক লম্বা অনুবাদ।")
             self.assertAlmostEqual(segment.tts_duration, 0.6)

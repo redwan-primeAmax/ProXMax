@@ -116,6 +116,7 @@ class GeminiTranslator(
         self._client_lock = threading.Lock()
         self._rate_limiter = _RateLimiter(self.requests_per_minute)
         self._cache: Dict[str, str] = {}
+        self._cache_notes: Dict[str, Tuple[str, ...]] = {}
         self._cache_lock = threading.Lock()
         self._api_calls = 0
 

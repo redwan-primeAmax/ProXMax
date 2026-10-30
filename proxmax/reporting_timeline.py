@@ -14,6 +14,19 @@ def _unit_children(unit: Segment) -> List[Segment]:
     children = list(getattr(unit, "children", []) or [])
     return children if children else [unit]
 
+
+def _low_confidence_words(unit: Segment) -> list:
+    words = list(unit.words or []) or [word for child in _unit_children(unit) for word in (child.words or [])]
+    result = []
+    for word in words:
+        try:
+            if word.probability is not None and float(word.probability) < 0.35:
+                result.append(word)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def _sync_windows(segments: Sequence[Segment], total_duration: float, config: Any) -> Dict[int, Tuple[float, float]]:
     usable = [segment for segment in sorted(segments, key=lambda s: s.start) if segment.tts_audio_path]
     if not usable:
@@ -120,6 +133,17 @@ def _render_unit(
     )
     lines.append(f"- **English transcript:** {_md(unit.text_en or '')}")
     lines.append(f"- **Bengali translation:** {_md(unit.text_bn or '') if (unit.text_bn or '').strip() else '**MISSING**'}")
+    if unit.original_text_bn and unit.original_text_bn != unit.text_bn:
+        lines.append(f"- **Original Bengali before fit rewrite:** {_md(unit.original_text_bn)}")
+    for issue in unit.translation_issues:
+        lines.append(f"- **Translation review issue:** {_md(issue)}")
+    for note in unit.translation_notes:
+        lines.append(f"- **Translation review note:** {_md(note)}")
+    uncertain = _low_confidence_words(unit)
+    if uncertain:
+        examples = ", ".join(f"{_md(word.word.strip())} ({_fmt_seconds(word.start)})" for word in uncertain[:5])
+        suffix = " …" if len(uncertain) > 5 else ""
+        lines.append(f"- **Low-confidence source words (review cues, not proof):** {examples}{suffix}")
 
     children = _unit_children(unit)
     lines.append("- **Original STT sentence/cue pieces:**")
@@ -160,6 +184,13 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
         label = f"Unit {int(row['number']):03d} ({_fmt_seconds(unit.start)}–{_fmt_seconds(unit.end)})"
         if not (unit.text_bn or "").strip():
             warnings.append(f"{label}: Bengali translation is empty.")
+        uncertain = _low_confidence_words(unit)
+        if uncertain:
+            warnings.append(f"{label}: {len(uncertain)} source word(s) have recognizer probability below 0.35; listen to the source.")
+        for issue in unit.translation_issues:
+            warnings.append(f"{label}: translation review needed: {issue}.")
+        if unit.translation_notes:
+            warnings.append(f"{label}: translation or fit-retry note; compare with the source.")
         if getattr(unit, "sync_issue", None):
             warnings.append(f"{label}: sync did not place this full clip: {unit.sync_issue}.")
         if (unit.text_bn or "").strip() and not unit.tts_audio_path:
@@ -172,7 +203,7 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
             warnings.append(f"{label}: approximately {trimmed:.3f} s exceeded the placed duration; listen for fit issues.")
         if edge_trimmed > 0.08:
             warnings.append(
-                f"{label}: {edge_trimmed:.3f} s of detected leading/trailing silence was removed; speech frames were preserved by the edge-silence heuristic."
+                f"{label}: {edge_trimmed:.3f} s of detected leading/trailing silence was removed; above-threshold frames and padding were retained, but quiet speech can be misclassified."
             )
         tempo = float(row.get("tempo") or 1.0)
         if tempo > 1.10:

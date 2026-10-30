@@ -222,6 +222,7 @@ class PipelineProcessingMixin:
                     "একটি segment-এরও Bangla অডিও তৈরি হয়নি — TTS ইঞ্জিন যাচাই করুন।"
                 )
 
+        timings.translate_tts_wall = time.perf_counter() - marker
         timings.translate = translate_seconds
         timings.tts = tts_seconds
         stats["tts"] = {
@@ -237,20 +238,58 @@ class PipelineProcessingMixin:
             "translation_seconds": 0.0, "tts_seconds": 0.0,
         }
         with self._step(4, "Audio-Video Sync (silence-fit + tempo 0.90×–1.15×)"):
-            final_audio = self.sync_engine.build_final_track(
-                segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
-            )
-            stats["sync"] = dict(getattr(self.sync_engine, "last_stats", {}) or {})
-            if int(stats["sync"].get("unplaced", 0) or 0):
-                fit_stats = self._repair_overlong_tts(
-                    segments, tts_dir, total_duration, only_unfit=True
+            sync_passes = []
+
+            def build_track():
+                started = time.perf_counter()
+                output = self.sync_engine.build_final_track(
+                    segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
                 )
-                if fit_stats["shortened"]:
-                    final_audio = self.sync_engine.build_final_track(
-                        segments, total_duration, work_dir, work_dir / "final_audio_bn.wav"
-                    )
-                    stats["sync"] = dict(getattr(self.sync_engine, "last_stats", {}) or {})
-            if fit_stats["overlong_before"]:
+                current = dict(getattr(self.sync_engine, "last_stats", {}) or {})
+                stats["sync"] = current
+                sync_passes.append({
+                    "seconds": round(time.perf_counter() - started, 3),
+                    "unplaced": int(current.get("unplaced", 0) or 0),
+                    "prepared_reused": int(current.get("prepared_reused", 0) or 0),
+                    "prepared_computed": int(current.get("prepared_computed", 0) or 0),
+                })
+                return output
+
+            final_audio = build_track()
+            rounds = []
+            eligible = None
+            for retry_round in (1, 2):
+                if not int(stats["sync"].get("unplaced", 0) or 0):
+                    break
+                result = self._repair_overlong_tts(
+                    segments, tts_dir, total_duration, only_unfit=True,
+                    retry_round=retry_round, eligible_indexes=eligible,
+                )
+                if result["overlong_before"]:
+                    rounds.append(result)
+                if result["shortened"]:
+                    eligible = set(result["shortened_segments"])
+                    final_audio = build_track()
+                result["still_unfit_after_sync"] = [
+                    int(segment.index) for segment in segments
+                    if segment.index in result["overlong_segments"]
+                    and "stretched clip exceeds safe window" in (segment.sync_issue or "")
+                ]
+                if not result["shortened"]:
+                    break
+            stats["sync_passes"] = sync_passes
+            if rounds:
+                fit_stats = dict(rounds[0])
+                fit_stats["rounds"] = rounds
+                fit_stats["shortened"] = sum(item["shortened"] for item in rounds)
+                fit_stats["translation_seconds"] = round(sum(item["translation_seconds"] for item in rounds), 3)
+                fit_stats["tts_seconds"] = round(sum(item["tts_seconds"] for item in rounds), 3)
+                fit_stats["audio_check_seconds"] = round(sum(item["audio_check_seconds"] for item in rounds), 3)
+                fit_stats["retry_seconds"] = round(
+                    fit_stats["translation_seconds"] + fit_stats["tts_seconds"] + fit_stats["audio_check_seconds"], 3
+                )
+                fit_stats["retry_failed"] = sorted({index for item in rounds for index in item["retry_failed"]})
+                fit_stats["not_shorter_audio"] = sorted({index for item in rounds for index in item["not_shorter_audio"]})
                 fit_stats["still_unfit_after_sync"] = [
                     int(issue.get("segment_index", -1))
                     for issue in stats["sync"].get("sync_issues", [])
@@ -267,9 +306,10 @@ class PipelineProcessingMixin:
 
         retry_translation = float(fit_stats.get("translation_seconds", 0.0))
         retry_tts = float(fit_stats.get("tts_seconds", 0.0))
+        timings.fit_audio_check = float(fit_stats.get("audio_check_seconds", 0.0))
         timings.translate += retry_translation
         timings.tts += retry_tts
-        timings.sync = max(0.0, time.perf_counter() - marker - retry_translation - retry_tts)
+        timings.sync = max(0.0, time.perf_counter() - marker - retry_translation - retry_tts - timings.fit_audio_check)
         if fit_stats.get("shortened"):
             stats["tts"]["total_audio_seconds"] = round(
                 sum(float(s.tts_duration or 0.0) for s in synthesized), 2
@@ -279,9 +319,13 @@ class PipelineProcessingMixin:
         marker = time.perf_counter()
         with self._step(5, "Final Muxing (ভিডিও + Bangla অডিও)"):
             local_output = work_dir / output_filename_for(video_path)
+            mux_started = time.perf_counter()
             self.muxer.mux(video_path, final_audio, local_output)
+            timings.mux_processing = time.perf_counter() - mux_started
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            copy_started = time.perf_counter()
             shutil.copy2(local_output, output_path)
+            timings.output_copy = time.perf_counter() - copy_started
             logger.info("আউটপুট সেভ হয়েছে: %s", output_path)
         timings.mux = time.perf_counter() - marker
 
