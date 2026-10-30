@@ -110,10 +110,10 @@ def validate_config(config):
     if int(self.tts_concurrency) < 1:
         raise ValueError("tts_concurrency অন্তত 1 হতে হবে।")
 
-    if not (0.90 <= self.min_tempo <= 1.0 < self.max_tempo <= 1.15):
+    if not (0.90 <= self.min_tempo <= 1.0 < self.max_tempo <= 1.20):
         raise ValueError(
             f"tempo সীমা অবৈধ: min_tempo={self.min_tempo}, max_tempo={self.max_tempo} "
-            f"(শর্ত: 0.90 <= min_tempo <= 1 < max_tempo <= 1.15)"
+            f"(শর্ত: 0.90 <= min_tempo <= 1 < max_tempo <= 1.20)"
         )
     if self.slot_gap_ms < 0 or self.borrow_silence_ms < 0:
         raise ValueError("slot_gap_ms ও borrow_silence_ms ঋণাত্মক হতে পারবে না।")

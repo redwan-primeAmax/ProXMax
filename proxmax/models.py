@@ -61,6 +61,11 @@ class Segment:
     original_text_bn: Optional[str] = None
     translation_issues: List[str] = field(default_factory=list)
     translation_notes: List[str] = field(default_factory=list)
+    #: End-first fitting also removes eligible interior pauses; retain audit data.
+    sync_trimmed_internal_seconds: float = 0.0
+    sync_trimmed_internal_cuts: int = 0
+    #: A valid waveform was measured at the configured speed cap before rewrite.
+    sync_tempo_cap_measured: bool = False
 
     @property
     def speech_seconds(self) -> float:

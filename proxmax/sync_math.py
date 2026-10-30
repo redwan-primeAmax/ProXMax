@@ -67,7 +67,7 @@ def compute_tempo(
     tts_duration: float,
     target_duration: float,
     min_tempo: float = 0.90,
-    max_tempo: float = 1.15,
+    max_tempo: float = 1.20,
     slow_down_short_clips: bool = True,
     fill_extension: float = 0.0,
     fill_gap_seconds: float = 0.05,
@@ -82,7 +82,7 @@ def compute_tempo(
     the preferred slowdown behavior.
     """
     min_tempo = min(1.0, max(0.90, float(min_tempo)))
-    max_tempo = max(1.0, min(1.15, float(max_tempo)))
+    max_tempo = max(1.0, min(1.20, float(max_tempo)))
     if tts_duration <= 0 or target_duration <= 0:
         return 1.0
     tempo = tts_duration / target_duration

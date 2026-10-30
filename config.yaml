@@ -86,7 +86,7 @@ tts:
   gender: "male"
   # gender=custom হলেই কেবল এই ভয়েস ব্যবহার হয়
   voice: ""
-  # পূর্ণ edge trim বন্ধ; overrun হলে sync-এ শুধু প্রয়োজনীয় silence (tail first) বাদ যায়
+  # পূর্ণ edge trim বন্ধ; overrun হলে sync-এ শেষ থেকে প্রয়োজনীয় silence বাদ যায়
   trim_silence: false
   trim_pad_ms: 25
   rate: "+0%"
@@ -99,7 +99,7 @@ tts:
 sync:
   # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
   min_tempo: 0.90           # সর্বোচ্চ ১০% ধীর; এর বেশি করা হবে না
-  max_tempo: 1.15           # সর্বোচ্চ ১৫% দ্রুত; ১× রাখা অগ্রাধিকার
+  max_tempo: 1.20           # সর্বোচ্চ ২০% দ্রুত; ১× রাখা অগ্রাধিকার
   fill_extension: 0.12      # legacy fallback; slow_down_short_clips চালু থাকলে ব্যবহৃত হয় না
   slow_down_short_clips: true
   slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক

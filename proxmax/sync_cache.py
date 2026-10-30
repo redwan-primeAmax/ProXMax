@@ -52,11 +52,18 @@ class PreparedClipCache:
         segment.sync_overrun_before_seconds = metadata["sync_overrun_before_seconds"]
         segment.sync_trimmed_head_seconds = metadata["sync_trimmed_head_seconds"]
         segment.sync_trimmed_tail_seconds = metadata["sync_trimmed_tail_seconds"]
+        segment.sync_trimmed_internal_seconds = metadata["sync_trimmed_internal_seconds"]
+        segment.sync_trimmed_internal_cuts = metadata["sync_trimmed_internal_cuts"]
+        segment.sync_tempo_cap_measured = metadata["sync_tempo_cap_measured"]
         return True
 
     def store(self, segment: Segment, out_path: Path, key: Optional[tuple], settings: tuple, window: tuple) -> None:
         artifact = _file_signature(out_path)
         if not key or not artifact or segment.stretched_audio_path != out_path:
+            return
+        # An unmeasured cap may be a transient FFmpeg failure; retry next build.
+        if (not segment.sync_tempo_cap_measured and segment.stretched_duration is not None
+                and segment.stretched_duration > max(0.0, window[1] - window[0])):
             return
         if key != self.key(segment, window, settings):  # source changed during preparation
             return
@@ -64,6 +71,7 @@ class PreparedClipCache:
             name: getattr(segment, name) for name in (
                 "tts_duration", "stretched_duration", "tempo_used",
                 "sync_overrun_before_seconds", "sync_trimmed_head_seconds", "sync_trimmed_tail_seconds",
+                "sync_trimmed_internal_seconds", "sync_trimmed_internal_cuts", "sync_tempo_cap_measured",
             )
         }
         self._entries[str(out_path.resolve())] = (key, artifact, metadata)

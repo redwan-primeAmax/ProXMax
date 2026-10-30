@@ -7,9 +7,9 @@
    স্লটের চেয়ে লম্বা হলে সে পরের বাক্যের উপর চড়ে যেত। এখন প্রতিটি
    ক্লিপের জন্য একটি **কঠোর উইন্ডো** হিসাব হয় (পরের ক্লিপ শুরুর
    আগেই শেষ), আর বসানোর আগে ওভারল্যাপ গাণিতিকভাবে যাচাই করা হয়।
-2. **রোবটে/ধাতব কণ্ঠ ও বাক্য-কাটা** — tempo ০.৯০×–১.১৫× সীমায় থাকে; আগে
-   edge silence tail-first/head-second trim হয়, তারপর measured TTS সময়কে window-তে
-   fit করার চেষ্টা হয়। Pipeline কেবল এরপরও unfit clip-এর translation/TTS retry করে;
+2. **রোবটে/ধাতব কণ্ঠ ও বাক্য-কাটা** — tempo ০.৯০×–১.২০× সীমায় থাকে; আগে
+   শেষ থেকে শুরু পর্যন্ত শনাক্ত silence প্রয়োজনমতো trim হয়, তারপর measured TTS সময়কে
+   window-তে fit করার চেষ্টা হয়। সর্বোচ্চ tempo মাপার পরও unfit হলে translation/TTS retry হয়;
    তবুও না আঁটলে sentence tail কাটার বদলে clip-টি বাদ দিয়ে review flag হয়।
    ``rubberband`` থাকলে pitch/formant-সহ time-stretch হয়।
 
@@ -23,16 +23,20 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 
 from . import audio_fx
 from .models import Segment
 from .sync_assembly import SyncAssemblyMixin
 from .sync_cache import PreparedClipCache
+from .sync_cap_retry import retry_at_tempo_cap, suspicious_stretch_shortfall
 from .utils import ensure_tool, get_logger, run_ffmpeg
 from .sync_math import (
     build_atempo_filter, build_stretch_filter, compute_tempo, find_overlaps, plan_windows,
 )
-from .sync_silence import trim_edge_silence_for_overrun
+from .sync_silence import (
+    CONSERVATIVE_SILENCE_DBFS, trim_edge_silence_for_overrun, trim_silence_for_overrun,
+)
 
 logger = get_logger(__name__)
 
@@ -43,7 +47,7 @@ class SyncEngine(SyncAssemblyMixin):
     def __init__(
         self,
         min_tempo: float = 0.90,
-        max_tempo: float = 1.15,
+        max_tempo: float = 1.20,
         slow_down_short_clips: bool = True,
         sample_rate: int = 24000,
         max_workers: int = 4,
@@ -56,7 +60,7 @@ class SyncEngine(SyncAssemblyMixin):
     ) -> None:
         """Args:
             min_tempo: ধীর করার সর্বনিম্ন সীমা (ডিফল্ট ০.৯০×)।
-            max_tempo: দ্রুত করার সর্বোচ্চ সীমা (ডিফল্ট ১.১৫×)।
+            max_tempo: দ্রুত করার সর্বোচ্চ সীমা (ডিফল্ট ১.২০×)।
             slow_down_short_clips: ছোট ক্লিপ সর্বোচ্চ ০.৯০× পর্যন্ত ধীর হবে কি না।
             sample_rate: চূড়ান্ত ট্র্যাকের sample rate।
             max_workers: সমান্তরাল ffmpeg প্রসেস।
@@ -64,11 +68,11 @@ class SyncEngine(SyncAssemblyMixin):
             borrow_silence_ms: পরের নীরবতা থেকে সর্বোচ্চ কত ধার নেওয়া যাবে।
             prefer_rubberband: ffmpeg-এ থাকলে rubberband ব্যবহার করা হবে।
             fill_extension: legacy extension parameter (short clips use min_tempo).
-            silence_threshold_dbfs: edge silence শনাক্ত করার threshold.
-            silence_pad_ms: কথা শুরুর/শেষের পাশে যে padding অক্ষত থাকবে।
+            silence_threshold_dbfs: silence শনাক্ত করার threshold (সর্বোচ্চ −55 dBFS)।
+            silence_pad_ms: শনাক্ত কথার চারপাশে যে padding অক্ষত থাকবে।
         """
         self.min_tempo = min(1.0, max(0.90, float(min_tempo)))
-        self.max_tempo = max(1.0, min(1.15, float(max_tempo)))
+        self.max_tempo = max(1.0, min(1.20, float(max_tempo)))
         self.slow_down_short_clips = bool(slow_down_short_clips)
         self.sample_rate = int(sample_rate)
         self.max_workers = max(1, int(max_workers))
@@ -84,7 +88,8 @@ class SyncEngine(SyncAssemblyMixin):
 
     # ------------------------------------------------------------------
     def _stretch_one(self, seg: Segment, window: Tuple[float, float], out_path: Path) -> Optional[Path]:
-        """Trim edge silence, then fit one clip within the configured tempo limits."""
+        """Trim detected silence end-first, then fit within configured tempo limits."""
+        self.max_tempo = max(1.0, min(1.20, float(self.max_tempo)))
         source = Path(seg.tts_audio_path) if seg.tts_audio_path else None
         if source is None or not source.is_file():
             seg.sync_issue = "TTS audio file missing"
@@ -99,30 +104,39 @@ class SyncEngine(SyncAssemblyMixin):
         rate = int(rate or self.sample_rate)
         raw_duration = clip.size / float(rate)
         seg.tts_duration = raw_duration
-        window_length = max(0.12, window[1] - window[0])
+        window_length = window[1] - window[0]
+        if window_length <= 0:
+            seg.sync_issue = "sync window has no positive duration; clip left unplaced"
+            return None
         overrun = max(0.0, raw_duration - window_length)
         seg.sync_overrun_before_seconds = overrun
         seg.sync_trimmed_head_seconds = 0.0
         seg.sync_trimmed_tail_seconds = 0.0
-        if overrun > 0.001:
+        seg.sync_trimmed_internal_seconds = 0.0
+        seg.sync_trimmed_internal_cuts = 0
+        seg.sync_tempo_cap_measured = False
+        if overrun > 0.5 / rate:
             logger.info(
-                "Segment %d overrun: %.3fs (TTS %.3fs, window %.3fs); tail silence আগে scan/trim করা হচ্ছে।",
+                "Segment %d overrun: %.3fs (TTS %.3fs, window %.3fs); শেষ থেকে silence scan/trim।",
                 seg.index, overrun, raw_duration, window_length,
             )
-            clip, trim_head, trim_tail = trim_edge_silence_for_overrun(
+            trimmed = trim_silence_for_overrun(
                 clip, rate, overrun,
-                threshold_dbfs=self.silence_threshold_dbfs,
-                pad_ms=self.silence_pad_ms,
+                threshold_dbfs=self.silence_threshold_dbfs, pad_ms=self.silence_pad_ms,
             )
-            seg.sync_trimmed_head_seconds = trim_head
-            seg.sync_trimmed_tail_seconds = trim_tail
-            if trim_head or trim_tail:
-                prepared = out_path.with_name(f"{out_path.stem}_edge_trimmed.wav")
+            clip = trimmed.audio
+            seg.sync_trimmed_head_seconds = trimmed.head_seconds
+            seg.sync_trimmed_internal_seconds = trimmed.internal_seconds
+            seg.sync_trimmed_internal_cuts = trimmed.internal_cuts
+            seg.sync_trimmed_tail_seconds = trimmed.tail_seconds
+            if trimmed.head_seconds or trimmed.internal_seconds or trimmed.tail_seconds:
+                prepared = out_path.with_name(f"{out_path.stem}_silence_trimmed.wav")
                 audio_fx.write_wav(prepared, clip, rate)
                 source = prepared
                 logger.info(
-                    "Segment %d: trailing silence %.3fs, leading silence %.3fs বাদ; অবশিষ্ট %.3fs।",
-                    seg.index, trim_tail, trim_head, clip.size / float(rate),
+                    "Segment %d: tail %.3fs, internal %.3fs (%d pauses), head %.3fs বাদ; অবশিষ্ট %.3fs।",
+                    seg.index, trimmed.tail_seconds, trimmed.internal_seconds, trimmed.internal_cuts,
+                    trimmed.head_seconds, clip.size / float(rate),
                 )
 
         fit_duration = clip.size / float(rate)
@@ -169,29 +183,58 @@ class SyncEngine(SyncAssemblyMixin):
                 logger.warning("Segment %d stretch ব্যর্থ, বাদ দেওয়া হলো: %s", seg.index, exc)
                 return None
 
-        seg.stretched_audio_path = out_path
         try:
             clip, rate = audio_fx.read_wav(out_path)
-            rate = int(rate or self.sample_rate)
+            if rate <= 0 or clip.size == 0 or not np.any(clip):
+                raise ValueError("empty/silent stretched waveform or invalid sample rate")
             duration = clip.size / float(rate)
-            tolerance = min(0.01, self.slot_gap_seconds / 2.0)
+            # Allow FFmpeg's normal frame rounding, but reject a suspiciously
+            # short render rather than silently losing speech or exceeding the cap.
+            if tempo > 1.0 and suspicious_stretch_shortfall(fit_duration, tempo, duration):
+                raise ValueError("unexpectedly short stretch; possible speech loss")
+            remaining_video = max(0.0, getattr(self, "_total_duration", window[1] + self.slot_gap_seconds) - window[1])
+            tolerance = min(0.01, self.slot_gap_seconds / 2.0, remaining_video)
+            post_head = post_tail = 0.0
             if duration > window_length + tolerance:
-                # A stretch filter can itself add padding. Remove only newly
-                # detected edge silence; retain all above-threshold frames and padding.
+                # A stretch filter can itself add edge padding. Do not cut speech.
                 clip, post_head, post_tail = trim_edge_silence_for_overrun(
                     clip, rate, duration - window_length,
-                    threshold_dbfs=self.silence_threshold_dbfs, pad_ms=self.silence_pad_ms,
+                    threshold_dbfs=min(self.silence_threshold_dbfs, CONSERVATIVE_SILENCE_DBFS),
+                    pad_ms=self.silence_pad_ms,
                 )
                 if post_head or post_tail:
                     audio_fx.write_wav(out_path, clip, rate)
                     seg.sync_trimmed_head_seconds += post_head
                     seg.sync_trimmed_tail_seconds += post_tail
                     duration = clip.size / float(rate)
+            seg.tempo_used = tempo
+            seg.sync_tempo_cap_measured = round(tempo, 4) >= round(self.max_tempo, 4)
+            if duration > window_length + tolerance and not seg.sync_tempo_cap_measured:
+                # FFmpeg's real output can differ from the theoretical ratio.
+                # Try the allowed cap on the prepared source before any rewrite.
+                cap = retry_at_tempo_cap(
+                    source, out_path, seg.index, self.max_tempo, self.sample_rate,
+                    self.prefer_rubberband, window_length, tolerance, duration, fit_duration,
+                    self.silence_threshold_dbfs, self.silence_pad_ms, run_ffmpeg,
+                )
+                seg.sync_tempo_cap_measured = cap.measured
+                if cap.adopted:
+                    duration = cap.duration
+                    seg.tempo_used = self.max_tempo
+                    seg.sync_trimmed_head_seconds += cap.head_seconds - post_head
+                    seg.sync_trimmed_tail_seconds += cap.tail_seconds - post_tail
             seg.stretched_duration = duration
-        except Exception:  # pragma: no cover - এইমাত্র লেখা ফাইল
-            seg.stretched_duration = fit_duration / max(tempo, 0.01)
-        seg.tempo_used = tempo
-        return out_path
+            seg.stretched_audio_path = out_path
+            return out_path
+        except Exception as exc:
+            # Never gate a semantic rewrite or placement on an estimated duration.
+            seg.sync_issue = (
+                "stretched audio unexpectedly short; possible speech loss; clip left unplaced"
+                if str(exc) == "unexpectedly short stretch; possible speech loss"
+                else f"stretched audio measurement failed ({type(exc).__name__})"
+            )
+            logger.warning("Segment %d-এর stretched audio মাপা যায়নি: %s", seg.index, exc)
+            return None
 
     # ------------------------------------------------------------------
     def build_final_track(
@@ -207,6 +250,7 @@ class SyncEngine(SyncAssemblyMixin):
             RuntimeError: ব্যবহারযোগ্য কোনো TTS ক্লিপই না থাকলে।
         """
         work_dir, output_wav = Path(work_dir), Path(output_wav)
+        self.max_tempo = max(1.0, min(1.20, float(self.max_tempo)))
         # প্রতি ভিডিওতে পরিসংখ্যান ও placement state নতুন করে শুরু।
         self.last_stats = {"trimmed": 0, "unplaced": 0, "sync_issues": []}
         stretch_dir = work_dir / "stretched"
@@ -225,8 +269,12 @@ class SyncEngine(SyncAssemblyMixin):
             segment.sync_overrun_before_seconds = 0.0
             segment.sync_trimmed_head_seconds = 0.0
             segment.sync_trimmed_tail_seconds = 0.0
+            segment.sync_trimmed_internal_seconds = 0.0
+            segment.sync_trimmed_internal_cuts = 0
+            segment.sync_tempo_cap_measured = False
         if total_duration <= 0:
             total_duration = max(s.end for s in usable) + 0.5
+        self._total_duration = float(total_duration)
 
         windows = plan_windows(
             usable, total_duration,
@@ -253,7 +301,7 @@ class SyncEngine(SyncAssemblyMixin):
         settings = (
             self.min_tempo, self.max_tempo, self.slow_down_short_clips, self.sample_rate,
             self.slot_gap_seconds, self.prefer_rubberband, self.fill_extension,
-            self.silence_threshold_dbfs, self.silence_pad_ms,
+            self.silence_threshold_dbfs, self.silence_pad_ms, self._total_duration,
         )
         jobs = []
         reused = 0
@@ -273,17 +321,21 @@ class SyncEngine(SyncAssemblyMixin):
         self.last_stats.update({"prepared_reused": reused, "prepared_computed": len(jobs)})
 
         head_trim = sum(s.sync_trimmed_head_seconds for s in usable)
+        internal_trim = sum(s.sync_trimmed_internal_seconds for s in usable)
         tail_trim = sum(s.sync_trimmed_tail_seconds for s in usable)
         self.last_stats.update({
             "overrun_before_silence_trim_seconds": round(
                 sum(s.sync_overrun_before_seconds for s in usable), 3
             ),
             "silence_trimmed_clips": sum(
-                1 for s in usable if s.sync_trimmed_head_seconds + s.sync_trimmed_tail_seconds > 0
+                1 for s in usable if s.sync_trimmed_head_seconds
+                + s.sync_trimmed_internal_seconds + s.sync_trimmed_tail_seconds > 0
             ),
             "silence_trimmed_head_seconds": round(head_trim, 3),
+            "silence_trimmed_internal_seconds": round(internal_trim, 3),
+            "silence_trimmed_internal_cuts": sum(s.sync_trimmed_internal_cuts for s in usable),
             "silence_trimmed_tail_seconds": round(tail_trim, 3),
-            "silence_trimmed_seconds": round(head_trim + tail_trim, 3),
+            "silence_trimmed_seconds": round(head_trim + internal_trim + tail_trim, 3),
         })
 
         # Failed clips are reported explicitly; their source slots remain silent.
@@ -334,9 +386,10 @@ class SyncEngine(SyncAssemblyMixin):
             silence, self.last_stats["silence_percent"],
         )
         logger.info(
-            "Silence-fit: আগে মোট overrun %.3fs; tail-first trim %.3fs, head trim %.3fs; %d clip; unplaced %d.",
+            "Silence-fit: আগে মোট overrun %.3fs; tail %.3fs, internal %.3fs, head %.3fs; %d clip; unplaced %d.",
             self.last_stats["overrun_before_silence_trim_seconds"],
             self.last_stats["silence_trimmed_tail_seconds"],
+            self.last_stats["silence_trimmed_internal_seconds"],
             self.last_stats["silence_trimmed_head_seconds"],
             self.last_stats["silence_trimmed_clips"], self.last_stats["unplaced"],
         )
