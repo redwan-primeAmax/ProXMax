@@ -292,7 +292,7 @@ class TestSttHelpers(unittest.TestCase):
 
         large_inline = ", ".join(f"Custom Game Term {index:04d}" for index in range(300))
         bounded = SpeechToText(model_size="tiny", hotwords=large_inline)
-        self.assertLessEqual(len(bounded.hotwords), 1600)
+        self.assertLessEqual(len(bounded.hotwords), 400)
 
     def test_whisper_decode_reselects_hotwords_from_chunk_context(self):
         calls: list[dict] = []
@@ -311,7 +311,7 @@ class TestSttHelpers(unittest.TestCase):
             initial_prompt="FC Mobile 27: Aitana Bonmati is in the lineup.",
         )
         prompt = calls[0]["hotwords"]
-        self.assertLessEqual(len(prompt), 1600)
+        self.assertLessEqual(len(prompt), 400)
         self.assertIn("Aitana Bonmati", prompt)
         self.assertIn("Game Plans", prompt)
 
