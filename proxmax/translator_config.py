@@ -11,7 +11,10 @@ DEFAULT_GEMINI_BATCH_SIZE = 12
 
 DEFAULT_MAX_CHARS_PER_REQUEST = 0  # token budget supersedes the legacy character cap
 
-DEFAULT_MAX_RETRIES = 7
+# Retry count is in addition to the initial request.
+DEFAULT_MAX_RETRIES = 100
+MAX_GEMINI_RETRIES = 100
+DEFAULT_RETRY_DELAY = 1.0
 
 DURATION_TOLERANCE = 0.10
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import SUPPORTED_TTS_ENGINES, SUPPORTED_TRANSLATORS, SUPPORTED_WHISPER_MODELS
-from .translator_config import MAX_GEMINI_BATCH_SIZE
+from .translator_config import MAX_GEMINI_BATCH_SIZE, MAX_GEMINI_RETRIES
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -42,9 +42,10 @@ def validate_config(config):
         )
     if not (self.gemini_model or "").strip():
         raise ValueError("gemini_model খালি হতে পারে না (ডিফল্ট: gemini-3.5-flash-lite)।")
-    if not 1 <= self.gemini_max_retries <= 10:
+    if not 1 <= self.gemini_max_retries <= MAX_GEMINI_RETRIES:
         raise ValueError(
-            f"gemini_max_retries 1–10 এর মধ্যে হতে হবে, পাওয়া গেছে: {self.gemini_max_retries}"
+            f"gemini_max_retries 1–{MAX_GEMINI_RETRIES} এর মধ্যে হতে হবে, "
+            f"পাওয়া গেছে: {self.gemini_max_retries}"
         )
     if int(self.gemini_batch_size) < 1:
         raise ValueError("gemini_batch_size অন্তত 1 হতে হবে।")

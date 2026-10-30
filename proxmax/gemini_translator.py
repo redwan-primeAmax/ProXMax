@@ -17,7 +17,8 @@ from .translation_parsing import normalise_text
 from .translator_base import BaseTranslator
 from .translator_config import (
     DEFAULT_GEMINI_BATCH_SIZE, DEFAULT_MAX_CHARS_PER_REQUEST, DEFAULT_MAX_RETRIES,
-    FALLBACK_GEMINI_MODELS, MAX_GEMINI_BATCH_SIZE,
+    DEFAULT_RETRY_DELAY, FALLBACK_GEMINI_MODELS, MAX_GEMINI_BATCH_SIZE,
+    MAX_GEMINI_RETRIES,
 )
 from .utils import get_logger
 
@@ -40,9 +41,9 @@ class GeminiTranslator(
         max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
         max_input_tokens: int = 5000,
         max_retries: int = DEFAULT_MAX_RETRIES,
-        retry_base_delay: float = 0.5,
-        retry_max_delay: float = 2.0,
-        retry_cap_delay: float = 2.0,
+        retry_base_delay: float = DEFAULT_RETRY_DELAY,
+        retry_max_delay: float = DEFAULT_RETRY_DELAY,
+        retry_cap_delay: float = DEFAULT_RETRY_DELAY,
         requests_per_minute: int = 15,
         temperature: float = 0.2,
         timeout: int = 120,
@@ -76,11 +77,11 @@ class GeminiTranslator(
             )
         self.max_chars_per_request = max(0, int(max_chars_per_request))
         self.max_input_tokens = max(1000, int(max_input_tokens))
-        self.max_retries = min(10, max(1, int(max_retries)))
+        self.max_retries = min(MAX_GEMINI_RETRIES, max(1, int(max_retries)))
         self.retry_base_delay = max(0.001, float(retry_base_delay))
         self.retry_max_delay = max(self.retry_base_delay, float(retry_max_delay))
-        #: এক retry-তে সর্বোচ্চ অপেক্ষা (ব্যবহারকারীর নির্দেশ: ২ সেকেন্ডের বেশি নয়)
-        self.retry_cap_delay = min(max(0.0, float(retry_cap_delay)), max(self.retry_max_delay, 0.0))
+        # Legacy cap remains configurable, but retries use a fixed interval.
+        self.retry_cap_delay = min(max(0.0, float(retry_cap_delay)), self.retry_max_delay)
         self.requests_per_minute = max(1, int(requests_per_minute))
         self.temperature = min(2.0, max(0.0, float(temperature)))
         self.timeout = max(10, int(timeout))
@@ -116,7 +117,6 @@ class GeminiTranslator(
         self._rate_limiter = _RateLimiter(self.requests_per_minute)
         self._cache: Dict[str, str] = {}
         self._cache_lock = threading.Lock()
-        self._fatal_error: Optional[str] = None
         self._api_calls = 0
 
     @property

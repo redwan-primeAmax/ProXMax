@@ -47,7 +47,7 @@ class GeminiOperationsMixin:
                 results.extend(exc.translations)
                 rest = list(batch)[len(exc.translations):]
                 logger.warning(
-                    "♻️ %d/%d লাইন পাওয়া গেছে — বাকি %d লাইন সঙ্গে সঙ্গে আবার চাওয়া হচ্ছে…",
+                    "♻️ %d/%d লাইন পাওয়া গেছে — বাকি %d লাইন আবার চাওয়া হচ্ছে…",
                     len(exc.translations), len(batch), len(rest),
                 )
                 results.extend(
@@ -63,7 +63,7 @@ class GeminiOperationsMixin:
                     results.append("")
                     continue
                 middle = len(batch) // 2
-                logger.warning("🔀 %d লাইনের ব্যাচ দুই ভাগে ভেঙে সঙ্গে সঙ্গে আবার চেষ্টা…", len(batch))
+                logger.warning("🔀 %d লাইনের ব্যাচ দুই ভাগে ভেঙে আবার চেষ্টা…", len(batch))
                 results.extend(
                     self._run_batches(batch[:middle], instruction, task, description, depth + 1)
                 )
@@ -101,8 +101,9 @@ class GeminiOperationsMixin:
         if cached is not None:
             return cached
         result = normalise_bangla(self._run_batches([(original, 0.0)])[0])
-        with self._cache_lock:
-            self._cache[original] = result
+        if result:
+            with self._cache_lock:
+                self._cache[original] = result
         return result
 
     def _make_batches(
@@ -182,7 +183,8 @@ class GeminiOperationsMixin:
             with self._cache_lock:
                 for (text, _duration), translated in zip(items, translations):
                     cleaned = normalise_bangla(translated)
-                    self._cache[text] = cleaned
+                    if cleaned:
+                        self._cache[text] = cleaned
                     for seg in groups[text]:
                         seg.text_bn = cleaned
 
