@@ -6,7 +6,7 @@
           ─► [2] STT (faster-whisper, silence-aware chunking + hotwords.txt)
           ─► [3] অনুবাদ (Gemini) + TTS (বিল্ট-ইন বাংলা neural ভয়েস)
           ─► [4] Sync (non-overlap, tempo ≤ 1.25) ─► [5] Mux ─► *_bn.mp4
-          ─► [6] SRT
+          ─► [6] বিস্তারিত secret-safe Markdown report
 
 ``run_batch()`` input ফোল্ডারের সব ভিডিও একটার পর একটা প্রসেস করে।
 Whisper, Gemini client ও TTS ইঞ্জিন একবারই তৈরি হয় এবং ব্যাচের সব ভিডিওতে
@@ -29,9 +29,10 @@ from .config import AppConfig
 from .discovery import discover_videos
 from .models import BatchSummary, Segment, StageTimings, VideoResult
 from .muxer import VideoMuxer
-from .prosody import build_units, subtitles_for_unit, unit_summary
+from .prosody import build_units, unit_summary
 from .speech_rate import calibrate as calibrate_speech_rate
 from .stt import SpeechToText
+from .reporting import report_path_for as build_report_path, write_detailed_report
 from .sync_engine import SyncEngine
 from .translator import create_translator
 from .tts import (
@@ -45,7 +46,6 @@ from .utils import (
     get_logger,
     get_media_duration,
     output_filename_for,
-    write_srt,
 )
 
 logger = get_logger(__name__)
@@ -83,6 +83,14 @@ def existing_output_is_usable(path: Path, min_bytes: int = _MIN_USABLE_OUTPUT_BY
     try:
         return get_media_duration(path) >= _MIN_USABLE_OUTPUT_SECONDS
     except Exception:
+        return False
+
+
+def _report_is_usable(path: Path) -> bool:
+    """A non-empty, current-format report is required before skipping an output."""
+    try:
+        return path.is_file() and path.stat().st_size >= 256
+    except OSError:
         return False
 
 
@@ -233,6 +241,10 @@ class DubbingPipeline:
         folder = output_dir or Path(self.config.output_dir)
         return folder / output_filename_for(video_path)
 
+    def report_path_for(self, video_path: Path, output_dir: Optional[Path] = None) -> Path:
+        folder = output_dir or Path(self.config.output_dir)
+        return build_report_path(video_path, folder)
+
     # ------------------------------------------------------------------
     def process_one(
         self, video_path: Path | str, output_dir: Optional[Path] = None
@@ -244,32 +256,62 @@ class DubbingPipeline:
             output_path = Path(output_dir) / output_filename_for(video_path)
         started = time.perf_counter()
 
+        report_path = self.report_path_for(video_path, output_path.parent)
         if self.config.skip_existing and output_path.is_file():
             if existing_output_is_usable(output_path):
-                size_mb = output_path.stat().st_size / (1024 * 1024)
-                logger.info(
-                    "⏭️  আগের আউটপুট পাওয়া গেছে (%.1f MB), তাই বাদ দেওয়া হলো: %s\n"
-                    "   নতুন করে (নতুন কোড/কণ্ঠ দিয়ে) ডাবিং করতে চাইলে চালান: "
-                    "python main.py --force",
-                    size_mb, output_path.name,
+                report_ready = not self.config.save_report or _report_is_usable(report_path)
+                if report_ready:
+                    size_mb = output_path.stat().st_size / (1024 * 1024)
+                    logger.info(
+                        "⏭️  আগের আউটপুট ও রিপোর্ট পাওয়া গেছে (%.1f MB), তাই বাদ দেওয়া হলো: %s\n"
+                        "   নতুন করে (নতুন কোড/কণ্ঠ দিয়ে) ডাবিং করতে চাইলে চালান: "
+                        "python main.py --force",
+                        size_mb, output_path.name,
+                    )
+                    return VideoResult(
+                        video_path=video_path, status="skipped", output_path=output_path,
+                        elapsed_seconds=0.0,
+                        stats={"report": report_path.name} if self.config.save_report else {},
+                    )
+                logger.warning(
+                    "⚠️ ব্যবহারযোগ্য ভিডিও আছে কিন্তু বিস্তারিত রিপোর্ট নেই — রিপোর্টসহ আবার প্রসেস করা হবে।"
                 )
-                return VideoResult(
-                    video_path=video_path, status="skipped", output_path=output_path,
-                    elapsed_seconds=0.0,
+            else:
+                logger.warning(
+                    "⚠️ আগের আউটপুট অসম্পূর্ণ/পড়া যাচ্ছে না (%s) — আবার তৈরি করা হবে।",
+                    output_path.name,
                 )
-            logger.warning(
-                "⚠️ আগের আউটপুট অসম্পূর্ণ/পড়া যাচ্ছে না (%s) — আবার তৈরি করা হবে।",
-                output_path.name,
-            )
-            output_path.unlink(missing_ok=True)
+                output_path.unlink(missing_ok=True)
 
         work_dir = self.config.resolved_work_dir / _safe_dirname(video_path.stem)
         try:
+            if self.config.save_report:
+                report_path.unlink(missing_ok=True)
             if work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
             work_dir.mkdir(parents=True, exist_ok=True)
 
             segments, timings, stats = self._run_steps(video_path, work_dir, output_path)
+            timings.total = time.perf_counter() - started
+            if self.config.save_report:
+                report_started = time.perf_counter()
+                with self._step(6, "বিস্তারিত Markdown processing report"):
+                    report_path = write_detailed_report(
+                        video_path=video_path,
+                        output_video_path=output_path,
+                        output_dir=output_path.parent,
+                        work_dir=work_dir,
+                        segments=segments,
+                        timings=timings,
+                        stats=stats,
+                        config=self.config,
+                        total_duration=timings.audio_seconds,
+                    )
+                stats["report"] = {
+                    "file": report_path.name,
+                    "size_bytes": report_path.stat().st_size,
+                    "render_seconds": round(time.perf_counter() - report_started, 3),
+                }
             elapsed = time.perf_counter() - started
             timings.total = elapsed
             logger.info(
@@ -289,8 +331,8 @@ class DubbingPipeline:
             )
             logger.debug("Full traceback:", exc_info=True)
             return VideoResult(
-                video_path=video_path, status="failed", error=f"{type(exc).__name__}: {exc}",
-                elapsed_seconds=elapsed,
+                video_path=video_path, status="failed", output_path=output_path if output_path.is_file() else None,
+                error=f"{type(exc).__name__}: {exc}", elapsed_seconds=elapsed,
             )
         finally:
             if not self.config.keep_temp_files and work_dir.exists():
@@ -303,7 +345,7 @@ class DubbingPipeline:
     def _run_steps(
         self, video_path: Path, work_dir: Path, output_path: Path
     ) -> tuple[List[Segment], StageTimings, dict]:
-        """Execute steps 1–6 for one video (raises on unrecoverable error)."""
+        """Execute media steps 1–5 for one video (raises on unrecoverable error)."""
         cfg = self.config
         timings = StageTimings()
         stats: dict = {}
@@ -446,35 +488,6 @@ class DubbingPipeline:
             shutil.copy2(local_output, output_path)
             logger.info("আউটপুট সেভ হয়েছে: %s", output_path)
         timings.mux = time.perf_counter() - marker
-
-        # 6) Subtitles (যাচাই ও পুনঃব্যবহারের জন্য) -----------------------------
-        if cfg.save_srt:
-            with self._step(6, "সাবটাইটেল (SRT) সেভ করা"):
-                try:
-                    stem = video_path.stem
-                    english_lines = [
-                        child
-                        for unit in segments
-                        for child in (getattr(unit, "children", None) or [unit])
-                    ]
-                    write_srt(
-                        english_lines or segments,
-                        output_path.parent / f"{stem}_en.srt",
-                        language="en",
-                    )
-                    bangla_lines = [
-                        line
-                        for unit in segments
-                        for line in subtitles_for_unit(unit)
-                    ]
-                    write_srt(
-                        bangla_lines or segments,
-                        output_path.parent / f"{stem}_bn.srt",
-                        language="bn",
-                    )
-                    logger.info("সাবটাইটেল সেভ হয়েছে: %s_en.srt, %s_bn.srt", stem, stem)
-                except Exception as exc:  # SRT ব্যর্থ হলে মূল কাজ ব্যর্থ ধরা হবে না
-                    logger.warning("SRT সেভ করা যায়নি: %s", exc)
 
         stats["segments"] = sum(
             len(getattr(unit, "children", None) or [unit]) for unit in segments

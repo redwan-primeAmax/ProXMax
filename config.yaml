@@ -121,6 +121,6 @@ output:
   audio_bitrate: "160k"     # চূড়ান্ত MP4-এর AAC অডিও বিটরেট
   use_hwaccel: true         # ffmpeg hardware acceleration চেষ্টা
   skip_existing: true       # output-এ ফাইল থাকলে আবার প্রসেস না করা (resume)
-  save_srt: true            # output ফোল্ডারে _en.srt ও _bn.srt সাবটাইটেলও সেভ
+  save_report: true          # প্রতি ভিডিওর বিস্তারিত, secret-safe Markdown রিপোর্ট সেভ
   keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, TTS ক্লিপ) থেকে যাবে
   log_level: "INFO"         # DEBUG দিলে আরও বিস্তারিত লগ
