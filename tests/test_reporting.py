@@ -68,6 +68,8 @@ class TestDetailedReport(unittest.TestCase):
             self.assertIn("Hello world.", text)
             self.assertIn("হ্যালো বিশ্ব।", text)
             self.assertIn("Source word timestamps", text)
+            self.assertIn('"gemini_max_paragraphs_per_request": 12', text)
+            self.assertIn('"post_mux_bengali_asr_validation": false', text)
             self.assertIn("trimmed=0.200 s", text)
             self.assertIn("Post-mux Bengali speech coverage check", text)
             self.assertIn("**Post-mux Bangla ASR coverage:** review", text)

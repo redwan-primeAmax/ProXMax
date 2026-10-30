@@ -209,7 +209,8 @@ class TestTranslatorCalls(unittest.TestCase):
         def responder(contents, call_no):
             if call_no == 1:
                 return _FakeResponse(
-                    '{"translations": ["বাংলা: One.", "বাংলা: Two.',
+                    '{"translations": [{"id": 1, "translation": "বাংলা: One."}, '
+                    '{"id": 2, "translation": "বাংলা: Two.',
                     finish_reason="MAX_TOKENS",
                 )
             return json.dumps({"translations": [f"বাংলা: {t}" for t in _lines_from_contents(contents)]})

@@ -44,6 +44,35 @@ class TestBanglaAudioCoverage(unittest.TestCase):
         self.assertEqual(truncated["units"][0]["status"], "review")
         self.assertFalse(truncated["units"][0]["tail_token_found"])
 
+    def test_optional_post_mux_validation_runs_coverage_assessment(self):
+        from proxmax.pipeline import DubbingPipeline
+
+        class _Extractor:
+            def extract(self, *_args, **_kwargs):
+                return Path("post_mux.wav")
+
+        class _Validator:
+            def transcribe_words_in_language(self, _path, language="bn"):
+                assert language == "bn"
+                return [
+                    Word(0.1, 0.2, "আমি"), Word(0.25, 0.35, "একটি"),
+                    Word(0.4, 0.55, "গোল"), Word(0.6, 0.8, "করেছি।"),
+                ]
+
+        pipeline = DubbingPipeline.__new__(DubbingPipeline)
+        pipeline.extractor = _Extractor()
+        pipeline.stt = _Validator()
+        pipeline.config = AppConfig(audio_validation_min_coverage=0.5)
+        segment = Segment(
+            index=0, start=0.0, end=1.0, text_bn="আমি একটি গোল করেছি।",
+            placed_duration=1.0,
+        )
+        result = pipeline._validate_dub_audio(
+            Path("dubbed.mp4"), Path("work"), [segment], total_duration=2.0
+        )
+        self.assertEqual(result["status"], "likely_complete")
+        self.assertEqual(result["summary"]["likely_complete"], 1)
+
     def test_unplaced_sentence_is_reported_as_missing_not_passed(self):
         segment = Segment(index=0, start=0.0, end=1.0, text_bn="শেষ কথাটি।")
         result = assess_bengali_coverage([segment], [], min_coverage=0.5)

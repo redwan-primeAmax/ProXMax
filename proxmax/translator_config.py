@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Tuple
 
-DEFAULT_GEMINI_BATCH_SIZE = 2048
+# Keep response lists small enough that paragraph-to-output alignment is reliable.
+MAX_GEMINI_BATCH_SIZE = 12
+DEFAULT_GEMINI_BATCH_SIZE = 12
 
 DEFAULT_MAX_CHARS_PER_REQUEST = 0  # token budget supersedes the legacy character cap
 
@@ -21,15 +23,20 @@ FALLBACK_GEMINI_MODELS: Tuple[str, ...] = (
 
 SYSTEM_INSTRUCTION = (
     "You are a professional English-to-Bengali (Bangla) dubbing writer for YouTube "
-    "videos. Each input paragraph is one complete translation chunk. Translate it "
-    "into natural spoken Bangla, not textbook language. Do not include timestamps, "
-    "duration labels, or explanations. "
+    "videos. Every labeled input paragraph is a separate target chunk of at most "
+    "5 seconds; it may be an incomplete phrase because speech was split at a time "
+    "boundary. Translate only the words in that paragraph into natural spoken Bangla. "
+    "Neighboring paragraphs may be used only to understand names or context; never "
+    "move, borrow, finish, or invent their content in this paragraph. Do not include "
+    "timestamps, duration labels, or explanations. "
     "Rules: "
-    "1) Keep every paragraph separate and in the same order; never merge, split, "
-    "summarise, or omit a paragraph. Return exactly one translation per paragraph. "
-    "2) Preserve every fact, number, name, opinion, and the main idea. Use concise, "
-    "complete sentences; never end mid-word or mid-phrase. Finish sentences with "
-    "proper Bangla punctuation (। ? !). "
+    "1) Preserve each paragraph's integer ID exactly. Return one translation for "
+    "every ID, with no missing or duplicate IDs; never merge, split, reorder, "
+    "summarise, or omit paragraphs. "
+    "2) Preserve every fact, number, name, opinion, and the main idea. Be concise. "
+    "If the source is a fragment, keep the translation a fragment; do not invent a "
+    "sentence ending or complete it from another paragraph. Add Bangla punctuation "
+    "only when the source chunk itself ends a sentence. "
     "3) Keep football player names, club names, FC Mobile event names, and game terms "
     "(OVR, TOTY, UTOTY, TOTS, UTOTS, Icon, Heroes, Star Pass, Mascherano, Skill Boost, "
     "VSA, H2H, Ballon d'Or) accurate — write player names and terms in Bangla script "
@@ -41,7 +48,7 @@ SYSTEM_INSTRUCTION = (
     "5) Use conversational Bangla as spoken by young Bangladeshi speakers, with "
     "natural rhythm and no literary or overly formal wording. "
     "6) If a paragraph is already Bangla or empty, return it as is. "
-    "Return only the translations in the requested structured format."
+    "Return only the translations in the requested structured format, preserving IDs."
 )
 
 EXPAND_INSTRUCTION = (
@@ -52,10 +59,10 @@ EXPAND_INSTRUCTION = (
 SHORTEN_INSTRUCTION = (
     "Make each Bengali (Bangla) dubbing paragraph more concise while preserving its "
     "meaning, tone, numbers, names, and all key facts. Remove filler and prefer shorter "
-    "everyday wording. Never cut a word or leave a sentence unfinished; every output "
-    "must be a complete sentence ending with ।, ? or !. Do not add information or merge "
-    "or split paragraphs. Return exactly one shortened Bangla paragraph per input, in "
-    "the same order, with no timestamps or explanations."
+    "everyday wording. Preserve each paragraph ID. Do not complete a fragment, add "
+    "information, or borrow content from another paragraph. Do not merge or split "
+    "paragraphs. Return exactly one shortened Bangla paragraph for every input ID, "
+    "with no timestamps or explanations."
 )
 
 _RESPONSE_SCHEMA: Dict[str, Any] = {
@@ -63,7 +70,14 @@ _RESPONSE_SCHEMA: Dict[str, Any] = {
     "properties": {
         "translations": {
             "type": "ARRAY",
-            "items": {"type": "STRING"},
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "id": {"type": "INTEGER"},
+                    "translation": {"type": "STRING"},
+                },
+                "required": ["id", "translation"],
+            },
         }
     },
     "required": ["translations"],
@@ -85,7 +99,7 @@ _NETWORK_MODULES = frozenset({"httpx", "httpcore", "requests", "urllib3", "aioht
 
 _STRING_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
-_OBJECT_TEXT_KEYS = ("bn", "translation", "text", "bangla")
+_OBJECT_TEXT_KEYS = ("id", "paragraph_id", "index", "bn", "translation", "text", "bangla")
 
 _NUMBERED_LINE_RE = re.compile(r"^\s*(?:[-*•]\s*)?(?P<num>\d{1,3})\s*[.):\-–]\s*(?P<text>.+?)\s*$")
 

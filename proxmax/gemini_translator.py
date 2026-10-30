@@ -17,7 +17,7 @@ from .translation_parsing import normalise_text
 from .translator_base import BaseTranslator
 from .translator_config import (
     DEFAULT_GEMINI_BATCH_SIZE, DEFAULT_MAX_CHARS_PER_REQUEST, DEFAULT_MAX_RETRIES,
-    FALLBACK_GEMINI_MODELS,
+    FALLBACK_GEMINI_MODELS, MAX_GEMINI_BATCH_SIZE,
 )
 from .utils import get_logger
 
@@ -67,7 +67,13 @@ class GeminiTranslator(
             raise ValueError("Gemini মডেলের নাম খালি হতে পারে না।")
 
         self.model = chosen_model
-        self.batch_size = max(1, int(batch_size))
+        requested_batch_size = max(1, int(batch_size))
+        self.batch_size = min(requested_batch_size, MAX_GEMINI_BATCH_SIZE)
+        if requested_batch_size > MAX_GEMINI_BATCH_SIZE:
+            logger.warning(
+                "Gemini batch_size=%d বড় — paragraph alignment-এর জন্য %d-এ সীমিত করা হয়েছে।",
+                requested_batch_size, MAX_GEMINI_BATCH_SIZE,
+            )
         self.max_chars_per_request = max(0, int(max_chars_per_request))
         self.max_input_tokens = max(1000, int(max_input_tokens))
         self.max_retries = min(10, max(1, int(max_retries)))

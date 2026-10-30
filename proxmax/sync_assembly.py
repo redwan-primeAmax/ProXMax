@@ -58,7 +58,11 @@ class SyncAssemblyMixin:
             if rate != sr:
                 clip = self._resample(clip, rate, sr)
             max_samples = max(1, int(round((window[1] - seg.start) * sr)))
-            if clip.size > max_samples:
+            # Rubberband/atempo can add a few samples through frame rounding.
+            # Use only part of the already-reserved inter-clip gap; never crop audio.
+            tolerance_seconds = min(0.01, max(0.0, self.slot_gap_seconds / 2.0))
+            allowed_samples = max_samples + int(round(tolerance_seconds * sr))
+            if clip.size > allowed_samples:
                 overrun = (clip.size - max_samples) / float(sr)
                 seg.sync_issue = (
                     f"stretched clip exceeds safe window by {overrun:.3f}s after silence trim "

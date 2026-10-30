@@ -119,7 +119,26 @@ class _FakeClient:
     def generate_content(self, *, model, contents, config):
         self.calls.append({"model": model, "contents": contents, "config": config})
         answer = self.responder(contents, len(self.calls))
-        return answer if isinstance(answer, _FakeResponse) else _FakeResponse(answer)
+        response = answer if isinstance(answer, _FakeResponse) else _FakeResponse(answer)
+        # Simulate the requested structured response for legacy test responders.
+        if isinstance(response._text, str):
+            try:
+                data = json.loads(response._text)
+                values = data.get("translations") if isinstance(data, dict) else None
+                ids = [
+                    int(match.group(1))
+                    for match in re.finditer(r"^Paragraph\s+(\d+)\s*:", contents, re.M)
+                ]
+                if (isinstance(values, list) and len(values) > 1
+                        and len(values) == len(ids) and all(isinstance(v, str) for v in values)):
+                    data["translations"] = [
+                        {"id": paragraph_id, "translation": text}
+                        for paragraph_id, text in zip(ids, values)
+                    ]
+                    response._text = json.dumps(data, ensure_ascii=False)
+            except (TypeError, ValueError):
+                pass
+        return response
 
     def close(self):
         self.closed += 1
@@ -148,7 +167,7 @@ def _lines_from_contents(contents: str) -> list:
 
 def _make_translator(client, **kwargs):
     defaults = dict(
-        api_key="test-key", model="gemini-test", batch_size=25,
+        api_key="test-key", model="gemini-test", batch_size=12,
         max_retries=3, retry_base_delay=0.01, retry_max_delay=0.02,
         requests_per_minute=6000, client=client,
     )

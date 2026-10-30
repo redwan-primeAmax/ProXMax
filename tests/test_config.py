@@ -18,12 +18,13 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
         self.assertEqual(cfg.gemini_max_retries, 7)
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
+        self.assertEqual(cfg.gemini_batch_size, 12)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
         self.assertFalse(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertTrue(cfg.save_report)
-        self.assertTrue(cfg.validate_dub_audio)
+        self.assertFalse(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
         self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.90, 1.15))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
@@ -42,12 +43,13 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
         self.assertEqual(cfg.gemini_max_retries, 7)
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
+        self.assertEqual(cfg.gemini_batch_size, 12)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
         self.assertFalse(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertTrue(cfg.save_report)
-        self.assertTrue(cfg.validate_dub_audio)
+        self.assertFalse(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
         self.assertAlmostEqual(cfg.max_tempo, 1.15)
         self.assertAlmostEqual(cfg.min_tempo, 0.90)
@@ -59,6 +61,9 @@ class TestConfig(unittest.TestCase):
         for budget in (1000, 2000, 5000, 10000, 20000, 12345):
             with self.subTest(budget=budget):
                 self.assertEqual(AppConfig(gemini_max_input_tokens=budget).validate().gemini_max_input_tokens, budget)
+
+    def test_gemini_batch_size_is_capped_for_alignment_safety(self):
+        self.assertEqual(AppConfig(gemini_batch_size=2048).validate().gemini_batch_size, 12)
 
     def test_section_scoped_aliases(self):
         cfg = AppConfig()

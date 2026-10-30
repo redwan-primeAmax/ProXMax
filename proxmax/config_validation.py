@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import SUPPORTED_TTS_ENGINES, SUPPORTED_TRANSLATORS, SUPPORTED_WHISPER_MODELS
+from .translator_config import MAX_GEMINI_BATCH_SIZE
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -47,6 +48,12 @@ def validate_config(config):
         )
     if int(self.gemini_batch_size) < 1:
         raise ValueError("gemini_batch_size অন্তত 1 হতে হবে।")
+    if int(self.gemini_batch_size) > MAX_GEMINI_BATCH_SIZE:
+        logger.warning(
+            "gemini_batch_size=%s নিরাপদ paragraph limit %d-এ কমানো হয়েছে।",
+            self.gemini_batch_size, MAX_GEMINI_BATCH_SIZE,
+        )
+        self.gemini_batch_size = MAX_GEMINI_BATCH_SIZE
     if int(self.gemini_max_chars_per_request) < 0:
         raise ValueError("gemini_max_chars_per_request ০ অথবা ধনাত্মক হতে হবে।")
     if int(self.gemini_max_input_tokens) < 1000:

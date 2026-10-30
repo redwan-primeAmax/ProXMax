@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from .audio_quality import assess_bengali_coverage
 from .models import Segment
 from .pipeline_helpers import _usable
 from .sync_engine import plan_windows

@@ -185,11 +185,20 @@ class WhisperModelMixin:
                 if attempt_index + 1 >= len(attempts):
                     raise
                 next_prompt, next_hotwords = attempts[attempt_index + 1]
+                fallback_stats = getattr(self, "_prompt_fallback_stats", None)
                 if attempt_hotwords and not next_hotwords:
+                    if isinstance(fallback_stats, dict):
+                        fallback_stats["without_hotwords"] = int(
+                            fallback_stats.get("without_hotwords", 0)
+                        ) + 1
                     logger.warning(
                         "Whisper decoder prompt window পূর্ণ হয়ে গেছে — এই chunk hotwords ছাড়া retry হবে।"
                     )
                 elif prompt_text is not None and next_prompt is None:
+                    if isinstance(fallback_stats, dict):
+                        fallback_stats["without_context"] = int(
+                            fallback_stats.get("without_context", 0)
+                        ) + 1
                     logger.warning(
                         "Whisper decoder prompt এখনো বড় — এই chunk hotwords ও context ছাড়া retry হবে।"
                     )

@@ -60,7 +60,7 @@ gemini:
   # API key নিন: https://aistudio.google.com/app/apikey
   api_key: ""
   model: "gemini-3.5-flash-lite"
-  batch_size: 2048              # item safety cap; প্রকৃত batching input-token budget অনুযায়ী
+  batch_size: 12                # সর্বোচ্চ paragraph/request; ছোট batch output alignment রক্ষা করে
   max_chars_per_request: 0      # 0 = character cap বন্ধ; token budget ব্যবহার
   max_input_tokens: 5000        # প্রতি API request-এ input-token cap (কনজারভেটিভ local estimate)
   max_retries: 7                # সর্বোচ্চ ৭ বার চেষ্টা
@@ -126,5 +126,5 @@ output:
 
 # --- Dubbed-audio quality validation ----------------------------------------
 quality:
-  validate_dub_audio: true       # mux-এর পর Bangla Whisper দিয়ে শেষ-শব্দ/লাইন coverage যাচাই
+  validate_dub_audio: false     # ঐচ্ছিক পূর্ণ Bengali Whisper pass; চালু করলে সময় উল্লেখযোগ্য বাড়ে
   min_text_coverage: 0.58        # ASR ভিন্নতা থাকবে; এর নিচে report-এ review flag

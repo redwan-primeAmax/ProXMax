@@ -115,6 +115,7 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             if getattr(config, "translator_backend", None) == "gemini"
             else getattr(config, "indictrans2_model", None),
             "gemini_input_token_budget": getattr(config, "gemini_max_input_tokens", None),
+            "gemini_max_paragraphs_per_request": getattr(config, "gemini_batch_size", None),
             "pre_tts_duration_prediction": False,
             "shorten_retry_policy": "only after measured TTS, edge-silence trim, and allowed tempo fit",
             "text_expansion_to_fill_gaps": False,
