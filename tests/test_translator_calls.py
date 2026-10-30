@@ -57,9 +57,9 @@ class TestTranslatorCalls(unittest.TestCase):
         with mock.patch("proxmax.translator.time.sleep"):
             with self.assertRaises(TranslationError):
                 translator.translate_text("Hello")
-        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(len(client.calls), 3)  # one request plus two retries
 
-    def test_blocked_content_is_not_retried(self):
+    def test_blocked_content_is_retried(self):
         class _Blocked(_FakeClient):
             def generate_content(self, *, model, contents, config):
                 self.calls.append({"model": model, "contents": contents, "config": config})
@@ -70,8 +70,7 @@ class TestTranslatorCalls(unittest.TestCase):
         with mock.patch("proxmax.translator.time.sleep"):
             with self.assertRaises(TranslationError):
                 translator.translate_text("Hello")
-        self.assertEqual(len(client.calls), 1)
-        self.assertIsNone(translator._fatal_error)
+        self.assertEqual(len(client.calls), 6)  # one request plus five retries
 
     def test_pre_tts_shorten_predictor_is_disabled(self):
         translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
@@ -137,9 +136,9 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertNotIn("0.72", contents)
         self.assertNotRegex(contents.lower(), r"duration|seconds|speaking time|timestamp")
 
-    # ---- ফরম্যাট ভুল: অপেক্ষা নেই, শুধু বাকি লাইন আবার ------------------
-    def test_format_error_retries_without_long_sleep(self):
-        """ফরম্যাট ভুল হলে ২ সেকেন্ডের বেশি অপেক্ষা করা চলবে না।"""
+    # ---- ফরম্যাট ভুলেও একই নির্দিষ্ট বিরতিতে retry ----------------------
+    def test_format_error_retries_after_one_second(self):
+        """ফরম্যাট ভুলে প্রতিটি retry-র আগে এক সেকেন্ড অপেক্ষা হয়।"""
         def responder(contents, call_no):
             if call_no <= 2:          # প্রথমে ফরম্যাট ভাঙা উত্তর
                 return "sorry, I cannot do JSON"
@@ -149,13 +148,15 @@ class TestTranslatorCalls(unittest.TestCase):
             )
 
         client = _FakeClient(responder)
-        translator = _make_translator(client, max_retries=5, requests_per_minute=1_000_000)
+        translator = _make_translator(
+            client, max_retries=5, requests_per_minute=1_000_000,
+            retry_base_delay=1.0, retry_max_delay=1.0, retry_cap_delay=1.0,
+        )
         slept = []
         with mock.patch("proxmax.translator.time.sleep", side_effect=slept.append):
             result = translator.translate_text("Hello")
         self.assertTrue(result.startswith("বাংলা:"))
-        self.assertTrue(all(delay <= 2.0 for delay in slept), slept)
-        self.assertTrue(all(delay <= 0.3 for delay in slept), f"ফরম্যাট ভুলে অপেক্ষা: {slept}")
+        self.assertEqual(slept, [1.0, 1.0])
 
     def test_format_retry_does_not_wait_for_rate_limit_slot(self):
         """ফরম্যাট ভুলে আবার পাঠানো একই request — নতুন স্লটের জন্য অপেক্ষা নয়।"""
@@ -169,22 +170,23 @@ class TestTranslatorCalls(unittest.TestCase):
 
         client = _FakeClient(responder)
         # RPM খুব কম (১) → নতুন request হলে ৬০ সেকেন্ড অপেক্ষা করতে হতো
-        translator = _make_translator(client, max_retries=3, requests_per_minute=1)
+        translator = _make_translator(
+            client, max_retries=3, requests_per_minute=1,
+            retry_base_delay=1.0, retry_max_delay=1.0, retry_cap_delay=1.0,
+        )
         slept = []
         with mock.patch("proxmax.translator.time.sleep", side_effect=slept.append):
             result = translator.translate_text("Hello")
         self.assertTrue(result.startswith("বাংলা:"))
         self.assertEqual(len(client.calls), 2)
-        self.assertTrue(all(delay <= 0.3 for delay in slept),
-                        f"ফরম্যাট retry-তে অপেক্ষা: {slept}")
+        self.assertEqual(slept, [1.0])
 
-    def test_retry_delay_never_exceeds_two_seconds(self):
-        translator = _make_translator(_FakeClient(lambda c, n: "{}"), max_retries=7)
-        for attempt in range(1, 8):
+    def test_retry_delay_is_fixed_for_every_attempt_and_status(self):
+        translator = GeminiTranslator(api_key="test", client=_FakeClient(lambda c, n: "{}"))
+        for attempt in (1, 2, 50, 100):
             for status in (None, 429, 500):
                 delay = translator._retry_delay(attempt, TimeoutError("timed out"), status)
-                self.assertLessEqual(delay, 2.0)
-                self.assertGreaterEqual(delay, 0.0)
+                self.assertEqual(delay, 1.0)
 
     def test_model_ignoring_json_falls_back_to_numbered_lines(self):
         """মডেল JSON না দিলে দুবার চেষ্টার পর নম্বরযুক্ত লাইনে চাওয়া হয়।"""
@@ -358,7 +360,7 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertGreater(big, small)
         self.assertLessEqual(big, translator.max_output_tokens)
 
-    def test_unsupported_schema_disables_it_and_retries_immediately(self):
+    def test_unsupported_schema_disables_it_and_retries_after_delay(self):
         class _NoSchemaClient(_FakeClient):
             def generate_content(self, *, model, contents, config):
                 self.calls.append({"model": model, "contents": contents, "config": config})
@@ -367,12 +369,15 @@ class TestTranslatorCalls(unittest.TestCase):
                 return _FakeResponse(json.dumps({"translations": ["বাংলা"]}))
 
         client = _NoSchemaClient(lambda c, n: "")
-        translator = _make_translator(client, max_retries=3, requests_per_minute=1_000_000)
+        translator = _make_translator(
+            client, max_retries=3, requests_per_minute=1_000_000,
+            retry_base_delay=1.0, retry_max_delay=1.0, retry_cap_delay=1.0,
+        )
         slept = []
         with mock.patch("proxmax.translator.time.sleep", side_effect=slept.append):
             self.assertEqual(translator.translate_text("Hello"), "বাংলা")
         self.assertEqual(len(client.calls), 2)
-        self.assertEqual(slept, [])
+        self.assertEqual(slept, [1.0])
         self.assertFalse(translator._use_schema)
 
     def test_close_releases_client(self):

@@ -15,7 +15,7 @@ class TranslationError(RuntimeError):
     """Raised when translation fails beyond recovery."""
 
 class GeminiAuthError(TranslationError):
-    """API key না থাকলে বা অনুমতি না থাকলে — retry করে লাভ নেই।"""
+    """API key সেট না থাকলে অনুরোধ পাঠানোর আগেই জানানো হয়।"""
 
 class _ResponseFormatError(TranslationError):
     """Gemini-র উত্তর প্রত্যাশিত ফরম্যাটে না এলে (retry যোগ্য)।"""
@@ -32,14 +32,10 @@ class _PartialBatchError(_ResponseFormatError):
         )
 
 class _CapabilityError(TranslationError):
-    """এই মডেল/সংস্করণ কোনো প্যারামিটার চেনে না (যেমন thinking/schema/400)।
-
-    ভুলটা অনুরোধের *বিন্যাসে*, Gemini-র উত্তরে নয় — প্যারামিটারটি বাদ দিয়ে
-    সঙ্গে সঙ্গে আবার চেষ্টা করা হয়, কোনো অপেক্ষা ছাড়াই।
-    """
+    """মডেল কোনো প্যারামিটার না চিনলে সেটি বাদ দিয়ে retry করা হয়।"""
 
 class _ContentBlockedError(TranslationError):
-    """Gemini নিরাপত্তার কারণে কোনো অংশ অনুবাদ করতে না চাইলে (retry করে লাভ নেই)।"""
+    """Gemini নিরাপত্তার কারণে কোনো অংশ অনুবাদ করতে না চাইলে।"""
 
 def _status_code(exc: BaseException) -> Optional[int]:
     """কোনো exception থেকে HTTP status code বের করার সর্বাত্মক চেষ্টা।"""
@@ -114,16 +110,20 @@ class _RateLimiter:
         self._lock = threading.Lock()
 
     def wait(self) -> None:
-        """পরবর্তী request-এর জন্য প্রয়োজনীয় সময় অপেক্ষা করে।"""
+        """Reserve a normally paced request without blocking retry bookkeeping."""
         with self._lock:
             now = time.monotonic()
-            delay = self._next_allowed - now
-            if delay > 0:
-                time.sleep(delay)
-                now = time.monotonic()
-            self._next_allowed = max(now, self._next_allowed) + self._interval
+            scheduled = max(now, self._next_allowed)
+            self._next_allowed = scheduled + self._interval
+        if scheduled > now:
+            time.sleep(scheduled - now)
+
+    def record_retry(self) -> None:
+        """Record an unpaced retry so later new requests still respect the RPM interval."""
+        with self._lock:
+            self._next_allowed = max(self._next_allowed, time.monotonic() + self._interval)
 
     def refund(self) -> None:
-        """ব্যর্থ (ফরম্যাট ভুল) request-এর স্লট ফিরিয়ে দেয়।"""
+        """Legacy helper; actual retries are recorded rather than refunded."""
         with self._lock:
             self._next_allowed = max(0.0, self._next_allowed - self._interval)

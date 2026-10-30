@@ -24,8 +24,8 @@ from .translation_parsing import (
 from .translator_base import BaseTranslator
 from .translator_config import (
     DEFAULT_GEMINI_BATCH_SIZE, DEFAULT_MAX_CHARS_PER_REQUEST, DEFAULT_MAX_RETRIES,
-    DURATION_TOLERANCE, FALLBACK_GEMINI_MODELS, SYSTEM_INSTRUCTION, EXPAND_INSTRUCTION,
-    SHORTEN_INSTRUCTION, _RESPONSE_SCHEMA, _RETRYABLE_STATUS, _AUTH_HINTS,
+    DEFAULT_RETRY_DELAY, DURATION_TOLERANCE, FALLBACK_GEMINI_MODELS, SYSTEM_INSTRUCTION,
+    EXPAND_INSTRUCTION, SHORTEN_INSTRUCTION, _RESPONSE_SCHEMA, _RETRYABLE_STATUS, _AUTH_HINTS,
     _NETWORK_HINTS, _NETWORK_MODULES, _FENCE_RE, _JSON_START_RE, _BANGLA_RE,
     _RETRY_DELAY_RE, _NUMBERED_LINE_RE, _STRING_ITEM_RE, _OBJECT_TEXT_KEYS,
 )
@@ -42,9 +42,9 @@ def create_translator(
     gemini_max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
     gemini_max_input_tokens: int = 5000,
     gemini_max_retries: int = DEFAULT_MAX_RETRIES,
-    gemini_retry_base_delay: float = 0.5,
-    gemini_retry_max_delay: float = 2.0,
-    gemini_retry_cap_delay: float = 2.0,
+    gemini_retry_base_delay: float = DEFAULT_RETRY_DELAY,
+    gemini_retry_max_delay: float = DEFAULT_RETRY_DELAY,
+    gemini_retry_cap_delay: float = DEFAULT_RETRY_DELAY,
     gemini_requests_per_minute: int = 15,
     gemini_temperature: float = 0.2,
     gemini_timeout: int = 120,
@@ -90,7 +90,6 @@ def verify_gemini_api(
     translator = GeminiTranslator(
         api_key=api_key,
         model=model_name,
-        max_retries=3,
         timeout=timeout,
     )
     try:

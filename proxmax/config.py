@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
 from .hotwords import load_hotwords
-from .translator_config import DEFAULT_GEMINI_BATCH_SIZE
+from .translator_config import (
+    DEFAULT_GEMINI_BATCH_SIZE, DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAY,
+)
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -102,10 +104,10 @@ class AppConfig:
     gemini_batch_size: int = DEFAULT_GEMINI_BATCH_SIZE
     gemini_max_chars_per_request: int = 0    # 0 = legacy character cap বন্ধ; input-token cap ব্যবহার
     gemini_max_input_tokens: int = 5000     # প্রতি Gemini request-এর conservative input-token cap
-    gemini_max_retries: int = 7             # সর্বোচ্চ ৭ বার চেষ্টা
-    gemini_retry_base_delay: float = 0.5
-    gemini_retry_max_delay: float = 2.0
-    gemini_retry_cap_delay: float = 2.0
+    gemini_max_retries: int = DEFAULT_MAX_RETRIES  # প্রথম অনুরোধের পর সর্বোচ্চ retry
+    gemini_retry_base_delay: float = DEFAULT_RETRY_DELAY
+    gemini_retry_max_delay: float = DEFAULT_RETRY_DELAY
+    gemini_retry_cap_delay: float = DEFAULT_RETRY_DELAY
     gemini_requests_per_minute: int = 15
     gemini_temperature: float = 0.2
     gemini_timeout: int = 120

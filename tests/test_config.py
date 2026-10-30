@@ -16,7 +16,11 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.translator_backend, "gemini")
         self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
-        self.assertEqual(cfg.gemini_max_retries, 7)
+        self.assertEqual(cfg.gemini_max_retries, 100)
+        self.assertEqual(
+            (cfg.gemini_retry_base_delay, cfg.gemini_retry_max_delay, cfg.gemini_retry_cap_delay),
+            (1.0, 1.0, 1.0),
+        )
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
         self.assertEqual(cfg.gemini_batch_size, 12)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
@@ -41,7 +45,11 @@ class TestConfig(unittest.TestCase):
         cfg = AppConfig.from_yaml(REPO_ROOT / "config.yaml").validate()
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
-        self.assertEqual(cfg.gemini_max_retries, 7)
+        self.assertEqual(cfg.gemini_max_retries, 100)
+        self.assertEqual(
+            (cfg.gemini_retry_base_delay, cfg.gemini_retry_max_delay, cfg.gemini_retry_cap_delay),
+            (1.0, 1.0, 1.0),
+        )
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
         self.assertEqual(cfg.gemini_batch_size, 12)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
@@ -114,6 +122,7 @@ class TestConfig(unittest.TestCase):
             {"whisper_model": "not-a-model"},
             {"gemini_model": "   "},
             {"gemini_max_retries": 0},
+            {"gemini_max_retries": 101},
             {"gemini_max_input_tokens": 999},
             {"max_tempo": 1.16},
             {"min_tempo": 0.89},

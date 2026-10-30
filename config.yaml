@@ -63,10 +63,10 @@ gemini:
   batch_size: 12                # সর্বোচ্চ paragraph/request; ছোট batch output alignment রক্ষা করে
   max_chars_per_request: 0      # 0 = character cap বন্ধ; token budget ব্যবহার
   max_input_tokens: 5000        # প্রতি API request-এ input-token cap (কনজারভেটিভ local estimate)
-  max_retries: 7                # সর্বোচ্চ ৭ বার চেষ্টা
-  retry_base_delay: 0.5         # নেটওয়ার্ক/429-এ প্রথম অপেক্ষা (সেকেন্ড)
-  retry_max_delay: 2.0          # ব্যাকঅফের সর্বোচ্চ (সেকেন্ড)
-  retry_cap_delay: 2.0          # এক retry-তে কখনো এর বেশি নয়
+  max_retries: 100              # প্রথম অনুরোধের পরে সর্বোচ্চ ১০০ বার retry
+  retry_base_delay: 1.0         # প্রতিটি retry-র আগে নির্দিষ্ট অপেক্ষা (সেকেন্ড)
+  retry_max_delay: 1.0          # পুরোনো কনফিগের সাথে সামঞ্জস্যের জন্য; base_delay-এর কম নয়
+  retry_cap_delay: 1.0          # retry-র অপেক্ষার সর্বোচ্চ সীমা (সেকেন্ড)
   requests_per_minute: 15       # rate limit — আপনার API plan অনুযায়ী বাড়ান/কমান
   temperature: 0.2              # কম = বেশি নির্ভুল ও ধারাবাহিক অনুবাদ
   timeout: 120                  # এক request-এর timeout (সেকেন্ড)
