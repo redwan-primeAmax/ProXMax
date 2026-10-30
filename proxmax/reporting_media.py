@@ -96,7 +96,7 @@ def _media_section(label: str, path: Path | str, info: Mapping[str, Any]) -> Lis
     return lines
 
 def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
-    """Expose only processing settings; deliberately omit keys, tokens, and paths."""
+    """Expose safe settings; omit API credentials and filesystem paths."""
     if config is None:
         return {}
     values: Dict[str, Dict[str, Any]] = {
@@ -114,10 +114,10 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "model": getattr(config, "gemini_model", None)
             if getattr(config, "translator_backend", None) == "gemini"
             else getattr(config, "indictrans2_model", None),
-            "char_rate_chars_per_second": getattr(config, "translation_char_rate", None),
-            "speech_rate_calibration": getattr(config, "translation_calibrate_speech_rate", None),
-            "shorten_pass": getattr(config, "translation_shorten_pass", None),
-            "expand_pass": getattr(config, "translation_expand_pass", None),
+            "gemini_input_token_budget": getattr(config, "gemini_max_input_tokens", None),
+            "pre_tts_duration_prediction": False,
+            "shorten_retry_policy": "only after measured TTS, edge-silence trim, and allowed tempo fit",
+            "text_expansion_to_fill_gaps": False,
         },
         "TTS": {
             "engine": getattr(config, "tts_engine", None),

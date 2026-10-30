@@ -95,51 +95,24 @@ class TestMaleVoiceAndGaps(unittest.TestCase):
         audio[int(0.4 * sr):int(0.9 * sr)] = 0.4
         self.assertEqual(engine._finalize(audio).size, audio.size)
 
-    # ---- fill short clips by slowing --------------------------------
-    def test_short_clip_is_slowed_to_fill_its_slot(self):
-        # ২.০s কথা, ২.৫s স্লট → ১২% সীমা পর্যন্ত ধীর (২.২৪s), নীরবতা কমে
-        tempo = compute_tempo(2.0, 2.5, fill_extension=0.12)
-        self.assertLess(tempo, 1.0)
-        self.assertGreaterEqual(tempo, 1.0 / 1.12 - 1e-6)
-        self.assertAlmostEqual(2.0 / tempo, 2.24, places=2)
+    # ---- slow short clips without expanding text -------------------------
+    def test_short_clip_is_slowed_but_does_not_fill_the_whole_slot(self):
+        tempo = compute_tempo(2.0, 2.5)
+        self.assertEqual(tempo, 0.90)
+        self.assertAlmostEqual(2.0 / tempo, 2.22, places=2)
+        self.assertLess(2.0 / tempo, 2.5)
 
-    def test_fill_never_exceeds_extension(self):
-        # ৭s কথা, ১২s স্লট → ১২%-এর বেশি ধীর করা হয় না
-        tempo = compute_tempo(7.0, 12.0, fill_extension=0.12)
-        self.assertAlmostEqual(tempo, 1.0 / 1.12, places=4)
+    def test_slowdown_respects_the_ninety_percent_floor(self):
+        self.assertEqual(compute_tempo(7.0, 12.0), 0.90)
 
-    def test_fill_can_be_disabled(self):
-        self.assertEqual(compute_tempo(2.0, 2.5, fill_extension=0.0), 1.0)
+    def test_legacy_extension_only_applies_if_slowdown_is_disabled(self):
+        self.assertEqual(
+            compute_tempo(2.0, 2.5, slow_down_short_clips=False, fill_extension=0.0),
+            1.0,
+        )
 
-    def test_no_fill_when_clip_is_longer_than_slot(self):
-        self.assertGreater(compute_tempo(3.0, 2.4, fill_extension=0.12), 1.0)
-
-    def test_gap_filler_does_not_use_multi_second_pause_after_speech(self):
-        from proxmax.pipeline import DubbingPipeline
-
-        class _Translator:
-            def __init__(self):
-                self.calls = 0
-
-            def expand_to_fit(self, segments, targets):
-                self.calls += 1
-                return 0
-
-        translator = _Translator()
-        pipeline = DubbingPipeline.__new__(DubbingPipeline)
-        pipeline.config = AppConfig().validate()
-        pipeline.translator = translator
-        pipeline._tts = None
-        first = Segment(index=0, start=1.0, end=2.0, text_en="First line.", text_bn="Short.")
-        first.tts_audio_path = Path("unused-first.wav")
-        first.tts_duration = 1.0
-        second = Segment(index=1, start=6.0, end=7.0, text_en="Second line.", text_bn="Also short.")
-        second.tts_audio_path = Path("unused-second.wav")
-        second.tts_duration = 1.0
-
-        filled = pipeline._fill_short_slots([first, second], Path("unused"), total_duration=8.0)
-        self.assertEqual(filled, 0)
-        self.assertEqual(translator.calls, 0)
+    def test_no_slowdown_for_a_clip_longer_than_its_slot(self):
+        self.assertGreater(compute_tempo(3.0, 2.4), 1.0)
 
 
 class TestEdgeVoiceResolution(unittest.TestCase):
@@ -236,6 +209,18 @@ class TestProsodyUnits(unittest.TestCase):
         for unit in units:
             self.assertLessEqual(unit.end - unit.start, 10.5 + 1e-6)
 
+    def test_default_speech_units_stay_within_five_seconds(self):
+        from proxmax.prosody import build_units
+
+        segments = [
+            self._seg(0, 0.0, 2.0, "first unfinished phrase"),
+            self._seg(1, 2.05, 4.0, "second unfinished phrase"),
+            self._seg(2, 4.05, 6.0, "third unfinished phrase"),
+        ]
+        units = build_units(segments, text_attr="text_en")
+        self.assertGreater(len(units), 1)
+        self.assertTrue(all(unit.end - unit.start <= 5.0 for unit in units))
+
     def test_bangla_text_is_joined_for_tts(self):
         from proxmax.prosody import build_units
 
@@ -321,16 +306,12 @@ class TestSpeechRateCalibration(unittest.TestCase):
 
         self.assertEqual(calibrate(Broken(), fallback=12.0), 12.0)
 
-    def test_translator_accepts_measured_rate(self):
+    def test_translator_emits_text_only_paragraphs(self):
         translator = create_translator("gemini", gemini_api_key="test-key")
         try:
-            translator.set_char_rate(11.4)
-            self.assertAlmostEqual(translator.char_rate, 11.4, places=2)
-            payload = translator._payload([("hello", 2.0)])
-            data = json.loads(payload)
-            self.assertEqual(data["lines"][0]["d"], 2.0)
-            self.assertEqual(data["lines"][0]["c"], int(round(2.0 * 11.4)))
-            translator.set_char_rate(999)  # অবাস্তব মান উপেক্ষা করা হয়
-            self.assertAlmostEqual(translator.char_rate, 11.4, places=2)
+            payload = translator._payload([("hello", 2.0)], include_timing=True)
+            self.assertEqual(payload, "Paragraph 1:\nhello")
+            self.assertNotIn("2.0", payload)
+            self.assertNotIn('"d"', payload)
         finally:
             translator.close()

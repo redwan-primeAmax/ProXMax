@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import random
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -15,8 +14,10 @@ from .translation_errors import (
 )
 from .translation_parsing import parse_numbered_lines, parse_translations, salvage_translations
 from .translator_config import (
-    SYSTEM_INSTRUCTION, _AUTH_HINTS, _RESPONSE_SCHEMA,
+    SYSTEM_INSTRUCTION,
+    _AUTH_HINTS, _RESPONSE_SCHEMA,
 )
+from .gemini_token_budget import estimate_gemini_input_tokens
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -54,22 +55,54 @@ class GeminiProtocolMixin:
             )
         return self._client
 
-    def _payload(self, items: Sequence[Tuple[str, float]]) -> str:
-        """(text, duration) জোড়াকে JSON-এ রূপান্তর (মডেলের ইনপুট)।"""
-        lines = [
-            {
-                "d": round(float(duration), 2),
-                "c": max(8, int(round(float(duration) * self.char_rate))),
-                "t": text,
-            }
-            for text, duration in items
-        ]
-        return json.dumps({"lines": lines}, ensure_ascii=False)
+    def _payload(
+        self, items: Sequence[Tuple[str, float]], include_timing: bool = False
+    ) -> str:
+        """Render every request as separate text-only paragraphs, never with timing hints."""
+        return "\n\n".join(
+            f"Paragraph {index}:\n{text}" for index, (text, _duration) in enumerate(items, 1)
+        )
 
-    def _payload_numbered(self, items: Sequence[Tuple[str, float]]) -> str:
-        """নম্বরযুক্ত সাধারণ টেক্সট — JSON ব্যর্থ হলে ব্যবহৃত নিরাপদ বিন্যাস।"""
-        lines = [f"{i}. {text}" for i, (text, _d) in enumerate(items, start=1)]
-        return "\n".join(lines)
+    def _payload_numbered(
+        self, items: Sequence[Tuple[str, float]], include_timing: bool = False
+    ) -> str:
+        """Fallback input remains text-only, blank-line-separated paragraphs."""
+        return self._payload(items)
+
+    @staticmethod
+    def _uses_timing_payload(instruction: str) -> bool:
+        """Timing metadata is intentionally excluded from all Gemini requests."""
+        return False
+
+    def _glossary_hint(self, items: Sequence[Tuple[str, float]]) -> str:
+        """Add only matching, bounded FC Mobile terms to this request."""
+        if not self.hotwords_list:
+            return ""
+        matched = matched_hotwords_for_texts(
+            [text for text, _duration in items], self.hotwords_list,
+            max_matches=20, max_chars=600,
+        )
+        if not matched:
+            return ""
+        return (
+            "\nRecognized football/FC Mobile terms in this batch "
+            f"(keep names/terms accurate in Bangla): {', '.join(matched)}."
+        )
+
+    def _estimate_input_tokens(
+        self,
+        items: Sequence[Tuple[str, float]],
+        instruction: str = SYSTEM_INSTRUCTION,
+        task: str = "Translate each input paragraph into Bangla.",
+    ) -> int:
+        """Fast local estimate of system instruction, task, glossary, and full payload."""
+        count_hint = (
+            f"IMPORTANT: the input has exactly {len(items)} paragraphs — return exactly "
+            f"{len(items)} translations, one per paragraph, in the same order."
+            f"{self._glossary_hint(items)}"
+        )
+        text = f"{instruction}\n{task}\n{count_hint}\nInput paragraphs:\n{self._payload(items)}"
+        return estimate_gemini_input_tokens(text)
 
     def _output_token_budget(self, items: Sequence[Tuple[str, float]]) -> int:
         """এই ব্যাচের উত্তরের জন্য কত output token দরকার তার হিসাব।"""
@@ -91,10 +124,10 @@ class GeminiProtocolMixin:
         self,
         items: Sequence[Tuple[str, float]],
         instruction: str = SYSTEM_INSTRUCTION,
-        task: str = "Translate each line into Bangla.",
+        task: str = "Translate each input paragraph into Bangla.",
         mode: str = "json",
     ) -> List[str]:
-        """এক request-এ একাধিক লাইন প্রসেস করে (retry ছাড়া)।"""
+        """এক request-এ একাধিক paragraph প্রসেস করে (retry ছাড়া)।"""
         from google.genai import types
 
         client = self._ensure_client()
@@ -103,27 +136,17 @@ class GeminiProtocolMixin:
             "temperature": self.temperature if mode == "json" else 0.0,
             "max_output_tokens": self._output_token_budget(items),
         }
-        glossary_hint = ""
-        if self.hotwords_list:
-            # Full vocabulary stays local; only exact matches from this batch enter the prompt.
-            matched = matched_hotwords_for_texts(
-                [text for text, _d in items],
-                self.hotwords_list,
-                max_matches=20,
-                max_chars=600,
-            )
-            if matched:
-                glossary_hint = (
-                    f"\nRecognized football/FC Mobile terms in this batch "
-                    f"(keep names/terms accurate in Bangla): {', '.join(matched)}."
-                )
-
+        noun = "paragraphs"
+        singular = "paragraph"
+        label = "Input paragraphs:"
+        glossary_hint = self._glossary_hint(items)
         count_hint = (
-            f"IMPORTANT: the input has exactly {len(items)} lines — return exactly "
-            f"{len(items)} items, one per line, in the same order.{glossary_hint}"
+            f"IMPORTANT: the input has exactly {len(items)} {noun} — return exactly "
+            f"{len(items)} translations, one per {singular}, in the same order.{glossary_hint}"
         )
+        payload = self._payload(items)
         if mode == "json":
-            contents = f"{task}\n{count_hint}\n{self._payload(items)}"
+            contents = f"{task}\n{count_hint}\n{label}\n{payload}"
             if self._use_schema:
                 kwargs["response_mime_type"] = "application/json"
                 kwargs["response_schema"] = _RESPONSE_SCHEMA
@@ -132,14 +155,14 @@ class GeminiProtocolMixin:
                 f"{task}\n"
                 f'Return ONLY a JSON object like {{"translations": ["<bangla 1>", "<bangla 2>"]}} '
                 f"with exactly {len(items)} strings in the same order. No other text.\n"
-                f"{count_hint}\nInput lines:\n{self._payload(items)}"
+                f"{count_hint}\n{label}\n{payload}"
             )
         else:
             contents = (
                 f"{task}\n"
-                f"Answer with exactly {len(items)} numbered lines, each like "
-                f"`1. <bangla translation>`. No JSON, no explanation.\n"
-                f"{count_hint}\nInput lines:\n{self._payload_numbered(items)}"
+                f"Answer with exactly {len(items)} numbered translations, one per {singular}. "
+                "No JSON, timestamps, or explanation.\n"
+                f"{count_hint}\n{label}\n{self._payload_numbered(items)}"
             )
 
         thinking = self._thinking_config(types)

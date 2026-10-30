@@ -6,7 +6,7 @@ import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import Segment
-from .text_utils import estimate_speech_seconds, normalise_bangla
+from .text_utils import normalise_bangla
 from .translation_errors import TranslationError, _PartialBatchError, _ResponseFormatError, _error_message
 from .translation_parsing import normalise_text
 from .translator_config import SYSTEM_INSTRUCTION
@@ -22,13 +22,21 @@ class GeminiOperationsMixin:
         self,
         items: Sequence[Tuple[str, float]],
         instruction: str = SYSTEM_INSTRUCTION,
-        task: str = "Translate each line into Bangla.",
+        task: str = "Translate each input paragraph into Bangla.",
         description: str = "  Translate (Gemini)",
         depth: int = 0,
     ) -> List[str]:
         """সব ব্যাচ চালিয়ে ফলাফল একই ক্রমে ফেরত দেয়।"""
         results: List[str] = []
-        for batch in self._make_batches(items):
+        for batch in self._make_batches(items, instruction=instruction, task=task):
+            if self._estimate_input_tokens(batch, instruction, task) > self.max_input_tokens:
+                self._skipped_lines += len(batch)
+                logger.warning(
+                    "⚠️ একটি সম্পূর্ণ chunk-ও input-token cap (%d) ছাড়ায় — অংশ কেটে পাঠানো হবে না; chunk বাদ।",
+                    self.max_input_tokens,
+                )
+                results.extend([""] * len(batch))
+                continue
             try:
                 results.extend(
                     self._call_with_retry(batch, instruction=instruction, task=task)
@@ -84,7 +92,7 @@ class GeminiOperationsMixin:
         }
 
     def translate_text(self, text: str, duration: float = 0.0) -> str:
-        """Translate a single English string into Bangla."""
+        """Translate text only; the legacy duration argument is never sent to Gemini."""
         original = normalise_text(text)
         if not original:
             return ""
@@ -92,29 +100,55 @@ class GeminiOperationsMixin:
             cached = self._cache.get(original)
         if cached is not None:
             return cached
-        hint = duration if duration > 0 else estimate_speech_seconds(original, self.char_rate)
-        result = normalise_bangla(self._run_batches([(original, hint)])[0])
+        result = normalise_bangla(self._run_batches([(original, 0.0)])[0])
         with self._cache_lock:
             self._cache[original] = result
         return result
 
-    def _make_batches(self, items: Sequence[Tuple[str, float]]) -> List[List[Tuple[str, float]]]:
-        """লাইনগুলোকে সংখ্যা ও অক্ষর-সীমা অনুযায়ী batch-এ ভাগ করে।"""
+    def _make_batches(
+        self,
+        items: Sequence[Tuple[str, float]],
+        instruction: str = SYSTEM_INSTRUCTION,
+        task: str = "Translate each input paragraph into Bangla.",
+    ) -> List[List[Tuple[str, float]]]:
+        """Pack whole paragraphs under token, item-count, and optional legacy char limits."""
         batches: List[List[Tuple[str, float]]] = []
         current: List[Tuple[str, float]] = []
         chars = 0
-        for text, duration in items:
-            if current and (
-                len(current) >= self.batch_size
-                or chars + len(text) > self.max_chars_per_request
-            ):
+        for item in items:
+            text = item[0]
+            candidate = current + [item]
+            over_limit = (
+                len(candidate) > self.batch_size
+                or (self.max_chars_per_request > 0
+                    and chars + len(text) > self.max_chars_per_request)
+                or self._estimate_input_tokens(candidate, instruction, task) > self.max_input_tokens
+            )
+            if current and over_limit:
                 batches.append(current)
                 current, chars = [], 0
-            current.append((text, duration))
+                candidate = [item]
+            current.append(item)
             chars += len(text)
+            # Keep an over-budget paragraph intact as a singleton; _run_batches
+            # will skip the whole paragraph instead of truncating its text.
+            if len(current) == 1 and self._estimate_input_tokens(current, instruction, task) > self.max_input_tokens:
+                batches.append(current)
+                current, chars = [], 0
         if current:
             batches.append(current)
         return batches
+
+    def batch_segments(self, segments: Sequence[Segment]) -> List[List[Segment]]:
+        """Return pipeline groups that match the token-budget request boundaries."""
+        items = [(normalise_text(segment.text_en), 0.0) for segment in segments]
+        item_batches = self._make_batches(items)
+        groups: List[List[Segment]] = []
+        cursor = 0
+        for batch in item_batches:
+            groups.append(list(segments[cursor:cursor + len(batch)]))
+            cursor += len(batch)
+        return groups
 
     def translate_segments(self, segments: List[Segment]) -> List[Segment]:
         """সব segment অনুবাদ করে; timestamp অপরিবর্তিত থাকে।"""
@@ -138,7 +172,7 @@ class GeminiOperationsMixin:
                 continue
             if text not in groups:
                 groups[text] = []
-                items.append((text, seg.duration))
+                items.append((text, 0.0))
             groups[text].append(seg)
 
         if items:
@@ -184,7 +218,7 @@ class GeminiOperationsMixin:
             "♻️ %dটি লাইন অনূদিত ছিল — ছোট ব্যাচে আবার চেষ্টা করা হচ্ছে (নীরবতা এড়াতে)…",
             len(by_text),
         )
-        items = [(text, group[0].duration) for text, group in by_text.items()]
+        items = [(text, 0.0) for text in by_text]
         saved_batch = self.batch_size
         recovered = 0
         try:

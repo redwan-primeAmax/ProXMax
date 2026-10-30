@@ -17,12 +17,15 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.translator_backend, "gemini")
         self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
         self.assertEqual(cfg.gemini_max_retries, 7)
+        self.assertEqual(cfg.gemini_max_input_tokens, 5000)
+        self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
+        self.assertFalse(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertTrue(cfg.save_report)
         self.assertTrue(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
-        self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.95, 1.25))
+        self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.90, 1.15))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
         self.assertLessEqual(cfg.chunk_max_seconds, 29.5)
         self.assertTrue(cfg.input_dir.endswith("Video/input"))
@@ -38,16 +41,24 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.whisper_model, "large-v3")
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
         self.assertEqual(cfg.gemini_max_retries, 7)
+        self.assertEqual(cfg.gemini_max_input_tokens, 5000)
+        self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
+        self.assertFalse(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertTrue(cfg.save_report)
         self.assertTrue(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
-        self.assertAlmostEqual(cfg.max_tempo, 1.25)
-        self.assertAlmostEqual(cfg.min_tempo, 0.95)
+        self.assertAlmostEqual(cfg.max_tempo, 1.15)
+        self.assertAlmostEqual(cfg.min_tempo, 0.90)
         self.assertGreaterEqual(cfg.carry_context_chars, 100)
         self.assertTrue(cfg.seam_repair)
         self.assertGreater(cfg.chunk_min_seconds, 10)
+
+    def test_input_token_budget_accepts_presets_and_custom_values(self):
+        for budget in (1000, 2000, 5000, 10000, 20000, 12345):
+            with self.subTest(budget=budget):
+                self.assertEqual(AppConfig(gemini_max_input_tokens=budget).validate().gemini_max_input_tokens, budget)
 
     def test_section_scoped_aliases(self):
         cfg = AppConfig()
@@ -57,7 +68,7 @@ class TestConfig(unittest.TestCase):
                 "translation": {"backend": "gemini", "max_retries": 6},
                 "gemini": {"model": "gemini-test-model", "api_key": "test-key"},
                 "tts": {"voice": "bn-BD-PradeepNeural", "max_retries": 2, "engine": "edge"},
-                "sync": {"max_tempo": 1.3, "workers": 2},
+                "sync": {"max_tempo": 1.15, "workers": 2},
                 "runtime": {"release_gpu_when_done": False, "enable_overlap": False},
                 "output": {"save_report": False},
                 "quality": {"validate_dub_audio": False, "min_text_coverage": 0.72},
@@ -72,7 +83,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.tts_voice, "bn-BD-PradeepNeural")
         self.assertEqual(cfg.sync_workers, 2)
-        self.assertAlmostEqual(cfg.max_tempo, 1.3)
+        self.assertAlmostEqual(cfg.max_tempo, 1.15)
         self.assertFalse(cfg.release_gpu_when_done)
         self.assertFalse(cfg.enable_overlap)
         self.assertFalse(cfg.save_report)
@@ -98,6 +109,9 @@ class TestConfig(unittest.TestCase):
             {"whisper_model": "not-a-model"},
             {"gemini_model": "   "},
             {"gemini_max_retries": 0},
+            {"gemini_max_input_tokens": 999},
+            {"max_tempo": 1.16},
+            {"min_tempo": 0.89},
             {"translator_backend": "google"},
             {"translator_backend": "deepl"},
             {"tts_engine": "siri"},

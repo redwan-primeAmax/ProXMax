@@ -17,13 +17,12 @@ from .pipeline_helpers import (
 )
 from .pipeline_process import PipelineProcessingMixin
 from .pipeline_translation import PipelineTranslationMixin
-from .speech_rate import calibrate as calibrate_speech_rate
 from .stt import SpeechToText
 from .muxer import VideoMuxer
 from .reporting import report_path_for as build_report_path
 from .sync_engine import SyncEngine
 from .translator import create_translator
-from .tts import BaseTTSEngine, EdgeTTSEngine, build_tts_engine, resolve_tts_engine
+from .tts import BaseTTSEngine, build_tts_engine
 from .utils import format_duration, get_logger, get_media_duration, output_filename_for
 
 logger = get_logger(__name__)
@@ -47,6 +46,7 @@ class DubbingPipeline(
             compute_type=cfg.whisper_compute_type,
             beam_size=cfg.whisper_beam_size,
             vad_min_silence_ms=cfg.vad_min_silence_ms,
+            sentence_max_seconds=cfg.tts_unit_max_seconds,
             chunk_min_seconds=cfg.chunk_min_seconds,
             chunk_max_seconds=cfg.chunk_max_seconds,
             chunk_pad_ms=cfg.chunk_pad_ms,
@@ -67,6 +67,7 @@ class DubbingPipeline(
             gemini_model=cfg.gemini_model,
             gemini_batch_size=cfg.gemini_batch_size,
             gemini_max_chars_per_request=cfg.gemini_max_chars_per_request,
+            gemini_max_input_tokens=cfg.gemini_max_input_tokens,
             gemini_max_retries=cfg.gemini_max_retries,
             gemini_retry_base_delay=cfg.gemini_retry_base_delay,
             gemini_retry_max_delay=cfg.gemini_retry_max_delay,
@@ -90,6 +91,7 @@ class DubbingPipeline(
             borrow_silence_ms=cfg.borrow_silence_ms,
             prefer_rubberband=cfg.prefer_rubberband,
             fill_extension=cfg.fill_extension,
+            silence_pad_ms=cfg.tts_trim_pad_ms,
         )
         self.muxer = VideoMuxer(audio_bitrate=cfg.audio_bitrate, use_hwaccel=cfg.use_hwaccel)
 
@@ -125,33 +127,9 @@ class DubbingPipeline(
                 cfg,
                 total_audio_seconds=total_speech_seconds,
             )
-            self._calibrate_speech_rate()
         else:
             self._tts.set_budget(None, total_speech_seconds)
         return self._tts
-
-    def _calibrate_speech_rate(self) -> None:
-        """আসল কণ্ঠ দিয়ে বাংলা বলার গতি মেপে অনুবাদের বাজেট ঠিক করে।"""
-        cfg = self.config
-        if not cfg.translation_calibrate_speech_rate:
-            return
-        if self._tts is None or not hasattr(self._tts, "synthesize"):
-            return
-        if not isinstance(self._tts, EdgeTTSEngine):
-            return
-        try:
-            rate = calibrate_speech_rate(
-                self._tts,
-                fallback=cfg.translation_char_rate,
-                sample_rate=cfg.sync_sample_rate,
-            )
-        except Exception as exc:
-            logger.info("কণ্ঠের গতি মাপা যায়নি (%s) — অনুমানকৃত হার ব্যবহার হবে।", exc)
-            return
-        setter = getattr(self.translator, "set_char_rate", None)
-        if callable(setter) and rate > 0:
-            source = "measured" if abs(rate - cfg.translation_char_rate) > 1e-6 else "config"
-            setter(rate, source=source)
 
     @contextmanager
     def _step(self, number: int, title: str) -> Iterator[None]:

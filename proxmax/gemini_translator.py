@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 class GeminiTranslator(
     GeminiOperationsMixin, GeminiRepairMixin, GeminiProtocolMixin, BaseTranslator
 ):
-    """Gemini API translator with batching, duration hints, and retries."""
+    """Gemini API translator with text-only paragraph batching and retries."""
 
     FORMAT_MODES = ("json", "json_plain", "lines")
 
@@ -38,6 +38,7 @@ class GeminiTranslator(
         model_name: Optional[str] = None,
         batch_size: int = DEFAULT_GEMINI_BATCH_SIZE,
         max_chars_per_request: int = DEFAULT_MAX_CHARS_PER_REQUEST,
+        max_input_tokens: int = 5000,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_base_delay: float = 0.5,
         retry_max_delay: float = 2.0,
@@ -67,7 +68,8 @@ class GeminiTranslator(
 
         self.model = chosen_model
         self.batch_size = max(1, int(batch_size))
-        self.max_chars_per_request = max(500, int(max_chars_per_request))
+        self.max_chars_per_request = max(0, int(max_chars_per_request))
+        self.max_input_tokens = max(1000, int(max_input_tokens))
         self.max_retries = min(10, max(1, int(max_retries)))
         self.retry_base_delay = max(0.001, float(retry_base_delay))
         self.retry_max_delay = max(self.retry_base_delay, float(retry_max_delay))

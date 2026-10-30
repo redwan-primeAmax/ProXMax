@@ -97,8 +97,9 @@ class AppConfig:
     translator_backend: str = "gemini"      # "gemini" | "indictrans2"
     gemini_api_key: str = ""                # খালি হলে GEMINI_API_KEY / GOOGLE_API_KEY env
     gemini_model: str = DEFAULT_GEMINI_MODEL
-    gemini_batch_size: int = 25             # এক request-এ কত লাইন
-    gemini_max_chars_per_request: int = 12000
+    gemini_batch_size: int = 2048           # token budget-এর পাশাপাশি item-count safety cap
+    gemini_max_chars_per_request: int = 0    # 0 = legacy character cap বন্ধ; input-token cap ব্যবহার
+    gemini_max_input_tokens: int = 5000     # প্রতি Gemini request-এর conservative input-token cap
     gemini_max_retries: int = 7             # সর্বোচ্চ ৭ বার চেষ্টা
     gemini_retry_base_delay: float = 0.5
     gemini_retry_max_delay: float = 2.0
@@ -107,15 +108,12 @@ class AppConfig:
     gemini_temperature: float = 0.2
     gemini_timeout: int = 120
     gemini_max_output_tokens: int = 8192
-    #: বাংলা কথার গতি (অক্ষর/সেকেন্ড) — ক্যালিব্রেশন না হলে এই মানই ধরা হয়
+    #: Legacy local speech-rate setting; no duration hint is sent to Gemini
     translation_char_rate: float = 12.0
-    #: শুরুতেই আসল কণ্ঠ দিয়ে ২টি বাক্য বলে প্রকৃত গতি মাপা (≈১–২s খরচ)
-    translation_calibrate_speech_rate: bool = True
-    #: সময়ে না আঁটা লাইন Gemini দিয়ে ছোট করে লেখানো
-    translation_shorten_pass: bool = True
-    #: স্লটের চেয়ে অনেক ছোট হয়ে যাওয়া লাইন আরও ভরাট করে লেখানো
-    translation_expand_pass: bool = True
-    #: কত সেকেন্ডের বেশি ফাঁক থাকলে লাইনটি ভরাট করে লেখানো হবে
+    #: Legacy compatibility flags; pre-TTS prediction/expansion is intentionally disabled
+    translation_calibrate_speech_rate: bool = False
+    translation_shorten_pass: bool = False
+    translation_expand_pass: bool = False
     translation_expand_min_gap: float = 0.9
     indictrans2_model: str = "ai4bharat/indictrans2-en-indic-1B"
 
@@ -130,21 +128,21 @@ class AppConfig:
     tts_pitch: str = "+0Hz"
     tts_concurrency: int = 5
     tts_max_retries: int = 3
-    #: TTS ক্লিপের শুরু/শেষের নীরবতা ছেঁটে ফেলা
-    tts_trim_silence: bool = True
+    #: পূর্ণ TTS edge-silence trim বন্ধ; overrun হলে sync-এ শুধু প্রয়োজনীয় অংশ বাদ যায়
+    tts_trim_silence: bool = False
     tts_trim_pad_ms: int = 25
     #: এক clip-এ কয় সেকেন্ড পর্যন্ত কথা (বাক্য জোড়া লাগিয়ে)
-    tts_unit_max_seconds: float = 12.0
+    tts_unit_max_seconds: float = 5.0
     #: এক clip-এ সর্বোচ্চ অক্ষর
     tts_unit_max_chars: int = 240
     #: এই সেকেন্ডের কম বিরতি থাকলে দুই segment এক clip-এ পড়া হয়
     tts_unit_max_gap: float = 0.6
 
     # --- audio-video sync ----------------------------------------------------
-    min_tempo: float = 0.95
+    min_tempo: float = 0.90                # সর্বোচ্চ ১০% ধীর
     fill_extension: float = 0.12
-    max_tempo: float = 1.25                 # এর বেশি দ্রুত করলে কণ্ঠ বিকৃত শোনায়
-    slow_down_short_clips: bool = False
+    max_tempo: float = 1.15                 # সর্বোচ্চ ১৫% দ্রুত
+    slow_down_short_clips: bool = True
     slot_gap_ms: int = 80
     borrow_silence_ms: int = 250
     prefer_rubberband: bool = True
@@ -258,6 +256,7 @@ class AppConfig:
                 "model": "gemini_model",
                 "batch_size": "gemini_batch_size",
                 "max_chars_per_request": "gemini_max_chars_per_request",
+                "max_input_tokens": "gemini_max_input_tokens",
                 "max_retries": "gemini_max_retries",
                 "retry_base_delay": "gemini_retry_base_delay",
                 "retry_max_delay": "gemini_retry_max_delay",

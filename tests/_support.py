@@ -50,6 +50,7 @@ from proxmax.sync_engine import (                                      # noqa: E
     find_overlaps,
     plan_windows,
 )
+from proxmax.sync_silence import trim_edge_silence_for_overrun        # noqa: E402
 from proxmax.text_utils import (                                       # noqa: E402
     estimate_speech_seconds,
     normalise_bangla,
@@ -124,14 +125,19 @@ class _FakeClient:
         self.closed += 1
 
 def _lines_from_contents(contents: str) -> list:
-    """কোনো request-এর ইনপুট থেকে মূল ইংরেজি লাইনগুলো বের করে (JSON বা নম্বরযুক্ত)।"""
-    marker = contents.find('{"lines"')
+    """Extract separate text-only Gemini paragraphs from a request."""
+    marker = contents.find("Input paragraphs:")
     if marker >= 0:
-        blob = contents[marker:]
-        try:
-            return [line["t"] for line in json.loads(blob)["lines"]]
-        except (ValueError, KeyError, TypeError):
-            pass
+        payload = contents[marker + len("Input paragraphs:"):].strip()
+        return [
+            match.group("text").strip()
+            for match in re.finditer(
+                r"(?:^|\n)Paragraph\s+\d+\s*:\s*\n(?P<text>.*?)(?=\n\s*\nParagraph\s+\d+\s*:|\Z)",
+                payload,
+                flags=re.DOTALL,
+            )
+            if match.group("text").strip()
+        ]
     payload = contents.split("Input lines:", 1)[-1]
     lines = []
     for line in payload.splitlines():

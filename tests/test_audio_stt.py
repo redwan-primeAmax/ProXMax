@@ -160,6 +160,15 @@ class TestSegmenter(unittest.TestCase):
         self.assertGreaterEqual(len(segments), 4)
         self.assertTrue(all(len(s.words) <= 12 for s in segments))
 
+    def test_default_translation_chunks_are_at_most_five_seconds(self):
+        from proxmax.models import Word
+
+        words = [Word(start=i * 0.3, end=i * 0.3 + 0.25, word=f" word{i}") for i in range(24)]
+        segments = build_sentences(words, max_words=100)
+        self.assertGreater(len(segments), 1)
+        self.assertTrue(all(segment.end - segment.start <= 5.0 for segment in segments))
+        self.assertTrue(all(segment.text_en.strip() for segment in segments))
+
     def test_long_run_splits_at_widest_pause(self):
         from proxmax.models import Word
         from proxmax.segmenter import build_sentences

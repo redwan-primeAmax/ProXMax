@@ -2,7 +2,7 @@
 
 English ভিডিও থেকে স্বয়ংক্রিয়ভাবে Bangla ডাবিং তৈরি করার সম্পূর্ণ
 pipeline এই প্যাকেজে রয়েছে: নীরবতা-সচেতন chunking → faster-whisper STT
-(hotwords.txt সহ) → duration-aware Gemini অনুবাদ → বিল্ট-ইন বাংলা neural
+(hotwords.txt সহ) → token-budgeted, ≤৫s Gemini chunk অনুবাদ → বিল্ট-ইন বাংলা neural
 ভয়েস (edge-tts) → non-overlap sync → mux।
 """
 

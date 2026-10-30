@@ -42,13 +42,13 @@ class TestPipelineTranslationOverlap(unittest.TestCase):
         self.assertGreaterEqual(tts_seconds, 0.0)
         self.assertEqual(len(translator.translated), 3)   # ১০ লাইন / ৪
         self.assertEqual(len(tts.calls), 3)
-        self.assertEqual(translator.shorten_calls, 3)
-        # প্রতিটি গ্রুপ synthesize হওয়ার আগেই অনূদিত ও ছোট করা হয়েছে
+        self.assertEqual(translator.shorten_calls, 0)
+        # কোনো pre-TTS duration predictor অনুবাদ বদলায় না
         self.assertEqual([idx for group in tts.calls for idx, _ in group], list(range(10)))
         for group in tts.calls:
             for _idx, text in group:
-                self.assertTrue(text.endswith("s"), text)
-        self.assertTrue(all(s.text_bn.endswith("s") for s in segments))
+                self.assertTrue(text.startswith("টি"), text)
+        self.assertTrue(all(s.text_bn == f"টি{s.index}" for s in segments))
 
     def test_translation_failure_stops_gracefully(self):
         translator = _RecordingTranslator(fail_on_group=2)
@@ -73,4 +73,4 @@ class TestPipelineTranslationOverlap(unittest.TestCase):
             pipeline._translate_and_synthesize(segments, Path(tmp))
         self.assertEqual(len(translator.translated), 1)
         self.assertEqual(len(tts.calls), 1)
-        self.assertEqual(translator.shorten_calls, 1)
+        self.assertEqual(translator.shorten_calls, 0)
