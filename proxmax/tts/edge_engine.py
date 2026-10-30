@@ -10,9 +10,10 @@ import asyncio
 import threading
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .. import audio_fx
+from ..config import DEFAULT_TTS_CONCURRENCY
 from ..models import Segment
 from ..text_utils import prepare_for_speech
 from ..utils import FFmpegError, ensure_tool, get_logger, run_ffmpeg
@@ -22,6 +23,7 @@ logger = get_logger(__name__)
 
 BANGLA_VOICE_FEMALE = "bn-BD-NabanitaNeural"
 BANGLA_VOICE_MALE = "bn-BD-PradeepNeural"
+_EDGE_RECOVERY_CONCURRENCY = 5
 
 #: একই প্রসেসে বারবার ভয়েস-তালিকা নামানো এড়াতে একবারই রাখা হয়
 _VOICE_LIST: dict = {}
@@ -38,7 +40,7 @@ class EdgeTTSEngine(BaseTTSEngine):
         rate: str = "+0%",
         volume: str = "+0%",
         pitch: str = "+0Hz",
-        concurrency: int = 5,
+        concurrency: int = DEFAULT_TTS_CONCURRENCY,
         max_retries: int = 3,
         sample_rate: int = 24000,
         trim_silence: bool = True,
@@ -52,7 +54,8 @@ class EdgeTTSEngine(BaseTTSEngine):
         self.rate = rate
         self.volume = volume
         self.pitch = pitch
-        self.concurrency = max(1, concurrency)
+        self.concurrency = max(1, int(concurrency))
+        self._active_concurrency = self.concurrency
         self.max_retries = max(1, max_retries)
         self.sample_rate = sample_rate
 
@@ -67,6 +70,12 @@ class EdgeTTSEngine(BaseTTSEngine):
                 "edge-tts ইনস্টল নেই। চালান: pip install -r requirements.txt"
             ) from exc
 
+    def set_budget(
+        self, time_budget_seconds: Optional[float], total_audio_seconds: float = 0.0,
+    ) -> None:
+        """Try the configured concurrency again at the start of each video."""
+        self._active_concurrency = self.concurrency
+
     # ------------------------------------------------------------------
     def synthesize(self, segments: List[Segment], output_dir: Path | str) -> List[Segment]:
         """প্রতিটি segment-এর জন্য বাংলা ক্লিপ তৈরি করে (একসাথে কয়েকটি)।"""
@@ -79,10 +88,24 @@ class EdgeTTSEngine(BaseTTSEngine):
         self.voice = self._resolve_voice()
         logger.info(
             "edge-tts (বিল্ট-ইন বাংলা ভয়েস) শুরু: %d segment | voice=%s | concurrency=%d",
-            len(todo), self.voice, self.concurrency,
+            len(todo), self.voice, self._active_concurrency,
         )
         started = time.perf_counter()
         self._run_async(self._synthesize_all(todo, output_dir))
+
+        failed = [s for s in todo if not s.tts_audio_path]
+        if failed and self._active_concurrency > _EDGE_RECOVERY_CONCURRENCY:
+            logger.warning(
+                "⚠️ %dটি Edge TTS segment ব্যর্থ — সার্ভিসে চাপ কমাতে concurrency=%d দিয়ে আবার চেষ্টা।",
+                len(failed), _EDGE_RECOVERY_CONCURRENCY,
+            )
+            self._run_async(
+                self._synthesize_all(failed, output_dir, concurrency=_EDGE_RECOVERY_CONCURRENCY)
+            )
+            if len(failed) >= max(2, (len(todo) + 4) // 5):
+                self._active_concurrency = _EDGE_RECOVERY_CONCURRENCY
+                logger.warning("বেশি segment ব্যর্থ হওয়ায় এই ভিডিওতে TTS concurrency=%d থাকবে।",
+                               self._active_concurrency)
 
         done = [s for s in todo if s.tts_audio_path]
         if not done:
@@ -90,6 +113,8 @@ class EdgeTTSEngine(BaseTTSEngine):
                 "একটি segment-এরও অডিও তৈরি হয়নি। ইন্টারনেট সংযোগ ও edge-tts "
                 "সার্ভিসের উপলব্ধতা যাচাই করুন।"
             )
+        if len(done) < len(todo):
+            logger.warning("⚠️ %dটি segment-এর TTS অডিও তৈরি হয়নি।", len(todo) - len(done))
         logger.info(
             "edge-tts শেষ: %d/%d segment (%.1fs)", len(done), len(todo),
             time.perf_counter() - started,
@@ -160,14 +185,27 @@ class EdgeTTSEngine(BaseTTSEngine):
             "`config.yaml`-এ `tts.gender` বা `tts.voice` ঠিক করুন।"
         )
 
-    async def _synthesize_all(self, segments: List[Segment], output_dir: Path) -> None:
-        semaphore = asyncio.Semaphore(self.concurrency)
+    async def _synthesize_all(
+        self, segments: List[Segment], output_dir: Path, *, concurrency: int | None = None,
+    ) -> None:
+        """Keep a bounded pool busy across all segments, without creating one task per clip."""
+        jobs = iter(segments)
+        completed = 0
+        last_log = time.perf_counter()
+        active = self._active_concurrency if concurrency is None else int(concurrency)
+        workers = min(len(segments), max(1, active))
 
-        async def run_one(seg: Segment) -> None:
-            async with semaphore:
+        async def worker() -> None:
+            nonlocal completed, last_log
+            for seg in jobs:
                 await self._synthesize_one(seg, output_dir)
+                completed += 1
+                now = time.perf_counter()
+                if completed < len(segments) and (completed % 20 == 0 or now - last_log >= 15.0):
+                    logger.info("edge-tts অগ্রগতি: %d/%d segment প্রক্রিয়া হয়েছে", completed, len(segments))
+                    last_log = now
 
-        await asyncio.gather(*(run_one(seg) for seg in segments))
+        await asyncio.gather(*(worker() for _ in range(workers)))
 
     async def _synthesize_one(self, seg: Segment, output_dir: Path) -> None:
         import edge_tts
@@ -186,13 +224,9 @@ class EdgeTTSEngine(BaseTTSEngine):
                 await communicate.save(str(mp3_path))
                 if not mp3_path.is_file() or mp3_path.stat().st_size == 0:
                     raise TTSError("edge-tts খালি অডিও ফেরত দিয়েছে (NoAudioReceived)")
-                await asyncio.to_thread(self._to_wav, mp3_path, wav_path)
-                # edge-tts দুই প্রান্তে নীরবতা দেয় — ছেঁটে দৈর্ঘ্য আবার মাপা হয়
-                clip, rate = audio_fx.read_wav(wav_path)
-                final = self._finalize(clip)
-                audio_fx.write_wav(wav_path, final, rate or self.sample_rate)
+                duration = await asyncio.to_thread(self._convert_and_finalize, mp3_path, wav_path)
                 seg.tts_audio_path = wav_path
-                seg.tts_duration = final.size / float(rate or self.sample_rate)
+                seg.tts_duration = duration
                 return
             except Exception as exc:
                 last_error = exc
@@ -201,6 +235,15 @@ class EdgeTTSEngine(BaseTTSEngine):
         logger.warning("Segment %d-এর edge-tts ব্যর্থ: %s", seg.index, last_error)
         seg.tts_audio_path = None
         seg.tts_duration = None
+
+    def _convert_and_finalize(self, mp3_path: Path, wav_path: Path) -> float:
+        """Convert, postprocess and measure a clip outside the network event loop."""
+        self._to_wav(mp3_path, wav_path)
+        clip, rate = audio_fx.read_wav(wav_path)
+        final = self._finalize(clip)
+        actual_rate = rate or self.sample_rate
+        audio_fx.write_wav(wav_path, final, actual_rate)
+        return final.size / float(actual_rate)
 
     def _to_wav(self, mp3_path: Path, wav_path: Path) -> Path:
         """MP3 → mono WAV (sync ইঞ্জিন শুধু WAV পড়ে)।"""

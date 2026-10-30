@@ -56,6 +56,8 @@ BANGLA_VOICES = {
 DEFAULT_TTS_GENDER = "male"
 #: ডিফল্ট কণ্ঠ (পুরুষ)
 DEFAULT_TTS_VOICE = BANGLA_VOICES[DEFAULT_TTS_GENDER]
+#: Parallel Edge TTS requests; can be reduced if the service throttles.
+DEFAULT_TTS_CONCURRENCY = 12
 
 
 @dataclass
@@ -130,7 +132,7 @@ class AppConfig:
     tts_rate: str = "+0%"
     tts_volume: str = "+0%"
     tts_pitch: str = "+0Hz"
-    tts_concurrency: int = 5
+    tts_concurrency: int = DEFAULT_TTS_CONCURRENCY
     tts_max_retries: int = 3
     #: পূর্ণ TTS edge-silence trim বন্ধ; overrun হলে sync-এ শুধু প্রয়োজনীয় অংশ বাদ যায়
     tts_trim_silence: bool = False

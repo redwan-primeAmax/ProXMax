@@ -219,6 +219,9 @@ class _RecordingTTS:
 
     def synthesize(self, segments, output_dir):
         self.calls.append([(s.index, s.text_bn) for s in segments])
+        for segment in segments:
+            segment.tts_audio_path = Path(output_dir) / f"seg_{segment.index:04d}.wav"
+            segment.tts_duration = segment.duration
         return segments
 
     def describe(self):
