@@ -1,6 +1,6 @@
 # 🎬 ProXMax — স্বয়ংক্রিয় English → Bangla ভিডিও ডাবিং (Google Colab)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb) [![Open Accuracy Diagnostic in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/Accuracy_Diagnostic_Colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/redwan-primeAmax/ProXMax/blob/main/notebook/ProXMax_Colab.ipynb)
 
 **ProXMax** একটি সম্পূর্ণ স্বয়ংক্রিয় পাইথন পাইপলাইন, যা Google Drive-এর ইনপুট ফোল্ডারে রাখা ইংরেজি ভিডিওগুলোকে বাংলা কণ্ঠে ডাব করে আউটপুট ফোল্ডারে সেভ করে। পুরো সিস্টেমটি Google Colab-এর ফ্রি **NVIDIA T4 GPU**-তে চলার জন্য অপ্টিমাইজড।
 
@@ -16,6 +16,7 @@
 | **৪. বাংলা ভয়েস (TTS)** | **বিল্ট-ইন বাংলা neural ভয়েস** (`edge-tts` — পুরুষ কণ্ঠ `bn-BD-PradeepNeural` ডিফল্ট, নারী `bn-BD-NabanitaNeural`) | কোনো নমুনা রেকর্ডিং বা অতিরিক্ত টোকেন ছাড়াই সাথে সাথে স্পষ্ট বাংলা কণ্ঠ তৈরি হয় |
 | **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | কণ্ঠের পিচ অক্ষুণ্ণ রেখে মূল টাইমস্ট্যাম্পে বসায়; **কোনো দুই ক্লিপ কখনো একে অপরের ওপর পড়ে না** |
 | **৬. ভিডিও মাক্সিং** | `ffmpeg -c:v copy -c:a aac` | ভিডিও রি-এনকোড না করেই নতুন বাংলা অডিও যুক্ত করে — মান ১০০% অক্ষুণ্ণ ও অত্যন্ত দ্রুত |
+| **৭. ডিটেইল রিপোর্ট** | secret-safe Markdown (`*_report.markdown`) | source ও dubbed media metadata, ইংরেজি/বাংলা transcript, timestamp, word timing, TTS/sync window, trim ও audio activity এক ফাইলে দেয়; আলাদা SRT তৈরি করে না |
 
 ### FC Mobile হটওয়ার্ড ও timing safeguards
 
@@ -55,6 +56,7 @@ ProXMax/
     │   ├── base.py                # TTS বেস ইন্টারফেস
     │   └── edge_engine.py         # বিল্ট-ইন বাংলা neural ভয়েস (edge-tts)
     ├── sync.py                    # টাইম-স্ট্রেচ ও ওভারল্যাপ-মুক্ত ট্র্যাক অ্যাসেম্বলার
+    ├── reporting.py               # প্রতি ভিডিওর বিস্তারিত Markdown processing report
     └── pipeline.py                # সমান্তরাল অনুবাদ+TTS অর্কেস্ট্রেটর ও ব্যাচ রানার
 ```
 
@@ -73,6 +75,8 @@ ProXMax/
    - **ধাপ ৩:** দ্রুত ডিপেন্ডেন্সি ইনস্টল ও Whisper `large-v3` প্রি-ডাউনলোড (যাতে ভিডিও প্রসেসিংয়ের সময় ডাউনলোড না হয়)
    - **ধাপ ৪:** Gemini API Key প্রদান ও **তাৎক্ষণিক লাইভ যাচাই** (পুরুষ `male` বা নারী `female` কণ্ঠ নির্বাচন)
    - **ধাপ ৫:** সব ভিডিও বাংলায় ডাব করুন!
+
+প্রতিটি সফল ভিডিওর পাশে `Video/output/<stem>_report.markdown` তৈরি হবে। এতে English ও Bangla transcript, timestamp/word timing, TTS ও sync diagnostics এবং media metadata থাকবে; আলাদা `_en.srt` / `_bn.srt` ফাইল আর তৈরি হবে না। Spoken-content timeline আছে, তবে visual action recognition নয়।
 
 ---
 

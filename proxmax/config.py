@@ -160,7 +160,7 @@ class AppConfig:
     audio_bitrate: str = "160k"
     use_hwaccel: bool = True
     skip_existing: bool = True
-    save_srt: bool = True
+    save_report: bool = True
     keep_temp_files: bool = False
     log_level: str = "INFO"
 
@@ -291,7 +291,7 @@ class AppConfig:
             },
             "output": {
                 "bitrate": "audio_bitrate", "hwaccel": "use_hwaccel",
-                "skip_existing": "skip_existing", "save_srt": "save_srt",
+                "skip_existing": "skip_existing", "save_report": "save_report",
                 "keep_temp_files": "keep_temp_files", "log_level": "log_level",
             },
         }
