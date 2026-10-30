@@ -1,0 +1,1 @@
+"""ProXMax test suite."""

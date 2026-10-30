@@ -14,9 +14,9 @@
 | **২. Speech-to-Text (ইংরেজি)** | `faster-whisper` (`large-v3`, প্রি-লোডেড ক্যাশ, নীরবতা-সচেতন ১৮–২৮s চাঙ্কিং + সীমান্ত মেরামত + `hotwords.txt`) | সেটআপ ধাপেই মডেল ক্যাশ হয়; context-aware hotword prompt FC Mobile UI, event, gameplay ও curated player-name spelling-এ সাহায্য করে—তবে নাম শনাক্তকরণ probabilistic এবং তালিকাটি exhaustive নয় |
 | **৩. অনুবাদ (EN → BN)** | **Google Gemini API** (`google-genai`, ডিফল্ট `gemini-3.5-flash-lite`, bounded glossary ও speech-window budget) | প্রতিটি লাইনের মাপা speech interval ধরে বাংলা অনুবাদ ছোট/ভরাট করে; পরের দীর্ঘ source pause-কে অনুবাদের সময় হিসেবে ধরে না |
 | **৪. বাংলা ভয়েস (TTS)** | **বিল্ট-ইন বাংলা neural ভয়েস** (`edge-tts` — পুরুষ কণ্ঠ `bn-BD-PradeepNeural` ডিফল্ট, নারী `bn-BD-NabanitaNeural`) | কোনো নমুনা রেকর্ডিং বা অতিরিক্ত টোকেন ছাড়াই সাথে সাথে স্পষ্ট বাংলা কণ্ঠ তৈরি হয় |
-| **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | কণ্ঠের পিচ অক্ষুণ্ণ রেখে মূল টাইমস্ট্যাম্পে বসায়; **কোনো দুই ক্লিপ কখনো একে অপরের ওপর পড়ে না** |
+| **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | কণ্ঠের পিচ অক্ষুণ্ণ রেখে মূল টাইমস্ট্যাম্পে বসায়; clip overlap করে না এবং কোনো clip নিরাপদ window-তে না আঁটলে sentence কেটে না দিয়ে review flag করে |
 | **৬. ভিডিও মাক্সিং** | `ffmpeg -c:v copy -c:a aac` | ভিডিও রি-এনকোড না করেই নতুন বাংলা অডিও যুক্ত করে — মান ১০০% অক্ষুণ্ণ ও অত্যন্ত দ্রুত |
-| **৭. ডিটেইল রিপোর্ট** | secret-safe Markdown (`*_report.markdown`) | source ও dubbed media metadata, ইংরেজি/বাংলা transcript, timestamp, word timing, TTS/sync window, trim ও audio activity এক ফাইলে দেয়; আলাদা SRT তৈরি করে না |
+| **৭. ডিটেইল রিপোর্ট** | secret-safe Markdown (`*_report.markdown`) | source ও dubbed media metadata, ইংরেজি/বাংলা transcript, timestamp, word timing, TTS/sync window, trim/audio activity এবং post-mux Bengali ASR coverage এক ফাইলে দেয়; আলাদা SRT তৈরি করে না |
 
 ### FC Mobile হটওয়ার্ড ও timing safeguards
 
@@ -24,10 +24,13 @@
 - পুরো hotword list Gemini-তে পাঠানো হয় না। Gemini-র প্রতিটি translation batch-এ শুধু source text-এ boundary-aware exact match পাওয়া term যায়; সর্বোচ্চ **২০টি term / ৬০০ অক্ষর**।
 - Whisper-কে সর্বোচ্চ **১,৬০০ অক্ষরের** bounded prompt দেওয়া হয়; game terms অগ্রাধিকার পায় এবং chunk/video context-এ থাকা নামগুলো নির্বাচন করা হয়। এগুলো recognition-এ সাহায্য করে, নির্ভুলতার নিশ্চয়তা দেয় না।
 - ডাবের window detected source speech interval ও configured ছোট borrow-এর মধ্যে সীমিত থাকে (ডিফল্ট **২৫০ ms**); পরের বক্তব্যের আগে থাকা ২–৫ সেকেন্ডের pause আর পুরোপুরি ব্যবহার করা হয় না। এটি ওই ধরনের drift কমায় এবং প্রকৃত pause ধরে রাখে, কিন্তু ভুল STT timestamp বা speech boundary থেকে হওয়া সব sync error দূর করার নিশ্চয়তা দেয় না।
+- মাপা TTS duration নিরাপদ window-তে না আঁটলে pipeline সংক্ষিপ্ত অনুবাদ/TTS retry করে; তাতেও না আঁটলে পুরো clip বাদ দিয়ে report-এ review issue দেয়—sentence tail নীরবে ছাঁটে না। শেষ mux-এর পর Bengali ASR token/tail coverage-ও পরীক্ষা হয়; এটি heuristic, নিখুঁত alignment বা semantic validation নয়, তাই flagged সময় শুনে যাচাই করা উচিত।
 
 ---
 
 ## 📁 প্রজেক্ট স্ট্রাকচার
+
+Python source ও test modules দায়িত্ব অনুযায়ী ছোট ফাইলে ভাগ করা; প্রতিটি `.py` ফাইল ৪০০ লাইন বা তার কম। পুরনো import path সহজ রাখতে `translator.py`-র মতো facade রাখা হয়েছে।
 
 ```text
 ProXMax/
@@ -39,25 +42,23 @@ ProXMax/
 ├── notebook/
 │   └── ProXMax_Colab.ipynb        # এক-ক্লিক Google Colab নোটবুক (৫ ধাপ)
 ├── tests/
-│   └── test_smoke.py              # স্বয়ংক্রিয় ইউনিট ও স্মোক টেস্ট স্যুট
+│   ├── _support.py                # shared fakes and test imports
+│   └── test_*.py                  # focused unit/regression suites by component
 └── proxmax/
-    ├── config.py                  # AppConfig ডেটাক্লাস ও YAML লোডার
-    ├── hotwords.py                # hotwords.txt লোডার, Whisper প্রম্পট নির্বাচন ও ট্রান্সক্রিপ্ট মেরামত
-    ├── models.py                  # Segment, Word, VideoResult, StageTimings ডেটা মডেল
-    ├── utils.py                   # লগিং, নিরাপদ সাবপ্রসেস, GPU মেমোরি ক্লিনআপ
-    ├── audio_fx.py                # numpy/wave ভিত্তিক অডিও DSP (নীরবতা ছাঁটা, ফরম্যাট রূপান্তর)
-    ├── media.py                   # ffmpeg/ffprobe র‍্যাপার ও SRT সাবটাইটেল লেখক
-    ├── stt.py                     # faster-whisper ট্রান্সক্রিপশন ও মডেল ক্যাশ ম্যানেজার
-    ├── speech_rate.py             # কণ্ঠের প্রকৃত বাংলা গতি (অক্ষর/সেকেন্ড) পরিমাপ
-    ├── speech_units.py            # খণ্ড বাক্য জোড়া দিয়ে পূর্ণ বাক্য-ইউনিট তৈরি ও সাবটাইটেল আনপ্যাক
-    ├── text_utils.py              # সংখ্যা/সংক্ষেপ/প্রতীক বাংলা উচ্চারণযোগ্য কথায় রূপান্তর
-    ├── translator.py              # Google Gemini API অনুবাদ ও লাইভ API যাচাই
-    ├── tts/
-    │   ├── base.py                # TTS বেস ইন্টারফেস
-    │   └── edge_engine.py         # বিল্ট-ইন বাংলা neural ভয়েস (edge-tts)
-    ├── sync.py                    # টাইম-স্ট্রেচ ও ওভারল্যাপ-মুক্ত ট্র্যাক অ্যাসেম্বলার
-    ├── reporting.py               # প্রতি ভিডিওর বিস্তারিত Markdown processing report
-    └── pipeline.py                # সমান্তরাল অনুবাদ+TTS অর্কেস্ট্রেটর ও ব্যাচ রানার
+    ├── config.py + config_validation.py  # settings, YAML loading, validation
+    ├── hotwords.py + hotword_repair.py   # dedicated glossary, bounded prompts, safe normalization
+    ├── models.py                  # Segment, Word, VideoResult, StageTimings data models
+    ├── utils.py + ffmpeg_utils.py  # logging/SRT helpers and guarded FFmpeg wrappers
+    ├── audio_quality.py           # heuristic post-mux Bangla token/tail coverage check
+    ├── stt.py                     # public STT interface and sentence orchestration
+    ├── stt_inference.py           # Whisper loading, multilingual decoding and model lifecycle
+    ├── stt_seams.py + whisper_model.py  # chunk seam repair and Whisper cache/device helpers
+    ├── translator.py              # stable import facade for translation backends
+    ├── gemini_*.py + translation_*.py  # Gemini protocol, batching, repair, parsing and errors
+    ├── sync_engine.py + sync_math.py    # safe time-stretching and non-overlapping track assembly
+    ├── reporting.py + reporting_*.py    # detailed Markdown report data/rendering sections
+    ├── pipeline.py + pipeline_*.py      # reusable orchestration split by processing stage
+    └── tts/                        # TTS base interface and built-in Bengali voice engine
 ```
 
 ---

@@ -124,3 +124,8 @@ output:
   save_report: true          # প্রতি ভিডিওর বিস্তারিত, secret-safe Markdown রিপোর্ট সেভ
   keep_temp_files: false    # true করলে মধ্যবর্তী ফাইল (wav, TTS ক্লিপ) থেকে যাবে
   log_level: "INFO"         # DEBUG দিলে আরও বিস্তারিত লগ
+
+# --- Dubbed-audio quality validation ----------------------------------------
+quality:
+  validate_dub_audio: true       # mux-এর পর Bangla Whisper দিয়ে শেষ-শব্দ/লাইন coverage যাচাই
+  min_text_coverage: 0.58        # ASR ভিন্নতা থাকবে; এর নিচে report-এ review flag
