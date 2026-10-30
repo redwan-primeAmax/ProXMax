@@ -82,7 +82,10 @@ def build_units(
         ``is_unit=True`` সেট করা :class:`Segment`-এর তালিকা; প্রতিটির
         ``children``-এ মূল segment-গুলো থাকে। ইনপুট খালি হলে খালি তালিকা।
     """
-    ordered = [s for s in sorted(segments, key=lambda s: s.start) if (s.end - s.start) > 0.02]
+    # A zero/very short timestamp is not evidence that recognized words can be
+    # discarded. Keep all speech-bearing segments; sync can shift impossible slots.
+    ordered = [s for s in sorted(segments, key=lambda s: s.start)
+               if (s.text_en or "").strip() or (s.text_bn or "").strip() or s.words]
     if not ordered:
         return []
 
@@ -97,7 +100,7 @@ def build_units(
     def flush() -> None:
         if not current:
             return
-        first, last = current[0], current[-1]
+        first = current[0]
         text = ""
         for child in current:
             text = _join_text(text, getattr(child, text_attr, "") or "")
@@ -105,7 +108,7 @@ def build_units(
             Segment(
                 index=len(units),
                 start=float(first.start),
-                end=float(last.end),
+                end=max(float(first.start), *(float(child.end) for child in current)),
                 text_en=_join_text(
                     "", " ".join((c.text_en or "").strip() for c in current).strip()
                 ),
@@ -154,15 +157,15 @@ def retime_children(unit: Segment, start: Optional[float] = None, duration: Opti
 
     Args:
         unit: ``build_units``-এ বানানো unit।
-        start: unit-এর অডিও কোথায় শুরু (ডিফল্ট ``unit.start``)।
+        start: unit-এর অডিও কোথায় শুরু (ডিফল্ট actual placed start)।
         duration: unit-এর অডিও কত সেকেন্ড (ডিফল্ট ``unit.speech_seconds``)।
     """
     children = list(getattr(unit, "children", []) or [])
     if not children:
         return
-    start = float(unit.start if start is None else start)
+    start = float(unit.actual_start if start is None else start)
     duration = float(unit.speech_seconds if duration is None else duration)
-    duration = max(0.2, duration)
+    duration = max(0.0, duration)
 
     weights = [max(0.05, float(child.end - child.start)) for child in children]
     total = sum(weights) or 1.0
@@ -218,16 +221,19 @@ def subtitles_for_unit(
             refined.append(buffer)
 
     if len(refined) == 1:
-        line = Segment(index=unit.index, start=unit.start, end=unit.end, text_bn=text)
+        end = unit.actual_start + unit.placed_duration if unit.placed_duration is not None else unit.end
+        line = Segment(index=unit.index, start=unit.actual_start, end=end, text_bn=text)
         return [line]
 
     duration = float(unit.speech_seconds)
     weights = [max(6, len(p)) for p in refined]
     total = float(sum(weights)) or 1.0
     lines: List[Segment] = []
-    cursor = float(unit.start)
+    cursor = unit.actual_start
     for order, (piece, weight) in enumerate(zip(refined, weights)):
-        share = max(0.35, duration * (weight / total))
+        # Never give every line an independent minimum that can exceed the
+        # measured clip duration, particularly after an extreme-speed fallback.
+        share = duration * (weight / total)
         lines.append(
             Segment(
                 index=order,
@@ -237,16 +243,21 @@ def subtitles_for_unit(
             )
         )
         cursor += share
-    lines[-1].end = round(float(unit.start) + duration, 3)
+    lines[-1].end = round(unit.actual_start + duration, 3)
 
     # খুব ছোট লাইন প্রতিবেশীর সাথে মেশানো (blink করে দেখা যাওয়া ঠেকাতে)
     merged: List[Segment] = []
+    minimum = max(0.001, float(min_seconds))
     for line in lines:
-        if merged and (line.end - line.start) < min_seconds:
+        if merged and (line.end - line.start) < minimum:
             merged[-1].end = line.end
             merged[-1].text_bn = _join_text(merged[-1].text_bn, line.text_bn)
         else:
             merged.append(line)
+    if len(merged) > 1 and (merged[0].end - merged[0].start) < minimum:
+        merged[0].text_bn = _join_text(merged[0].text_bn, merged[1].text_bn)
+        merged[0].end = merged[1].end
+        del merged[1]
     for order, line in enumerate(merged):
         line.index = order
     return merged

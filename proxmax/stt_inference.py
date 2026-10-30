@@ -20,7 +20,7 @@ from .models import Segment, Word
 from .utils import get_logger, release_cuda_memory
 from .whisper_model import (
     _ensure_cuda_libraries, _resolve_cached_model_path, _resolve_device,
-    ensure_whisper_model,
+    ensure_whisper_model, is_english_only_model,
 )
 
 logger = get_logger(__name__)
@@ -224,6 +224,8 @@ class WhisperModelMixin:
         """
         if language not in {"en", "bn"}:
             raise ValueError(f"Unsupported validation language: {language}")
+        if language != "en" and is_english_only_model(getattr(self, "model_size", "")):
+            raise ValueError("English-only Whisper checkpoint cannot validate Bengali")
         audio = decode_audio(audio_path, STT_SAMPLE_RATE)
         self._load()
         chunks, _method = plan_chunks(

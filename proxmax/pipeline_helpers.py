@@ -37,9 +37,21 @@ def existing_output_is_usable(path: Path, min_bytes: int = _MIN_USABLE_OUTPUT_BY
         return False
 
 def _report_is_usable(path: Path) -> bool:
-    """A non-empty, current-format report is required before skipping an output."""
+    """Do not skip an old output whose report records missing speech."""
     try:
-        return path.is_file() and path.stat().st_size >= 256
+        if not path.is_file() or path.stat().st_size < 256:
+            return False
+        with path.open(encoding="utf-8", errors="replace") as report:
+            summary = report.read(16384)
+        unplaced = re.search(r"\*\*unplaced clips:\*\*\s*(\d+)", summary, re.IGNORECASE)
+        if unplaced and int(unplaced.group(1)):
+            return False
+        counts = re.search(
+            r"\*\*Transcript units:\*\*\s*(\d+).*?\*\*translated units:\*\*\s*(\d+)"
+            r".*?\*\*units with TTS clips:\*\*\s*(\d+).*?\*\*placed units:\*\*\s*(\d+)",
+            summary, re.IGNORECASE | re.DOTALL,
+        )
+        return not counts or len(set(map(int, counts.groups()))) == 1
     except OSError:
         return False
 

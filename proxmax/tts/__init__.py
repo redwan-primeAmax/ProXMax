@@ -49,6 +49,7 @@ def build_tts_engine(
         trim_silence=config.tts_trim_silence,
         trim_pad_ms=config.tts_trim_pad_ms,
         gender=config.tts_gender,
+        keep_raw=config.keep_temp_files,
     )
     edge.prepare()
     logger.info("TTS ইঞ্জিন প্রস্তুত: %s", edge.describe())

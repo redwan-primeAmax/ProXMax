@@ -34,6 +34,8 @@ def validate_config(config):
         raise ValueError("seam_window_seconds ধনাত্মক হতে হবে।")
     if self.whisper_beam_size < 1:
         raise ValueError("whisper_beam_size অন্তত 1 হতে হবে।")
+    if self.stt_audio_filter not in {"none", "highpass60"}:
+        raise ValueError("stt.audio_filter অবশ্যই 'none' অথবা 'highpass60' হতে হবে।")
 
     if self.translator_backend not in SUPPORTED_TRANSLATORS:
         raise ValueError(

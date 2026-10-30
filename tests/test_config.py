@@ -13,7 +13,7 @@ from tests._support import *
 class TestConfig(unittest.TestCase):
     def test_defaults(self):
         cfg = AppConfig()
-        self.assertEqual(cfg.whisper_model, "large-v3")
+        self.assertEqual(cfg.whisper_model, "distil-large-v3")
         self.assertEqual(cfg.translator_backend, "gemini")
         self.assertEqual(cfg.gemini_model, "gemini-3.5-flash-lite")
         self.assertEqual(cfg.gemini_max_retries, 100)
@@ -43,7 +43,7 @@ class TestConfig(unittest.TestCase):
         except ImportError:  # pragma: no cover
             self.skipTest("PyYAML not installed")
         cfg = AppConfig.from_yaml(REPO_ROOT / "config.yaml").validate()
-        self.assertEqual(cfg.whisper_model, "large-v3")
+        self.assertEqual(cfg.whisper_model, "distil-large-v3")
         self.assertEqual(cfg.gemini_model, DEFAULT_GEMINI_MODEL)
         self.assertEqual(cfg.gemini_max_retries, 100)
         self.assertEqual(
@@ -107,7 +107,7 @@ class TestConfig(unittest.TestCase):
         cfg = AppConfig()
         cfg._apply_mapping({"stt": {"batch_size": 8, "nonsense": 1}})
         self.assertFalse(hasattr(cfg, "whisper_batch_size"))
-        self.assertEqual(cfg.whisper_model, "large-v3")
+        self.assertEqual(cfg.whisper_model, "distil-large-v3")
 
     def test_overrides_ignore_none(self):
         cfg = AppConfig().apply_overrides(

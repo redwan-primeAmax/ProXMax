@@ -8,7 +8,6 @@ import numpy as np
 
 from . import audio_fx
 from .models import Segment
-from .sync_math import find_overlaps
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +44,8 @@ class SyncAssemblyMixin:
         for seg, window in pairs:
             try:
                 clip, rate = audio_fx.read_wav(seg.stretched_audio_path)  # type: ignore[arg-type]
+                if rate <= 0 or clip.size == 0 or not np.any(clip):
+                    raise ValueError("empty or silent stretched clip")
             except Exception as exc:
                 seg.sync_issue = f"stretched clip unreadable ({type(exc).__name__})"
                 self.last_stats["unplaced"] = int(self.last_stats.get("unplaced", 0)) + 1
@@ -57,7 +58,10 @@ class SyncAssemblyMixin:
                 continue
             if rate != sr:
                 clip = self._resample(clip, rate, sr)
-            max_samples = max(1, int(round((window[1] - seg.start) * sr)))
+            start = max(0.0, seg.actual_start)
+            # Round absolute boundaries, not the duration independently; that
+            # avoids a one-sample overlap when neighbouring windows touch.
+            max_samples = max(1, int(round(window[1] * sr)) - int(round(start * sr)))
             # Rubberband/atempo can add a few samples through frame rounding.
             # Use only part of the already-reserved inter-clip gap; never crop audio.
             tolerance_seconds = min(
@@ -93,7 +97,7 @@ class SyncAssemblyMixin:
                     seg.index, seg.tempo_used, overrun,
                 )
                 continue
-            clips.append((seg, clip, seg.start))
+            clips.append((seg, clip, start))
             level = audio_fx.rms_dbfs(clip)
             if level > -60:
                 levels.append(level)
@@ -102,14 +106,14 @@ class SyncAssemblyMixin:
         target_level = float(np.median(levels)) if levels else -20.0
         target_level = max(-28.0, min(-14.0, target_level))
 
-        spans: List[Tuple[float, float]] = []
+        spans: List[Tuple[int, int]] = []
         for seg, clip, start in clips:
             level = audio_fx.rms_dbfs(clip)
             if level > -60:
                 gain_db = max(-6.0, min(6.0, target_level - level))
                 clip = np.clip(clip * audio_fx.db_to_amp(gain_db), -1.0, 1.0).astype(np.float32)
 
-            start_sample = int(start * sr)
+            start_sample = int(round(start * sr))
             end_sample = start_sample + clip.size
             if start_sample >= canvas.size:
                 seg.sync_issue = "clip starts beyond final track bounds"
@@ -133,13 +137,15 @@ class SyncAssemblyMixin:
                 continue
             # যোগ নয়, বসানো — কিন্তু উইন্ডো আগেই ওভারল্যাপ-মুক্ত রাখা হয়েছে
             canvas[start_sample:end_sample] += clip
+            seg.placed_start = start_sample / float(sr)
             seg.placed_duration = float(clip.size / sr)
-            spans.append((start_sample / sr, end_sample / sr))
+            spans.append((start_sample, end_sample))
 
         spans.sort()
-        problems = find_overlaps(spans)
-        if problems:  # pragma: no cover - প্রতিরক্ষামূলক
-            logger.error("⚠️ বসানোর সময় %d জায়গায় ওভারল্যাপ ধরা পড়েছে!", len(problems))
+        # Compare integer samples: even a one-sample overlap is forbidden.
+        problems = sum(left[1] > right[0] for left, right in zip(spans, spans[1:]))
+        if problems:
+            raise RuntimeError(f"Sync produced {problems} overlapping speech clips")
 
         peak = float(np.max(np.abs(canvas))) if canvas.size else 0.0
         if peak > 0.99:

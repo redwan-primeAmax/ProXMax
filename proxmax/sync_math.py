@@ -59,7 +59,9 @@ def build_stretch_filter(tempo: float, sample_rate: int, prefer_rubberband: bool
     """
     if abs(tempo - 1.0) < 1e-6:
         return f"aresample={sample_rate}"
-    if prefer_rubberband and "rubberband" in available_filters():
+    # Rubberband has a hard 100x filter limit. Chained atempo supports larger
+    # requested ratios without imposing an application-level final tempo cap.
+    if prefer_rubberband and tempo <= 100.0 and "rubberband" in available_filters():
         return f"rubberband=tempo={tempo:.4f},aresample={sample_rate}"
     return f"{build_atempo_filter(tempo)},aresample={sample_rate}"
 

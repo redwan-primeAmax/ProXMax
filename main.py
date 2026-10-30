@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None, help="Output ফোল্ডার (config override)")
     parser.add_argument(
         "--model", default=None,
-        help="Whisper মডেল: large-v3 (ডিফল্ট, best accuracy) অথবা medium (বেশি speed)",
+        help="Whisper মডেল: distil-large-v3 (ডিফল্ট, English-only) অথবা large-v3",
     )
     parser.add_argument("--device", default=None, help="STT device: auto | cuda | cpu")
     parser.add_argument(

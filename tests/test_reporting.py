@@ -93,7 +93,7 @@ class TestDetailedReport(unittest.TestCase):
             self.assertIn("allowed tempo cap measured:** True (cap 1.20×", text)
             self.assertIn("internal 0.300 s", text)
             self.assertIn("quiet speech can be misclassified", text)
-            self.assertIn("audio was sped up (1.200×; allowed cap 1.20×)", text)
+            self.assertIn("audio was sped up (1.200×; initial cap 1.20×; final recovery is uncapped)", text)
             self.assertIn("Post-mux Bengali speech coverage check", text)
             self.assertIn("**Post-mux Bangla ASR coverage:** review", text)
             self.assertIn("**Post-mux ASR heard:** হ্যালো", text)

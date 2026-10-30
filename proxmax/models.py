@@ -66,6 +66,15 @@ class Segment:
     sync_trimmed_internal_cuts: int = 0
     #: A valid waveform was measured at the configured speed cap before rewrite.
     sync_tempo_cap_measured: bool = False
+    #: Actual dub start; ``start``/``end`` remain the original source timestamps.
+    placed_start: Optional[float] = None
+    #: How an initially unplaced clip was recovered (for review/reporting).
+    sync_recovery: Optional[str] = None
+
+    @property
+    def actual_start(self) -> float:
+        """Dub start, falling back to the source start before placement."""
+        return float(self.start if self.placed_start is None else self.placed_start)
 
     @property
     def speech_seconds(self) -> float:

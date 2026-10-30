@@ -48,26 +48,27 @@ def _unit_timing_rows(
     config: Any,
 ) -> List[Dict[str, Any]]:
     windows = _sync_windows(segments, total_duration, config)
-    ordered = sorted(segments, key=lambda s: (s.start, s.end, s.index))
+    ordered = sorted(segments, key=lambda s: (s.start, s.index))
     rows: List[Dict[str, Any]] = []
     previous_source_end = 0.0
     previous_dub_end: Optional[float] = None
     for position, unit in enumerate(ordered, start=1):
         window = windows.get(id(unit))
         placed = float(unit.placed_duration) if unit.placed_duration is not None else None
-        actual_end = float(unit.start) + placed if placed is not None else None
+        actual_start = unit.actual_start if placed is not None else None
+        actual_end = actual_start + placed if actual_start is not None else None
         next_unit = ordered[position] if position < len(ordered) else None
-        next_start = float(next_unit.start) if next_unit is not None else total_duration
+        next_start = next_unit.actual_start if next_unit is not None else max(total_duration, actual_end or 0.0)
         allocated_end = float(window[1]) if window else None
         trimmed = max(0.0, float(unit.stretched_duration or 0.0) - placed) if placed is not None else None
         rows.append({
             "number": position,
             "unit": unit,
             "source_gap_before": max(0.0, float(unit.start) - previous_source_end),
-            "dub_gap_before": max(0.0, float(unit.start) - previous_dub_end) if previous_dub_end is not None else max(0.0, float(unit.start)),
+            "dub_gap_before": max(0.0, (actual_start or 0.0) - previous_dub_end) if previous_dub_end is not None and actual_start is not None else max(0.0, actual_start or 0.0),
             "target_start": float(window[0]) if window else None,
             "target_end": allocated_end,
-            "actual_start": float(unit.start) if placed is not None else None,
+            "actual_start": actual_start,
             "actual_end": actual_end,
             "tts_duration": unit.tts_duration,
             "stretched_duration": unit.stretched_duration,
@@ -132,6 +133,8 @@ def _render_unit(
         )
     if getattr(unit, "sync_issue", None):
         lines.append(f"- **Sync repair flag:** {_md(unit.sync_issue)}")
+    if getattr(unit, "sync_recovery", None):
+        lines.append(f"- **Last-resort recovery:** {_md(unit.sync_recovery)}; source timestamps remain unchanged.")
     if validation:
         lines.append(
             f"- **Post-mux Bangla ASR coverage:** {validation.get('status', 'n/a')} "
@@ -206,6 +209,10 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
             warnings.append(f"{label}: translation or fit-retry note; compare with the source.")
         if getattr(unit, "sync_issue", None):
             warnings.append(f"{label}: sync did not place this full clip: {unit.sync_issue}.")
+        if getattr(unit, "sync_recovery", None):
+            warnings.append(f"{label}: last-resort fit was used; compare timing and listen for intelligibility.")
+        if unit.placed_start is not None and abs(unit.actual_start - float(unit.start)) > 0.001:
+            warnings.append(f"{label}: dubbed speech was shifted by {unit.actual_start - float(unit.start):.3f} s relative to the source.")
         if (unit.text_bn or "").strip() and not unit.tts_audio_path:
             warnings.append(f"{label}: translated text exists but no TTS audio path was produced.")
         if unit.tts_audio_path and not unit.stretched_audio_path:
@@ -222,7 +229,7 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
             )
         tempo = float(row.get("tempo") or 1.0)
         if tempo > 1.10:
-            warnings.append(f"{label}: audio was sped up ({tempo:.3f}×; allowed cap {float(row.get('tempo_cap', 1.20)):.2f}×); verify intelligibility/prosody.")
+            warnings.append(f"{label}: audio was sped up ({tempo:.3f}×; initial cap {float(row.get('tempo_cap', 1.20)):.2f}×; final recovery is uncapped); verify intelligibility/prosody.")
         if row.get("unused_slot_seconds") is not None and row["unused_slot_seconds"] > 0.8:
             warnings.append(f"{label}: {row['unused_slot_seconds']:.3f} s of the bounded target slot remained unused; this is not automatically an error if it is a genuine pause.")
     if float(stats.get("untranslated_seconds", 0.0) or 0.0) > 0:

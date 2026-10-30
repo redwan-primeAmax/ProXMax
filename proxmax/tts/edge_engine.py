@@ -46,6 +46,7 @@ class EdgeTTSEngine(BaseTTSEngine):
         trim_silence: bool = True,
         trim_pad_ms: int = 25,
         gender: str = "male",
+        keep_raw: bool = False,
     ) -> None:
         super().__init__(trim_silence=trim_silence, trim_pad_ms=trim_pad_ms)
         self.voice = voice
@@ -58,6 +59,7 @@ class EdgeTTSEngine(BaseTTSEngine):
         self._active_concurrency = self.concurrency
         self.max_retries = max(1, max_retries)
         self.sample_rate = sample_rate
+        self.keep_raw = bool(keep_raw)
 
     # ------------------------------------------------------------------
     def prepare(self) -> None:
@@ -261,7 +263,8 @@ class EdgeTTSEngine(BaseTTSEngine):
         except FFmpegError as exc:
             raise TTSError(f"edge-tts অডিও রূপান্তর ব্যর্থ: {exc}") from exc
         finally:
-            mp3_path.unlink(missing_ok=True)
+            if not getattr(self, "keep_raw", False):
+                mp3_path.unlink(missing_ok=True)
         return wav_path
 
     @staticmethod

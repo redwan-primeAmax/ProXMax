@@ -7,10 +7,10 @@
    স্লটের চেয়ে লম্বা হলে সে পরের বাক্যের উপর চড়ে যেত। এখন প্রতিটি
    ক্লিপের জন্য একটি **কঠোর উইন্ডো** হিসাব হয় (পরের ক্লিপ শুরুর
    আগেই শেষ), আর বসানোর আগে ওভারল্যাপ গাণিতিকভাবে যাচাই করা হয়।
-2. **রোবটে/ধাতব কণ্ঠ ও বাক্য-কাটা** — tempo ০.৯০×–১.২০× সীমায় থাকে; আগে
+2. **রোবটে/ধাতব কণ্ঠ ও বাক্য-কাটা** — প্রথম fit-এ tempo ০.৯০×–১.২০× সীমায় থাকে; আগে
    শেষ থেকে শুরু পর্যন্ত শনাক্ত silence প্রয়োজনমতো trim হয়, তারপর measured TTS সময়কে
    window-তে fit করার চেষ্টা হয়। সর্বোচ্চ tempo মাপার পরও unfit হলে translation/TTS retry হয়;
-   তবুও না আঁটলে sentence tail কাটার বদলে clip-টি বাদ দিয়ে review flag হয়।
+   তবুও না আঁটলে পৃথক uncapped fallback সম্পূর্ণ clip বসায় বা স্পষ্ট error দেয়।
    ``rubberband`` থাকলে pitch/formant-সহ time-stretch হয়।
 
 চূড়ান্ত ট্র্যাক NumPy দিয়ে সাজানো হয় (pydub নয়) — কম মেমরি, কোনো
@@ -68,7 +68,7 @@ class SyncEngine(SyncAssemblyMixin):
             borrow_silence_ms: পরের নীরবতা থেকে সর্বোচ্চ কত ধার নেওয়া যাবে।
             prefer_rubberband: ffmpeg-এ থাকলে rubberband ব্যবহার করা হবে।
             fill_extension: legacy extension parameter (short clips use min_tempo).
-            silence_threshold_dbfs: silence শনাক্ত করার threshold (সর্বোচ্চ −55 dBFS)।
+            silence_threshold_dbfs: silence শনাক্ত করার threshold (সর্বোচ্চ −70 dBFS)।
             silence_pad_ms: শনাক্ত কথার চারপাশে যে padding অক্ষত থাকবে।
         """
         self.min_tempo = min(1.0, max(0.90, float(min_tempo)))
@@ -86,7 +86,6 @@ class SyncEngine(SyncAssemblyMixin):
         self.last_stats: Dict[str, object] = {}
         self._prepared_cache = PreparedClipCache()
 
-    # ------------------------------------------------------------------
     def _stretch_one(self, seg: Segment, window: Tuple[float, float], out_path: Path) -> Optional[Path]:
         """Trim detected silence end-first, then fit within configured tempo limits."""
         self.max_tempo = max(1.0, min(1.20, float(self.max_tempo)))
@@ -236,13 +235,14 @@ class SyncEngine(SyncAssemblyMixin):
             logger.warning("Segment %d-এর stretched audio মাপা যায়নি: %s", seg.index, exc)
             return None
 
-    # ------------------------------------------------------------------
     def build_final_track(
         self,
         segments: List[Segment],
         total_duration: float,
         work_dir: Path | str,
         output_wav: Path | str,
+        *,
+        allow_empty_intermediate: bool = False,
     ) -> Path:
         """Stretch every clip and assemble one full-length, non-overlapping WAV.
 
@@ -264,6 +264,8 @@ class SyncEngine(SyncAssemblyMixin):
             segment.stretched_audio_path = None
             segment.stretched_duration = None
             segment.placed_duration = None
+            segment.placed_start = None
+            segment.sync_recovery = None
             segment.sync_issue = None
             segment.tempo_used = 1.0
             segment.sync_overrun_before_seconds = 0.0
@@ -351,7 +353,7 @@ class SyncEngine(SyncAssemblyMixin):
         # কোন ক্লিপ কোন উইন্ডোতে বসবে — জোড়া বেঁধে রাখা হয়, যাতে কোনো ক্লিপ
         # stretch ব্যর্থ হলেও বাকিগুলোর সময় (index) সরে না যায়।
         pairs = [(seg, windows[i]) for i, seg in enumerate(usable) if seg.stretched_audio_path]
-        if not pairs:
+        if not pairs and not allow_empty_intermediate:
             raise RuntimeError("সব ক্লিপের time-stretch ব্যর্থ হয়েছে — চূড়ান্ত ট্র্যাক বানানো যাচ্ছে না।")
         stretched = [seg for seg, _ in pairs]
 
@@ -394,5 +396,3 @@ class SyncEngine(SyncAssemblyMixin):
             self.last_stats["silence_trimmed_clips"], self.last_stats["unplaced"],
         )
         return output_wav
-
-    # ------------------------------------------------------------------

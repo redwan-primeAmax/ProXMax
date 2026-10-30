@@ -95,7 +95,7 @@ class BaseTTSEngine(ABC):
         clipped = np.clip(audio, -1.0, 1.0)
         return audio_fx.fade(
             audio_fx.peak_normalize(clipped, peak_dbfs=-1.5),
-            self.sample_rate, in_ms=8, out_ms=50,
+            self.sample_rate, in_ms=8, out_ms=8,
         )
 
     def _finalize(self, audio: np.ndarray) -> np.ndarray:
@@ -111,7 +111,7 @@ class BaseTTSEngine(ABC):
         if self.trim_silence:
             trimmed = audio_fx.trim_silence(
                 audio, self.sample_rate,
-                threshold_dbfs=-45.0, pad_ms=self.trim_pad_ms,
+                threshold_dbfs=-70.0, pad_ms=self.trim_pad_ms,
             )
         if trimmed.size < int(0.05 * self.sample_rate):  # প্রায় ফাঁকা — মূলটাই রাখা
             trimmed = audio

@@ -46,7 +46,7 @@ class TestNotebookRequirements(unittest.TestCase):
         # TTS concurrency and reprocessing existing outputs can be adjusted.
         self.assertIn("config.tts_concurrency = 5", full_source)
         self.assertIn("config.skip_existing = False", full_source)
-        self.assertIn('WHISPER_MODEL = "large-v3"', full_source)
+        self.assertIn('WHISPER_MODEL = "distil-large-v3"  # @param ["distil-large-v3", "large-v3"]', full_source)
         for index, cell in enumerate(cells):
             if cell.get("cell_type") == "code":
                 compile("".join(cell.get("source", [])), f"notebook cell {index}", "exec")

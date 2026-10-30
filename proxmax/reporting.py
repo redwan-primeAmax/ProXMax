@@ -104,6 +104,10 @@ def write_detailed_report(
         f"{int((data.get('sync') or {}).get('silence_trimmed_clips', 0) or 0)} clips); "
         f"**unplaced clips:** {int((data.get('sync') or {}).get('unplaced', 0) or 0)}; "
         f"**overlaps:** {int((data.get('sync') or {}).get('overlaps', 0) or 0)}.",
+        f"- **Last-resort recovered units:** {len((data.get('sync') or {}).get('fallback_segments', []) or [])}; "
+        f"**shifted units:** {len((data.get('sync') or {}).get('shifted_segments', []) or [])}; "
+        f"**timeline beyond source container:** {float((data.get('sync') or {}).get('video_extension_seconds', 0.0) or 0.0):.3f} s; "
+        f"**maximum selected tempo:** {float((data.get('sync') or {}).get('max_tempo', 1.0) or 1.0):.3f}×.",
         "",
         "## Media metadata",
         "",
