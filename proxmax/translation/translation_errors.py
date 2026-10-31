@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -109,14 +110,22 @@ class _RateLimiter:
         self._next_allowed = 0.0
         self._lock = threading.Lock()
 
-    def wait(self) -> None:
-        """Reserve a normally paced request without blocking retry bookkeeping."""
-        with self._lock:
-            now = time.monotonic()
-            scheduled = max(now, self._next_allowed)
-            self._next_allowed = scheduled + self._interval
-        if scheduled > now:
-            time.sleep(scheduled - now)
+    def wait(self, stop: Optional[threading.Event] = None) -> None:
+        """Pace new requests, rechecking if a concurrent retry moved the limit."""
+        while True:
+            if stop is not None and stop.is_set():
+                raise TranslationError("Translation cancelled after another pipeline error")
+            with self._lock:
+                now = time.monotonic()
+                delay = self._next_allowed - now
+                if delay <= 0:
+                    self._next_allowed = now + self._interval
+                    return
+            if stop is not None:
+                if stop.wait(delay):
+                    raise TranslationError("Translation cancelled after another pipeline error")
+            else:
+                time.sleep(delay)
 
     def record_retry(self) -> None:
         """Record an unpaced retry so later new requests still respect the RPM interval."""

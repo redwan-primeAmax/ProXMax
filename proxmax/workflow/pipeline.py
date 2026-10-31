@@ -138,11 +138,22 @@ class DubbingPipeline(
     def _step(self, number: int, title: str) -> Iterator[None]:
         logger.info("▶ ধাপ %d/%d: %s", number, _TOTAL_STEPS, title)
         started = time.perf_counter()
-        yield
-        logger.info(
-            "✓ ধাপ %d/%d শেষ (%s) — %.1fs", number, _TOTAL_STEPS, title,
-            time.perf_counter() - started,
-        )
+        trace = getattr(self, "_trace", None)
+        if trace is not None:
+            trace.start_stage(number)
+        try:
+            yield
+        except BaseException as exc:
+            if trace is not None:
+                trace.end_stage(number, exc)
+            raise
+        else:
+            if trace is not None:
+                trace.end_stage(number)
+            logger.info(
+                "✓ ধাপ %d/%d শেষ (%s) — %.1fs", number, _TOTAL_STEPS, title,
+                time.perf_counter() - started,
+            )
 
     def output_path_for(self, video_path: Path, output_dir: Optional[Path] = None) -> Path:
         folder = output_dir or Path(self.config.output_dir)

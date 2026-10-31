@@ -65,6 +65,8 @@ def validate_config(config):
         )
     if self.gemini_requests_per_minute < 1:
         raise ValueError("gemini_requests_per_minute অন্তত 1 হতে হবে।")
+    if self.gemini_concurrency not in (1, 2):
+        raise ValueError("gemini_concurrency 1 অথবা 2 হতে হবে।")
     if not 0.0 <= self.gemini_temperature <= 2.0:
         raise ValueError("gemini_temperature 0.0–2.0 এর মধ্যে হতে হবে।")
     if self.gemini_timeout < 10:

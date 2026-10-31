@@ -43,6 +43,8 @@ def _report_is_usable(path: Path) -> bool:
             return False
         with path.open(encoding="utf-8", errors="replace") as report:
             summary = report.read(16384)
+        if "**PROCESSING FAILED" in summary:
+            return False
         unplaced = re.search(r"\*\*unplaced clips:\*\*\s*(\d+)", summary, re.IGNORECASE)
         if unplaced and int(unplaced.group(1)):
             return False

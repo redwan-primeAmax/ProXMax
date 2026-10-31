@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .models import Segment
 from .translation_errors import TranslationError, _PartialBatchError, _ResponseFormatError, _error_message
 from .translation_parsing import normalise_text
+from .translation_metrics import measured_session
 from .translation_quality import TranslationAssessment, assess_translation
 from .translator_config import SYSTEM_INSTRUCTION
 from .utils import get_logger
@@ -30,7 +31,8 @@ class GeminiOperationsMixin:
         results: List[str] = []
         for batch in self._make_batches(items, instruction=instruction, task=task):
             if self._estimate_input_tokens(batch, instruction, task) > self.max_input_tokens:
-                self._skipped_lines += len(batch)
+                with self._state_lock:
+                    self._skipped_lines += len(batch)
                 logger.warning(
                     "⚠️ একটি সম্পূর্ণ chunk-ও input-token cap (%d) ছাড়ায় — অংশ কেটে পাঠানো হবে না; chunk বাদ।",
                     self.max_input_tokens,
@@ -59,7 +61,8 @@ class GeminiOperationsMixin:
                         "🩹 একটি লাইনের উত্তর বারবার ভুল ফরম্যাটে এসেছে — লাইনটি বাদ "
                         "দেওয়া হলো (ভিডিওর বাকি অংশ চলবে): %s", _error_message(exc, 200),
                     )
-                    self._skipped_lines += 1
+                    with self._state_lock:
+                        self._skipped_lines += 1
                     results.append("")
                     continue
                 middle = len(batch) // 2
@@ -85,15 +88,18 @@ class GeminiOperationsMixin:
         if not suspect:
             return checked
 
-        logger.warning("⚠️ %dটি অনুবাদে সংখ্যা/লিপির সমস্যা — শুধু সেগুলো আবার যাচাই হচ্ছে।", len(suspect))
+        self.diagnostics.add("quality_recheck_units", len(suspect))
+        logger.warning("⚠️ %dটি অনুবাদে review signal — শুধু সেগুলো আবার যাচাই হচ্ছে।", len(suspect))
         try:
             retried = self._run_batches(
                 [items[index] for index in suspect],
-                task=("Translate each input paragraph faithfully into Bangla. Preserve all "
-                      "explicit digits exactly and avoid unrelated writing systems."),
+                task=("Translate each input paragraph faithfully into natural, meaningful Bangla. "
+                      "Preserve all details and explicit digits; avoid unrelated writing systems "
+                      "and corrupted repeated letters."),
                 description="  Translation quality recheck (Gemini)",
             )
         except TranslationError as exc:
+            self._check_cancelled()
             # _run_batches already used the configured retry policy for API errors.
             logger.warning("অনুবাদের quality recheck ব্যর্থ (%s) — আগের ফল review-এ থাকবে।", exc)
             retried = []
@@ -102,7 +108,7 @@ class GeminiOperationsMixin:
             if second.text and len(second.issues) < len(checked[index].issues):
                 checked[index] = TranslationAssessment(
                     second.text, second.issues,
-                    ("Retranslated after a number/script review signal; compare with the source.",) + second.notes,
+                    ("Retranslated after a quality review signal; compare with the source.",) + second.notes,
                 )
         for index in suspect:
             if checked[index].issues:
@@ -128,6 +134,7 @@ class GeminiOperationsMixin:
             "sample_reply": sample.strip(),
         }
 
+    @measured_session
     def translate_text(self, text: str, duration: float = 0.0) -> str:
         """Translate text only; the legacy duration argument is never sent to Gemini."""
         original = normalise_text(text)
@@ -138,6 +145,7 @@ class GeminiOperationsMixin:
         if cached is not None:
             return cached
         checked = self._translate_checked([(original, 0.0)])[0]
+        self._check_cancelled()
         if checked.text and not checked.issues:
             with self._cache_lock:
                 self._cache[original] = checked.text
@@ -189,13 +197,14 @@ class GeminiOperationsMixin:
             cursor += len(batch)
         return groups
 
+    @measured_session
     def translate_segments(self, segments: List[Segment]) -> List[Segment]:
         """সব segment অনুবাদ করে; timestamp অপরিবর্তিত থাকে।"""
         if not segments:
             return segments
+        self._check_cancelled()
 
         started = time.perf_counter()
-        calls_before = self._api_calls
         groups: Dict[str, List[Segment]] = {}
         items: List[Tuple[str, float]] = []
 
@@ -211,6 +220,7 @@ class GeminiOperationsMixin:
                 cached = self._cache.get(text)
                 cached_notes = self._cache_notes.get(text, ())
             if cached is not None:
+                self.diagnostics.add("cache_hits", 1)
                 seg.text_bn = cached
                 seg.translation_notes = list(cached_notes)
                 continue
@@ -223,6 +233,7 @@ class GeminiOperationsMixin:
             checked = self._translate_checked(
                 items, description=f"  Translate (Gemini, {len(items)} lines)"
             )
+            self._check_cancelled()
             with self._cache_lock:
                 for (text, _duration), result in zip(items, checked):
                     if result.text and not result.issues:
@@ -239,9 +250,9 @@ class GeminiOperationsMixin:
             self._recover_missing(missing)
 
         logger.info(
-            "Gemini অনুবাদ শেষ: %d segment | নতুন লাইন: %d | API call: %d | cache: %d | "
+            "Gemini অনুবাদ শেষ: %d segment | নতুন লাইন: %d | মোট API call: %d | cache: %d | "
             "বাদ পড়া লাইন: %d | সময় %.1fs",
-            len(segments), len(items), self._api_calls - calls_before,
+            len(segments), len(items), self._api_calls,
             len(self._cache), self._skipped_lines, time.perf_counter() - started,
         )
         if self._truncated_hits:
@@ -266,17 +277,20 @@ class GeminiOperationsMixin:
             len(by_text),
         )
         items = [(text, 0.0) for text in by_text]
-        saved_batch = self.batch_size
         recovered = 0
         try:
-            self.batch_size = min(4, saved_batch)
-            checked = self._translate_checked(items, description="  Retry missing")
+            # Do not mutate shared batch_size: another group may be translating.
+            size = min(4, self.batch_size)
+            checked = []
+            for offset in range(0, len(items), size):
+                checked.extend(self._translate_checked(items[offset:offset + size],
+                                                       description="  Retry missing"))
         except Exception as exc:
+            self._check_cancelled()
             logger.warning("উদ্ধার-পাস ব্যর্থ (%s) — ওই লাইনগুলো বাদ দিয়ে এগোনো হচ্ছে।", exc)
             return 0
-        finally:
-            self.batch_size = saved_batch
 
+        self._check_cancelled()
         with self._cache_lock:
             for (text, _duration), result in zip(items, checked):
                 if not result.text:

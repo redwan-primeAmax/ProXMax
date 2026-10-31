@@ -16,7 +16,7 @@
 | **৪. বাংলা ভয়েস (TTS)** | **বিল্ট-ইন বাংলা neural ভয়েস** (`edge-tts` — পুরুষ কণ্ঠ `bn-BD-PradeepNeural` ডিফল্ট, নারী `bn-BD-NabanitaNeural`) | আলাদা voice sample বা voice token ছাড়াই বাংলা কণ্ঠ তৈরি করে; উচ্চারণ ও নাম শুনে যাচাই করতে হবে |
 | **৫. অডিও-ভিডিও সিঙ্ক** | `ffmpeg` (`rubberband` / `atempo`) + একক ট্র্যাক অ্যাসেম্বলার | শনাক্ত নীরবতা ছেঁটে মাপা speech সর্বোচ্চ ০.৯০× পর্যন্ত ধীর; লম্বা speech-এর জন্য ওই window-এর moving video tail পুনরাবৃত্তি; audio speedup বা fit rewrite নেই |
 | **৬. ভিডিও মাক্সিং** | `ffmpeg` (frame-based edit, concat, AAC) | অপরিবর্তিত picture copy হতে পারে; অন্যথায় window-ভিত্তিক ভিডিও re-encode, bounded workers ও frame-count/duration যাচাই |
-| **৭. ডিটেইল রিপোর্ট** | secret-safe Markdown (`*_report.markdown`) | source ও dubbed media metadata, ইংরেজি/বাংলা transcript, timestamp, word timing, TTS/sync window ও audio activity এক ফাইলে দেয়; ঐচ্ছিক post-mux Bengali ASR coverage চালু থাকলে যোগ হয়; আলাদা SRT তৈরি করে না |
+| **৭. ডিটেইল রিপোর্ট** | Markdown (`*_report.markdown`) | source, edited output ও processing-এর আলাদা প্রতি-সেকেন্ড timeline; transcript, audio activity, retry/fallback এবং ঐচ্ছিক Bengali ASR review; আলাদা SRT তৈরি করে না |
 
 ### FC Mobile হটওয়ার্ড ও timing safeguards
 
@@ -33,8 +33,10 @@
 - ছোট clip-কে কেবল যতটা দরকার ধীর করা হয়, **০.৯০×-এর নিচে নয়**। মাপা FFmpeg ফল নিরাপদ না হলে `rubberband` থেকে `atempo` চেষ্টা হয়; কোনোটিই যাচাই না হলে মূল speech রেখে warning দেওয়া হয়। তারপরও gap থাকলে শুধু সেই video window সর্বোচ্চ **১.১৫×** দ্রুত হয়; সীমায় gap থাকলে সেটি থাকে। দীর্ঘ speech-এর audio tempo সবসময় ১.০০×।
 - Sync window-তে source speech-এর পর সর্বোচ্চ **২৫০ ms** silence borrow ও পরের window-এর আগে **৮০ ms** gap রাখার চেষ্টা ডিফল্ট; `sync` সেটিংস দিয়ে বদলানো যায়। ছবি পূর্ণ frame-এ বাঁধা: প্রয়োজনীয় বাড়তি সময় উপরের frame-এ round হয়, তাই প্রতি edit-এ সর্বোচ্চ এক frame-এর কাছাকাছি পার্থক্য থাকতে পারে। Audio sample অনুযায়ী বসে; frame rounding ও একাধিক edit-এর প্রভাবে পরের timing বদলাতে পারে। Edited video গড় frame rate-এ constant-frame-rate হয়; variable-frame-rate source-এর প্রতিটি আসল frame অপরিবর্তিত থাকার নিশ্চয়তা নেই।
 - শূন্য বা এক-frame window-তে moving tail না থাকলে কাছের উপলব্ধ ছবি ব্যবহার ও report-এ warning দেওয়া হয়। পুরো source-এ মাত্র একটি frame থাকলে বাস্তব motion তৈরি করা সম্ভব নয়। Repeated footage-এ দৃশ্যমান jump হতে পারে। Source picture দেরিতে শুরু হলে অনুপস্থিত শুরুর অংশে কালো frame এবং audio দেরিতে শুরু হলে নীরবতা যোগ করে মূল alignment রাখা হয়; source picture audio-র আগে শেষ হলে তার tail পুনরাবৃত্তি করা হয়।
-- ছবি edit না হলে video copy হতে পারে; edit হলে H.264 re-encode করতে হয়। ডিফল্টে একসঙ্গে **৪টি audio preparation** ও **২টি video encoder** চলে (GPU-তে সর্বোচ্চ ২; CPU-তে কনফিগমতো সর্বোচ্চ ৪); অসমর্থিত NVENC ব্যর্থ হলে CPU চেষ্টা করা হয়। কাজের ধরন, encoding, video, GPU ও network অনুযায়ী সময়, disk ও RAM/VRAM বদলায়—আগের copy-only পদ্ধতির চেয়ে দ্রুত বা ১২ GB-তে সব video চলবে, এমন নিশ্চয়তা নেই।
-- Report-এ মূল source time, বাস্তব placed time, video window, speed, repeat, silence ও warning থাকে; Bengali report cue-ও placed time ব্যবহার করে। কোনো clip উদ্ধার করা বা overlap ছাড়া সম্পূর্ণ বসানো অসম্ভব হলে success দেখানোর বদলে স্পষ্ট failure হয়। Waveform ও duration পরীক্ষা অর্থ, নাম বা নিখুঁত pronunciation প্রমাণ করে না।
+- ছবি edit না হলে video copy হতে পারে; edit হলে H.264 re-encode করতে হয়। কাছাকাছি ছোট picture piece সীমিত আকারে একসঙ্গে encode হয়, বারবার ব্যবহৃত একই tail reuse হয় এবং প্রতিটি group ও চূড়ান্ত output-এর frame count যাচাই হয়। Group ব্যর্থ হলে একেকটি piece করে আবার চেষ্টা হয়; NVENC ব্যর্থ হলে শুধু সীমিত in-flight কাজের পর CPU fallback হয়। যাচাইকৃত CFR source-এ শুরুতে offset না থাকলে এবং সর্বোচ্চ ৬টি tail frame কম থাকলে পুরো source আগে encode না করে শেষ render-এ সেগুলো map করা হয়; সন্দেহ, VFR, বড় tail বা verification ব্যর্থতায় আগের materialized পথ ব্যবহার হয়। ডিফল্টে **৪টি audio preparation** ও **২টি video encoder** চলে (GPU-তে সর্বোচ্চ ২; CPU-তে সর্বোচ্চ ৪)। Video, encoder, GPU ও network অনুযায়ী সময়, disk ও RAM/VRAM বদলায়—copy-only পদ্ধতির চেয়ে দ্রুত বা ১২ GB-তে সব video চলবে, এমন নিশ্চয়তা নেই।
+- ডিফল্টে সর্বোচ্চ **২টি independent Gemini batch** একই সঙ্গে চলতে পারে; shared RPM limiter নতুন request pace করে এবং TTS-এ মূল ক্রম বজায় থাকে। `gemini.concurrency: 1` দিলে sequential batch ব্যবহৃত হবে। প্রতিটি ব্যর্থ request-এর জন্য আগের মতো ১ সেকেন্ড ব্যবধানে সর্বোচ্চ ১০০ retry থাকে; quota/throttling থাকলে parallel কাজ দ্রুত হবে এমন নিশ্চয়তা নেই। সুস্পষ্ট repeated-letter বা দীর্ঘ source-এর অস্বাভাবিক ছোট single-token ফল review করে সংশ্লিষ্ট অংশ পুনরায় অনুবাদ চাওয়া হয়; যাচাইটি অর্থ বা সঠিক নামের নিশ্চয়তা নয়।
+- Report-এ **তিনটি আলাদা clock**: প্রতি source second-এ STT word/confidence ও extracted audio; প্রতি edited-output second-এ placed clip, আনুমানিক Bengali cue, planned picture piece, pre-mux ও actual post-mux waveform; এবং প্রতি processing second-এ active stage ও রেকর্ড করা retry/error/fallback। Source ও output picture-এর packet timestamp-ও মাপা হয় (packet সব codec-এ decoded frame নয়); প্রতি file-এ ৫,০০,০০০ packet-এর পর scan truncated দেখায়। একই second নম্বরের source ও edited output একই দৃশ্য বোঝায় না। শেষ output audio আবার 8 kHz mono-তে decode এবং picture packet scan করা হয়, তাই কিছু অতিরিক্ত সময়, I/O ও অস্থায়ী disk লাগে। Unavailable মানে silence নয়; সন্দেহজনক quiet/clipping কেবল review signal। সব silent সমস্যা, ছবি/অর্থ/নাম/উচ্চারণ স্বয়ংক্রিয়ভাবে নিশ্চিত করা যায় না।
+- Processing timeline-এ প্রায় প্রতি সেকেন্ডে parent process CPU/RSS ও সম্ভব হলে cgroup memory sample থাকে। এগুলো পুরো মেশিনের নির্দিষ্ট video-ব্যবহার নয়: parent CPU/RSS-এ FFmpeg child ও GPU/VRAM ধরা হয় না; তথ্য না পেলে unavailable দেখায়। Report চালু থাকলে ব্যর্থ ভিডিওতেও সম্ভব হলে partial failure report লেখা হয়; এটি success বা valid output নয়। Runtime event সর্বোচ্চ ১,০০,০০০টি রাখা হয়, বেশি হলে omitted সংখ্যা দেখায়। Event-এ API response, raw error, key বা absolute path রাখা হয় না; তবে report-এ ভিডিওর নাম ও transcript আছে, যা নিজেই সংবেদনশীল হতে পারে—শেয়ারের আগে যাচাই করুন।
 - খুব ছোট/শূন্য STT segment-ও ফেলা হয় না। অনুপস্থিত translation বা TTS কেবল সংশ্লিষ্ট segment-এ retry হয়; না পেলে স্পষ্ট failure। আগের report-এ unplaced/অনুপস্থিত unit জানা থাকলে `skip_existing` চালু থাকলেও পুনরায় প্রসেস হয়; পুরোনো report-এ তথ্য না থাকলে `--force` ব্যবহার করুন। Sync retry-তে অপরিবর্তিত clip-এর মাপা প্রস্তুত audio ও settings মিললে reuse হয়। Report-এর translation ও TTS call time overlap হতে পারে, তাই একসাথে যোগ করে wall time ধরবেন না।
 - TTS-এ শুধু আলাদা `দিব` শব্দ কথ্য `দিবো` হিসেবে পাঠানো হয়; প্রদর্শিত অনুবাদ বদলায় না, নাম বা সব `ব`-শেষ শব্দ স্বয়ংক্রিয়ভাবে বদলায় না। শেষের fade ৫০ ms থেকে ৮ ms করা হয়েছে। `output.keep_temp_files: true` দিলে raw Edge MP3 এবং প্রস্তুত WAV রেখে source/transcript, Edge pronunciation, silence trim, stretch ও mux তুলনা করে শুনতে পারবেন। `ইয়াসিন`-এর মতো নামের উচ্চারণ সঠিক হবে—এমন নিশ্চয়তা নেই।
 - Post-mux Bengali ASR coverage ঐচ্ছিক, ডিফল্ট বন্ধ। ইংরেজি-only Distil নির্বাচিত থাকলে এই পরীক্ষা চালু করলে আলাদা multilingual `large-v3` নামানো/লোড ও আরেকটি সম্পূর্ণ pass হতে পারে; সময়/VRAM বাড়ে। ফল কেবল review signal, semantic বা pronunciation validation নয়।
@@ -55,11 +57,13 @@ python benchmarks/stt_compare.py --manifest /path/to/manifest.json
 
 স্ক্রিপ্ট উভয় মডেল ও `none`/`highpass60` তুলনা করে; model-load time আলাদা এবং extraction + STT realtime factor ও aggregated WER দেখায়। নেটওয়ার্ক ও hardware ভেদে একই sample কয়েকবার পরীক্ষা করুন। Benchmark বা automated checks উচ্চারণ/semantic accuracy প্রমাণ করে না; এই repo-তে ব্যবহারকারীর আসল অডিও ছাড়া accuracy বা runtime regression নেই বলে দাবি করা যাচ্ছে না।
 
+Stage ৩/৫-এর process overhead মাপার জন্য FFmpeg/ffprobe-সহ সম্পূর্ণ synthetic offline benchmark: `python benchmarks/pipeline_perf.py --repeats 3`। Tiny-tail preparation ও final render তুলনা: `python benchmarks/picture_preparation.py --source-seconds 60 --repeats 3`। নতুন প্রতি-সেকেন্ড report-এর অতিরিক্ত খরচ: `python benchmarks/reporting_perf.py --source-seconds 300 --repeats 3`। এগুলো ভুয়া Gemini latency ও generated media ব্যবহার করে; বাস্তব Gemini quota, Edge, Colab GPU বা আসল ভিডিওর সময়ের বিকল্প নয়। Concurrent worker-এর যোগ করা সময় wall time নয়।
+
 ---
 
 ## 📁 প্রজেক্ট স্ট্রাকচার
 
-Python source ও test modules দায়িত্ব অনুযায়ী ছোট ফাইলে ভাগ করা; প্রতিটি `.py` ফাইল ৪০০ লাইন বা তার কম। পুরনো import path সহজ রাখতে `translator.py`-র মতো facade রাখা হয়েছে।
+Python source domain subfolder-এ ভাগ করা; প্রতিটি `.py` ফাইল ৪০০ লাইন বা তার কম। পুরোনো `proxmax.stt` ও নতুন `proxmax.speech.stt` একই module object, তাই notebook ও patch/mock compatibility থাকে। একইভাবে `proxmax.reporting` এবং `proxmax.reports.reporting` কাজ করে। Notebook-এ update pull-এর পরে import করা থাকলে runtime restart করুন।
 
 ```text
 ProXMax/
@@ -74,21 +78,16 @@ ProXMax/
 │   ├── _support.py                # shared fakes and test imports
 │   └── test_*.py                  # focused unit/regression suites by component
 └── proxmax/
-    ├── config.py + config_validation.py  # settings, YAML loading, validation
-    ├── hotwords.py + hotword_repair.py   # dedicated glossary, bounded prompts, safe normalization
-    ├── models.py                  # Segment, Word, VideoResult, StageTimings data models
-    ├── utils.py + ffmpeg_utils.py  # logging/SRT helpers and guarded FFmpeg wrappers
-    ├── audio_quality.py           # heuristic post-mux Bangla token/tail coverage check
-    ├── stt.py                     # public STT interface and sentence orchestration
-    ├── stt_inference.py           # Whisper loading, multilingual decoding and model lifecycle
-    ├── stt_seams.py + whisper_model.py  # chunk seam repair and Whisper cache/device helpers
-    ├── translator.py              # stable import facade for translation backends
-    ├── gemini_*.py + translation_*.py  # Gemini protocol, batching, repair, parsing and errors
-    ├── sync_engine.py + sync_prepare.py  # silence trimming, safe slowdown and track assembly
-    ├── video_timeline.py + video_render.py  # frame-based edits and bounded parallel encodes
-    ├── reporting.py + reporting_*.py    # detailed Markdown report data/rendering sections
-    ├── pipeline.py + pipeline_*.py      # reusable orchestration split by processing stage
-    └── tts/                        # TTS base interface and built-in Bengali voice engine
+    ├── config.py, models.py, hotwords.py, utils.py  # shared settings, data ও helpers
+    ├── _module_groups.py           # পুরোনো ও domain import-এর একই module identity
+    ├── audio/                      # extraction, waveform ও guarded FFmpeg helpers
+    ├── speech/                     # STT, chunking, hotword repair ও speech units
+    ├── translation/                # Gemini/IndicTrans2, parsing, retry ও quality signals
+    ├── tts/                        # বাংলা voice synthesis
+    ├── sync/                       # silence trim, safe slowdown ও audio assembly
+    ├── video/                      # picture timeline, rendering ও mux
+    ├── reports/                    # media/elapsed per-second এবং partial failure reports
+    └── workflow/                   # pipeline ও batch orchestration
 ```
 
 ---
@@ -107,7 +106,7 @@ ProXMax/
    - **ধাপ ৪:** Gemini API Key প্রদান ও **তাৎক্ষণিক লাইভ যাচাই** (পুরুষ `male` বা নারী `female` কণ্ঠ নির্বাচন)
    - **ধাপ ৫:** সব ভিডিও বাংলায় ডাব করুন!
 
-প্রতিটি সফল ভিডিওর পাশে `Video/output/<stem>_report.markdown` তৈরি হবে। এতে English ও Bangla transcript, timestamp/word timing, TTS ও sync diagnostics এবং media metadata থাকবে; আলাদা `_en.srt` / `_bn.srt` ফাইল আর তৈরি হবে না। Spoken-content timeline আছে, তবে visual action recognition নয়।
+প্রতিটি সফল ভিডিওর পাশে `Video/output/<stem>_report.markdown` তৈরি হবে; ব্যর্থ হলেও report চালু থাকলে ও ফোল্ডার writable হলে partial failure report লেখা হয়। এতে English/Bangla transcript, source/output/processing-এর পৃথক প্রতি-সেকেন্ড diagnostics ও media metadata থাকে; আলাদা `_en.srt` / `_bn.srt` ফাইল আর তৈরি হয় না। Spoken-content timeline আছে, visual action recognition নয়। Report শেয়ার করার আগে তার transcript ও ভিডিওর নাম যাচাই করুন।
 
 Colab-এ update pull ব্যর্থ হলে error দেখাবে; কোড import হয়ে থাকলে runtime restart করে আবার ধাপ ১–৫ চালান, যাতে নতুন কোড লোড হয়। পুরোনো সফল আউটপুট আবার বানাতে ধাপ ৫-এ `config.skip_existing = False` সক্রিয় করুন; এতে একই নামের আউটপুট ও রিপোর্ট পুনর্লিখিত হবে, দরকার হলে আগে backup নিন। CLI-তে `--force` ব্যবহার করা যায়।
 

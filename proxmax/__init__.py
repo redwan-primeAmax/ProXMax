@@ -8,6 +8,13 @@ pipeline এই প্যাকেজে রয়েছে: নীরবতা-
 
 from __future__ import annotations
 
+from pathlib import Path
+from ._module_groups import extend_package_path
+
+# Physical domain folders share the legacy package namespace; see
+# _module_groups for backwards-compatible grouped aliases and module identity.
+extend_package_path(__path__, Path(__file__).resolve().parent)
+
 from .config import AppConfig
 from .hotwords import load_hotwords, resolve_hotwords_path
 from .models import BatchSummary, Segment, StageTimings, VideoResult, Word

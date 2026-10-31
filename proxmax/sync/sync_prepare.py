@@ -135,6 +135,7 @@ def prepare_clip(engine, seg: Segment, window: Tuple[float, float], output: Path
         seg.stretched_audio_path = output
         return output
     except Exception as exc:
-        seg.sync_issue = f"TTS preparation failed ({type(exc).__name__}: {exc})"
-        logger.warning("Segment %d: %s", seg.index, seg.sync_issue)
+        # The issue can appear in a shareable report; exception text can contain paths or secrets.
+        seg.sync_issue = f"TTS preparation failed ({type(exc).__name__})"
+        logger.warning("Segment %d: %s; detail: %s", seg.index, seg.sync_issue, exc)
         return None

@@ -42,10 +42,8 @@ def _probe_media(path: Path | str) -> Dict[str, Any]:
     except Exception as exc:
         return {"error": f"probe failed: {type(exc).__name__}"}
     if result.returncode:
-        detail = (result.stderr or "ffprobe failed")[-500:]
-        detail = detail.replace(str(media_path.resolve()), media_path.name)
-        detail = detail.replace(str(media_path), media_path.name)
-        return {"error": detail}
+        # stderr can include private paths, URLs or arbitrary media metadata.
+        return {"error": f"ffprobe failed (exit {result.returncode}); details withheld"}
     try:
         data = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
@@ -117,6 +115,8 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             else getattr(config, "indictrans2_model", None),
             "gemini_input_token_budget": getattr(config, "gemini_max_input_tokens", None),
             "gemini_max_paragraphs_per_request": getattr(config, "gemini_batch_size", None),
+            "gemini_parallel_batches": getattr(config, "gemini_concurrency", None),
+            "gemini_requests_per_minute": getattr(config, "gemini_requests_per_minute", None),
             "pre_tts_duration_prediction": False,
             "shorten_retry_policy": "disabled; sync does not ask Gemini to rewrite for fit",
             "text_expansion_to_fill_gaps": False,
@@ -142,7 +142,7 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "reuse_unchanged_prepared_clips": True,
         },
         "Quality": {
-            "gemini_translation_checks": "explicit numbers and unexpected scripts; not semantic validation"
+            "gemini_translation_checks": "explicit numbers, unexpected scripts and obvious corruption; not semantic validation"
             if getattr(config, "translator_backend", None) == "gemini" else "not applied by this backend",
             "source_word_review_probability_below": 0.35,
             "post_mux_bengali_asr_validation": getattr(config, "validate_dub_audio", None),

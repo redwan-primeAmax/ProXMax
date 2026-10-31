@@ -7,6 +7,7 @@ Microsoft edge-tts-এর ``bn-BD`` neural ভয়েস (ডিফল্ট �
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import List, Optional
 from .. import audio_fx
 from ..config import DEFAULT_TTS_CONCURRENCY, safe_tts_rate
 from ..models import Segment
+from ..reporting_runtime import record_event
 from ..text_utils import prepare_for_speech
 from ..utils import FFmpegError, ensure_tool, get_logger, run_ffmpeg
 from .base import BaseTTSEngine, TTSError
@@ -140,7 +142,8 @@ class EdgeTTSEngine(BaseTTSEngine):
             except BaseException as exc:  # calling thread-এ re-raise হবে
                 box["error"] = exc
 
-        thread = threading.Thread(target=_runner, daemon=True)
+        context = contextvars.copy_context()
+        thread = threading.Thread(target=lambda: context.run(_runner), daemon=True)
         thread.start()
         thread.join()
         if "error" in box:
@@ -216,6 +219,8 @@ class EdgeTTSEngine(BaseTTSEngine):
         mp3_path = output_dir / f"seg_{seg.index:04d}.mp3"
         wav_path = output_dir / f"seg_{seg.index:04d}.wav"
         last_error: BaseException | None = None
+        started = time.perf_counter()
+        record_event("tts_clip_started", segment=seg.index)
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -229,11 +234,19 @@ class EdgeTTSEngine(BaseTTSEngine):
                 duration = await asyncio.to_thread(self._convert_and_finalize, mp3_path, wav_path, seg)
                 seg.tts_audio_path = wav_path
                 seg.tts_duration = duration
+                record_event("tts_clip_finished", segment=seg.index, attempt=attempt,
+                             elapsed_seconds=time.perf_counter() - started, clip_seconds=duration, status="success")
                 return
             except Exception as exc:
                 last_error = exc
+                delay = 1.0 * (2 ** (attempt - 1)) if attempt < self.max_retries else 0.0
+                record_event("tts_attempt_failed", segment=seg.index, attempt=attempt,
+                             max_attempts=self.max_retries, delay_seconds=delay, error_type=type(exc).__name__)
                 if attempt < self.max_retries:
-                    await asyncio.sleep(1.0 * (2 ** (attempt - 1)))
+                    await asyncio.sleep(delay)
+        record_event("tts_clip_finished", segment=seg.index, attempt=self.max_retries,
+                     elapsed_seconds=time.perf_counter() - started, status="failed",
+                     error_type=type(last_error).__name__ if last_error else None)
         logger.warning("Segment %d-এর edge-tts ব্যর্থ: %s", seg.index, last_error)
         seg.tts_audio_path = None
         seg.tts_duration = None
