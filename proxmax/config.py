@@ -122,6 +122,7 @@ class AppConfig:
     gemini_retry_max_delay: float = DEFAULT_RETRY_DELAY
     gemini_retry_cap_delay: float = DEFAULT_RETRY_DELAY
     gemini_requests_per_minute: int = 15
+    gemini_concurrency: int = 2             # independent requests; 1 disables parallel Gemini batches
     gemini_temperature: float = 0.2
     gemini_timeout: int = 120
     gemini_max_output_tokens: int = 8192
@@ -284,6 +285,7 @@ class AppConfig:
                 "retry_max_delay": "gemini_retry_max_delay",
                 "retry_cap_delay": "gemini_retry_cap_delay",
                 "requests_per_minute": "gemini_requests_per_minute",
+                "concurrency": "gemini_concurrency",
                 "temperature": "gemini_temperature",
                 "timeout": "gemini_timeout",
                 "max_output_tokens": "gemini_max_output_tokens",

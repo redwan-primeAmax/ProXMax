@@ -23,6 +23,7 @@ class TestConfig(unittest.TestCase):
         )
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
         self.assertEqual(cfg.gemini_batch_size, 12)
+        self.assertEqual(cfg.gemini_concurrency, 2)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
         self.assertTrue(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
@@ -52,6 +53,7 @@ class TestConfig(unittest.TestCase):
         )
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
         self.assertEqual(cfg.gemini_batch_size, 12)
+        self.assertEqual(cfg.gemini_concurrency, 2)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
         self.assertTrue(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
@@ -81,7 +83,7 @@ class TestConfig(unittest.TestCase):
             {
                 "stt": {"model": "medium", "chunk_min_seconds": 20.0, "hotwords_file": "custom_hw.txt"},
                 "translation": {"backend": "gemini", "max_retries": 6},
-                "gemini": {"model": "gemini-test-model", "api_key": "test-key"},
+                "gemini": {"model": "gemini-test-model", "api_key": "test-key", "concurrency": 1},
                 "tts": {"voice": "bn-BD-PradeepNeural", "max_retries": 2, "engine": "edge"},
                 "sync": {"max_tempo": 1.15, "workers": 2},
                 "runtime": {"release_gpu_when_done": False, "enable_overlap": False},
@@ -93,6 +95,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.chunk_min_seconds, 20.0)
         self.assertEqual(cfg.stt_hotwords_file, "custom_hw.txt")
         self.assertEqual(cfg.gemini_model, "gemini-test-model")
+        self.assertEqual(cfg.gemini_concurrency, 1)
         self.assertEqual(cfg.gemini_max_retries, 6)
         self.assertEqual(cfg.tts_max_retries, 2)
         self.assertEqual(cfg.tts_engine, "edge")
@@ -125,6 +128,8 @@ class TestConfig(unittest.TestCase):
             {"gemini_model": "   "},
             {"gemini_max_retries": 0},
             {"gemini_max_retries": 101},
+            {"gemini_concurrency": 0},
+            {"gemini_concurrency": 3},
             {"gemini_max_input_tokens": 999},
             {"video_max_speed": 1.1501},
             {"video_workers": 5},

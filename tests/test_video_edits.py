@@ -17,7 +17,7 @@ from proxmax import audio_fx
 from proxmax.models import Segment
 from proxmax.muxer import VideoMuxer
 from proxmax.sync_engine import SyncEngine
-from proxmax.video_render import _frame_count, _render_piece, render_video_plan
+from proxmax.video_render import _frame_count, _render_group, _render_piece, render_video_plan
 from tests._support import FFMPEG
 
 
@@ -231,12 +231,12 @@ class TestActualVideoEdits(unittest.TestCase):
             sync = SyncEngine(sample_rate=8000, slot_gap_ms=0, borrow_silence_ms=0)
             audio = sync.build_final_track([seg], 2, root, root / "dub.wav")
             encoders = []
-            def render(source, piece, fps, output, encoder):
+            def render(source, group, fps, output, encoder):
                 encoders.append(encoder)
                 if encoder == "h264_nvenc":
                     raise RuntimeError("GPU encoder unavailable")
-                return _render_piece(source, piece, fps, output, encoder)
-            with mock.patch("proxmax.video_render._render_piece", side_effect=render):
+                return _render_group(source, group, fps, output, encoder)
+            with mock.patch("proxmax.video_render._render_group", side_effect=render):
                 output = render_video_plan(source, sync.video_plan, root / "out.mp4", audio=audio,
                                            workers=2, use_nvenc=True)
             self.assertIn("h264_nvenc", encoders)

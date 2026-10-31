@@ -129,6 +129,14 @@ class GeminiProtocolMixin:
         from google.genai import types
 
         client = self._ensure_client()
+        # A request uses one coherent model/capability snapshot. Another
+        # in-flight request may update the shared defaults for subsequent calls.
+        with self._state_lock:
+            request_model = self.model
+            use_schema = self._use_schema
+            thinking = self._thinking_config(types)
+            use_thinking = thinking is not None
+        self._request_context.model = request_model
         kwargs: Dict[str, Any] = {
             "system_instruction": instruction,
             "temperature": self.temperature if mode == "json" else 0.0,
@@ -144,7 +152,7 @@ class GeminiProtocolMixin:
         payload = self._payload(items)
         if mode == "json":
             contents = f"{task}\n{count_hint}\n{label}\n{payload}"
-            if self._use_schema:
+            if use_schema:
                 kwargs["response_mime_type"] = "application/json"
                 kwargs["response_schema"] = _RESPONSE_SCHEMA
         elif mode == "json_plain":
@@ -164,7 +172,6 @@ class GeminiProtocolMixin:
                 f"{count_hint}\n{label}\n{self._payload_numbered(items)}"
             )
 
-        thinking = self._thinking_config(types)
         if thinking is not None:
             kwargs["thinking_config"] = thinking
         try:
@@ -172,27 +179,32 @@ class GeminiProtocolMixin:
         except TypeError:
             if "thinking_config" in kwargs:
                 kwargs.pop("thinking_config", None)
-                self._use_thinking = False
+                with self._state_lock:
+                    if self.model == request_model:
+                        self._use_thinking = False
+                use_thinking = False
                 config = types.GenerateContentConfig(**kwargs)
             else:
                 raise
 
         try:
             response = client.models.generate_content(
-                model=self.model, contents=contents, config=config
+                model=request_model, contents=contents, config=config
             )
+            self._check_cancelled()
         except Exception as exc:  # noqa: BLE001 - কোনো প্যারামিটার অসমর্থিত হলে
+            self._check_cancelled()
             message = _error_message(exc).lower()
             status = _status_code(exc)
             is_auth = any(h in message for h in _AUTH_HINTS)
 
-            if ("thinking" in message or "budget" in message) and self._use_thinking:
-                self._use_thinking = False
+            if ("thinking" in message or "budget" in message) and use_thinking:
+                self._disable_capability(request_model, "_use_thinking")
                 raise _CapabilityError(
                     "এই মডেলে thinking বন্ধ করার অপশন নেই — বাদ দিয়ে আবার চেষ্টা।"
                 ) from exc
-            if ("schema" in message or "response_mime" in message) and self._use_schema:
-                self._use_schema = False
+            if ("schema" in message or "response_mime" in message) and use_schema and mode == "json":
+                self._disable_capability(request_model, "_use_schema")
                 raise _CapabilityError(
                     "এই মডেলে structured output নেই — সাধারণ JSON-এ আবার চেষ্টা।"
                 ) from exc
@@ -204,13 +216,13 @@ class GeminiProtocolMixin:
                 or "invalid argument" in message
                 or "bad request" in message
             ):
-                if self._use_thinking:
-                    self._use_thinking = False
+                if use_thinking:
+                    self._disable_capability(request_model, "_use_thinking")
                     raise _CapabilityError(
                         "HTTP 400 পাওয়া গেছে — thinking_config বাদ দিয়ে আবার চেষ্টা।"
                     ) from exc
-                if self._use_schema and mode == "json":
-                    self._use_schema = False
+                if use_schema and mode == "json":
+                    self._disable_capability(request_model, "_use_schema")
                     raise _CapabilityError(
                         "HTTP 400 পাওয়া গেছে — response_schema বাদ দিয়ে সাধারণ JSON-এ আবার চেষ্টা।"
                     ) from exc
@@ -251,7 +263,8 @@ class GeminiProtocolMixin:
                 reason = "উত্তর মাঝপথে কেটে গেছে" if truncated else "উত্তর অসম্পূর্ণ"
                 raise _PartialBatchError(recovered, len(items), reason) from exc
             if truncated:
-                self._truncated_hits += 1
+                with self._state_lock:
+                    self._truncated_hits += 1
                 logger.warning(
                     "✂️ উত্তর output-token সীমায় কেটে গেছে (%d লাইন, বাজেট %d টোকেন) — "
                     "ব্যাচ ছোট করে আবার চেষ্টা।",
@@ -286,18 +299,21 @@ class GeminiProtocolMixin:
         remaining = list(items)
 
         for retry in range(self.max_retries + 1):
+            self._check_cancelled()
             mode = self.FORMAT_MODES[min(format_failures, len(self.FORMAT_MODES) - 1)]
             try:
                 if retry == 0:
-                    self._rate_limiter.wait()
+                    self._paced_wait()
                 else:
                     # The retry delay governs retries; RPM still paces new batches.
                     self._rate_limiter.record_retry()
-                self._api_calls += 1
-                return translated + self._generate(
-                    remaining, instruction=instruction, task=task, mode=mode
+                answer = self._generate_attempt(
+                    remaining, instruction=instruction, task=task, mode=mode, retry=retry > 0
                 )
+                self._check_cancelled()
+                return translated + answer
             except _PartialBatchError as exc:
+                self._check_cancelled()
                 if 0 < len(exc.translations) < len(remaining):
                     translated.extend(exc.translations)
                     remaining = remaining[len(exc.translations):]
@@ -311,9 +327,11 @@ class GeminiProtocolMixin:
                     last_error = _ResponseFormatError(str(exc))
                     format_failures += 1
             except _CapabilityError as exc:
+                self._check_cancelled()
                 last_error = exc
                 logger.info("ℹ️ %s", exc)
             except _ResponseFormatError as exc:
+                self._check_cancelled()
                 last_error = exc
                 format_failures += 1
                 logger.warning(
@@ -321,6 +339,7 @@ class GeminiProtocolMixin:
                     retry + 1, self.max_retries + 1, mode, _error_message(exc, 300),
                 )
             except Exception as exc:  # noqa: BLE001 - API and network failures share the policy
+                self._check_cancelled()
                 last_error = exc
                 status = _status_code(exc)
                 msg_lower = _error_message(exc).lower()
@@ -332,14 +351,14 @@ class GeminiProtocolMixin:
                     or "invalid_argument" in msg_lower
                     or "invalid argument" in msg_lower
                 ):
-                    fallback_model = self._next_fallback_model()
+                    failed_model = getattr(self._request_context, "model", self.model)
+                    fallback_model = self._fallback_after_failure(failed_model)
                     if fallback_model:
                         logger.warning(
                             "⚠️ মডেল '%s'-এ ত্রুটি (status=%s) — '%s' দিয়ে আবার চেষ্টা হবে।",
-                            self.model, status, fallback_model,
+                            failed_model, status, fallback_model,
                         )
-                        self.model = fallback_model
-                        self._use_schema = True
+                    if fallback_model or self.model != failed_model:
                         format_failures = 0
                 logger.error(
                     "❌ Gemini API error (চেষ্টা %d/%d) | %s | status=%s | %s",
@@ -354,7 +373,11 @@ class GeminiProtocolMixin:
                     delay, retry + 1, self.max_retries,
                 )
                 if delay > 0:
-                    time.sleep(delay)
+                    waited = time.perf_counter()
+                    try:
+                        time.sleep(delay)
+                    finally:
+                        self.diagnostics.add("retry_wait_seconds_sum", time.perf_counter() - waited)
 
         final = (
             f"Gemini প্রথম অনুরোধের পর {self.max_retries} বার retry করেও ব্যর্থ হয়েছে "

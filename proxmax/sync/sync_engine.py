@@ -7,7 +7,9 @@ frames. Short video windows may be sped up to 1.15x, leaving any remaining gap.
 
 from __future__ import annotations
 
+import contextvars
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
@@ -17,6 +19,7 @@ import numpy as np
 
 from . import audio_fx
 from .models import Segment
+from .reporting_runtime import record_event
 from .sync_assembly import SyncAssemblyMixin
 from .sync_cache import PreparedClipCache
 from .sync_math import build_atempo_filter, compute_tempo, find_overlaps, plan_windows
@@ -117,8 +120,27 @@ class SyncEngine(SyncAssemblyMixin):
             else:
                 jobs.append((seg, window, path, key))
         if jobs:
+            def run_job(item):
+                context, job = item
+                def prepare():
+                    segment = job[0]
+                    started = time.perf_counter()
+                    record_event("sync_clip_started", segment=segment.index)
+                    error = None
+                    try:
+                        return self._stretch_one(*job[:3])
+                    except BaseException as exc:
+                        error = exc
+                        raise
+                    finally:
+                        record_event("sync_clip_finished", segment=segment.index,
+                                     elapsed_seconds=time.perf_counter() - started,
+                                     status="failed" if error or segment.sync_issue else "success",
+                                     error_type=type(error).__name__ if error else None)
+                return context.run(prepare)
+            scoped_jobs = [(contextvars.copy_context(), job) for job in jobs]
             with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-                list(pool.map(lambda job: self._stretch_one(*job[:3]), jobs))
+                list(pool.map(run_job, scoped_jobs))
             for seg, window, path, key in jobs:
                 cache.store(seg, path, key, settings, window)
         self.last_stats.update({"prepared_reused": reused, "prepared_computed": len(jobs)})

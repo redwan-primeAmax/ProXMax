@@ -1,8 +1,9 @@
 """Conservative checks for obvious translation errors, not semantic validation.
 
 The source transcript itself may be wrong. These checks never infer words from
-context or invent facts: they compare explicit source digits and detect letters
-from unexpected writing systems. Ambiguous cases remain flagged for review.
+context or invent facts: they compare explicit source digits, detect unexpected
+scripts and flag obvious repetitive/very short outputs. They cannot prove
+meaning; ambiguous cases remain flagged for review.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from .text_utils import normalise_bangla, number_to_bangla_words, prepare_for_sp
 _DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _BANGLA_DIGITS = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9০-৯])(?:(?<![\w\u0980-\u09ff])[+\-−])?(?:[0-9০-৯]{1,3}(?:,[0-9০-৯]{2,3})+|[0-9০-৯]+)(?:\.[0-9০-৯]+)?")
+_REPEATED_BENGALI_LETTER = re.compile(r"([\u0985-\u09b9])\1{4,}")
 _NUMBER_ALIASES = {
     0: ("শূন্য", "জিরো"), 1: ("এক", "ওয়ান", "ওয়ান"), 2: ("দুই", "টু"),
     3: ("তিন", "থ্রি"), 4: ("চার", "ফোর"), 5: ("পাঁচ", "ফাইভ"),
@@ -84,7 +86,7 @@ def _unexpected_scripts(source: str, candidate: str) -> List[str]:
 
 
 def assess_translation(source: str, candidate: str, *, repair_single_number: bool = True) -> TranslationAssessment:
-    """Check explicit numbers and unexpected scripts; optionally repair one clear digit mismatch.
+    """Flag explicit number/script and obvious corruption signals, not semantic errors.
 
     Spelled-out source numbers and semantic correctness are deliberately not
     inferred. If several numbers are involved, no automatic substitution is made.
@@ -124,6 +126,12 @@ def assess_translation(source: str, candidate: str, *, repair_single_number: boo
     scripts = _unexpected_scripts(source, text)
     if scripts:
         issues.append("Unexpected writing system in Bangla output: " + ", ".join(scripts))
+    if _REPEATED_BENGALI_LETTER.search(text):
+        issues.append("Unusually repeated Bangla letters; possible corrupted response")
+    source_length = len(re.sub(r"\s+", "", source or ""))
+    output_length = len(re.sub(r"\s+", "", text))
+    if source_length >= 40 and len(text.split()) == 1 and output_length <= source_length * 0.25:
+        issues.append("Very short single-token output for a long source; possible missing content")
     return TranslationAssessment(text, tuple(issues), tuple(notes))
 
 

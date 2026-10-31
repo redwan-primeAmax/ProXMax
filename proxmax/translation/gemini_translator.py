@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import DEFAULT_GEMINI_MODEL
@@ -12,7 +13,9 @@ from .gemini_protocol import GeminiProtocolMixin
 from .gemini_repair import GeminiRepairMixin
 from .hotwords import load_hotwords
 from .text_utils import DEFAULT_CHARS_PER_SECOND
-from .translation_errors import GeminiAuthError, _RateLimiter
+from .translation_errors import GeminiAuthError, TranslationError, _RateLimiter
+from .translation_metrics import TranslationMetrics
+from .reporting_runtime import record_event
 from .translation_parsing import normalise_text
 from .translator_base import BaseTranslator
 from .translator_config import (
@@ -31,6 +34,8 @@ class GeminiTranslator(
     """Gemini API translator with text-only paragraph batching and retries."""
 
     FORMAT_MODES = ("json", "json_plain", "lines")
+    # Independent pipeline batches may run concurrently with shared pacing.
+    supports_parallel_batches = True
 
     def __init__(
         self,
@@ -114,11 +119,14 @@ class GeminiTranslator(
         self._api_key = resolved_key
         self._client = client
         self._client_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._request_context = threading.local()
         self._rate_limiter = _RateLimiter(self.requests_per_minute)
         self._cache: Dict[str, str] = {}
         self._cache_notes: Dict[str, Tuple[str, ...]] = {}
         self._cache_lock = threading.Lock()
         self._api_calls = 0
+        self.diagnostics = TranslationMetrics()
 
     @property
     def model_name(self) -> str:
@@ -135,6 +143,66 @@ class GeminiTranslator(
                 self._tried_models.add(candidate)
                 return candidate
         return None
+
+    def _paced_wait(self) -> None:
+        started = time.perf_counter()
+        try:
+            stop = getattr(self._request_context, "stop", None)
+            if stop is None:
+                self._rate_limiter.wait()
+            else:
+                self._rate_limiter.wait(stop)
+        finally:
+            self.diagnostics.add("pacing_wait_seconds_sum", time.perf_counter() - started)
+
+    def _check_cancelled(self) -> None:
+        stop = getattr(self._request_context, "stop", None)
+        if stop is not None and stop.is_set():
+            raise TranslationError("Translation cancelled after another pipeline error")
+
+    def translate_segments_cancellable(self, segments, stop: threading.Event):
+        """Stop future retries if TTS or another translation batch has failed."""
+        self._request_context.stop = stop
+        try:
+            return self.translate_segments(segments)
+        finally:
+            self._request_context.stop = None
+
+    def _generate_attempt(self, items, *, instruction, task, mode, retry: bool):
+        with self._state_lock:
+            self._api_calls += 1
+            self._request_context.model = self.model
+        token = self.diagnostics.begin(retry)
+        started = time.perf_counter()
+        record_event("gemini_attempt_started", retry=retry, count=len(items))
+        error = None
+        try:
+            return self._generate(items, instruction=instruction, task=task, mode=mode)
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            elapsed = time.perf_counter() - started
+            self.diagnostics.end(token, elapsed, error)
+            record_event("gemini_attempt_finished", retry=retry, count=len(items), elapsed_seconds=elapsed,
+                         status="failed" if error else "success",
+                         error_type=type(error).__name__ if error else None)
+
+    def _disable_capability(self, request_model: str, name: str) -> None:
+        with self._state_lock:
+            if self.model == request_model:
+                setattr(self, name, False)
+
+    def _fallback_after_failure(self, failed_model: str) -> Optional[str]:
+        """Switch once per failed model even when two requests fail together."""
+        with self._state_lock:
+            if self.model != failed_model:
+                return None  # another request already changed the model
+            candidate = self._next_fallback_model()
+            if candidate:
+                self.model = candidate
+                self._use_schema = True
+            return candidate
 
     def describe(self) -> str:
         return f"gemini:{self.model}"

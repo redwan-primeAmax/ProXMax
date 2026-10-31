@@ -6,6 +6,7 @@ import functools
 import json
 import math
 import subprocess
+import tempfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from .models import Segment
 from .utils import FFmpegError, ensure_tool, get_logger, get_media_duration, run_ffmpeg_with_progress
 from .video_render import _frame_count, normalize_video_start, render_video_plan
 from .video_timeline import VideoPlan, build_video_plan, parse_fps
+from .virtual_picture import is_constant_frame_grid
 
 logger = get_logger(__name__)
 
@@ -40,6 +42,10 @@ class VideoMuxer:
         self.audio_bitrate = audio_bitrate
         self.use_hwaccel = bool(use_hwaccel)
         self.video_workers = max(1, min(4, int(video_workers)))
+        self.last_picture_prepare_stats: dict = {}
+        self.last_mux_stats: dict = {}
+        self._virtual_source: Path | None = None
+        self._virtual_tail: VideoPlan | None = None
 
     def _gpu_encoder(self) -> bool:
         return self.use_hwaccel and "h264_nvenc" in _available_encoders()
@@ -94,6 +100,47 @@ class VideoMuxer:
         dummy = Segment(0, 0.0, source_duration, stretched_duration=required_duration)
         return build_video_plan([dummy], [(0, source_frames)], source_frames, fps, 24000, 1.0)
 
+    def prepare_picture_for_timeline(self, source: Path | str, required_duration: float,
+                                     work_dir: Path | str, fps: Fraction) -> Path:
+        """Avoid an intermediate encode for a tiny, verified-CFR missing tail.
+
+        The regular materialized normalization remains the fallback for VFR,
+        uncertain packet grids, delayed starts, or larger source extensions.
+        Final rendering maps the virtual frames back to real moving footage.
+        """
+        self._virtual_source = self._virtual_tail = None
+        source = Path(source)
+        offset = self._video_start_offset(source)
+        try:
+            frames = _frame_count(source)
+        except FFmpegError:
+            return self.ensure_picture_duration(source, required_duration, work_dir, fps)
+        picture = frames / float(fps)
+        blank_frames = max(0, round(offset * float(fps)))
+        if not blank_frames and required_duration <= picture + 0.5 / float(fps):
+            self.last_picture_prepare_stats = {
+                "start_offset_seconds": round(offset, 3), "blank_frames": 0,
+                "required_duration_seconds": round(required_duration, 3),
+                "picture_duration_seconds": round(picture, 3),
+                "start_normalized": False, "tail_extended": False,
+            }
+            return source
+        if not blank_frames and required_duration > picture:
+            mapping = self._tail_plan(fps, picture, required_duration)
+            extra = mapping.output_frames - mapping.source_frames
+            if 0 < extra <= min(6, frames) and is_constant_frame_grid(source, fps, frames):
+                self._virtual_source, self._virtual_tail = source, mapping
+                self.last_picture_prepare_stats = {
+                    "start_offset_seconds": round(offset, 3), "blank_frames": 0,
+                    "required_duration_seconds": round(required_duration, 3),
+                    "picture_duration_seconds": round(picture, 3), "start_normalized": False,
+                    "tail_extended": True, "virtual_tail": True, "virtual_tail_frames": extra,
+                    "frame_grid_verified": True,
+                }
+                logger.info("Deferring %d CFR source-tail frames to final rendering; no intermediate encode.", extra)
+                return source
+        return self.ensure_picture_duration(source, required_duration, work_dir, fps)
+
     def ensure_picture_duration(self, source: Path | str, required_duration: float,
                                 work_dir: Path | str, fps: Fraction) -> Path:
         """If source audio outlasts its picture, repeat the picture tail first.
@@ -101,14 +148,23 @@ class VideoMuxer:
         This rare preparation step makes original STT timestamps address a real
         picture frame, rather than silently creating an audio-only extension.
         """
+        self._virtual_source = self._virtual_tail = None
         source = Path(source)
         offset = self._video_start_offset(source)
         blank_frames = max(0, round(offset * float(fps)))
+        self.last_picture_prepare_stats = {
+            "start_offset_seconds": round(offset, 3), "blank_frames": blank_frames,
+            "required_duration_seconds": round(required_duration, 3),
+            "start_normalized": bool(blank_frames), "tail_extended": False,
+        }
         if blank_frames:
             aligned = Path(work_dir) / "source_picture_aligned.mp4"
             logger.warning("Source picture starts %.3fs late; preserving the offset with %d blank frames.",
                            offset, blank_frames)
-            source = normalize_video_start(source, aligned, fps, blank_frames, use_nvenc=self._gpu_encoder())
+            details: dict = {}
+            source = normalize_video_start(source, aligned, fps, blank_frames,
+                                           use_nvenc=self._gpu_encoder(), diagnostics=details)
+            self.last_picture_prepare_stats["start_render"] = details
         # Metadata may be N/A or include a misleading stream start time. For
         # the normalized CFR grid, the actual frame count is a safer limit than
         # a container/stream duration estimate and is normally header-only.
@@ -117,13 +173,18 @@ class VideoMuxer:
         except FFmpegError:
             picture = self._video_stream_duration(source)
             logger.warning("Frame count unavailable; picture duration uses stream metadata.")
+        self.last_picture_prepare_stats["picture_duration_seconds"] = round(picture, 3)
         if required_duration <= picture + 0.5 / float(fps):
             return source
+        self.last_picture_prepare_stats["tail_extended"] = True
         plan = self._tail_plan(fps, picture, required_duration)
         output = Path(work_dir) / "source_picture_extended.mp4"
         logger.warning("Source picture ends %.3fs before its container; repeating its last pictures.",
                        required_duration - picture)
-        render_video_plan(source, plan, output, workers=self.video_workers, use_nvenc=self._gpu_encoder())
+        details: dict = {}
+        render_video_plan(source, plan, output, workers=self.video_workers,
+                          use_nvenc=self._gpu_encoder(), diagnostics=details)
+        self.last_picture_prepare_stats["tail_render"] = details
         return output
 
     def mux(self, video_path: Path | str, audio_wav: Path | str, output_path: Path | str,
@@ -134,11 +195,40 @@ class VideoMuxer:
         ):
             raise ValueError("required_video_duration must be finite and non-negative")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if video_plan is not None and video_plan.changed:
-            render_video_plan(video_path, video_plan, output_path, audio=audio_wav,
-                              audio_bitrate=self.audio_bitrate, workers=self.video_workers,
-                              use_nvenc=self._gpu_encoder())
-            self._verify_picture(output_path, required_video_duration)
+        self.last_mux_stats = {}
+        virtual = self._virtual_tail if self._virtual_source is not None and \
+            self._virtual_source.resolve() == video_path.resolve() else None
+        self._virtual_source = self._virtual_tail = None
+        if virtual is not None and video_plan is None:
+            raise ValueError("Virtual source tail requires a frame-based video plan")
+        if video_plan is not None and (video_plan.changed or virtual is not None):
+            self.last_mux_stats["mode"] = "edited_picture"
+            details: dict = {}
+            try:
+                render_video_plan(video_path, video_plan, output_path, audio=audio_wav,
+                                  audio_bitrate=self.audio_bitrate, workers=self.video_workers,
+                                  use_nvenc=self._gpu_encoder(), diagnostics=details, source_map=virtual)
+                self._verify_picture(output_path, required_video_duration)
+            except Exception as exc:
+                if virtual is None:
+                    raise
+                # If an FFmpeg build rejects virtual-tail filters, materialize the
+                # exact source extension and use the established renderer instead.
+                logger.warning("Virtual source tail failed (%s); using materialized fallback.", type(exc).__name__)
+                self.last_mux_stats["virtual_fallback"] = {"error_type": type(exc).__name__,
+                                                           "attempts": details.get("attempts", [])}
+                with tempfile.TemporaryDirectory(prefix="picture_fallback_", dir=str(output_path.parent)) as temp:
+                    prepared = Path(temp) / "source.mp4"
+                    preparation: dict = {}
+                    render_video_plan(video_path, virtual, prepared, workers=self.video_workers,
+                                      use_nvenc=self._gpu_encoder(), diagnostics=preparation)
+                    self.last_mux_stats["virtual_fallback"]["materialization"] = preparation
+                    details = {}
+                    render_video_plan(prepared, video_plan, output_path, audio=audio_wav,
+                                      audio_bitrate=self.audio_bitrate, workers=self.video_workers,
+                                      use_nvenc=self._gpu_encoder(), diagnostics=details)
+                    self._verify_picture(output_path, required_video_duration)
+            self.last_mux_stats["render"] = details
             return output_path
 
         # Without a supplied edit plan, retain the lossless-copy fast path when
@@ -161,7 +251,9 @@ class VideoMuxer:
             attempts.append(["-c:v", "h264_nvenc", "-preset", "fast", "-cq", "23", "-pix_fmt", "yuv420p"])
         attempts.append(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"])
         last_error: Exception | None = None
+        self.last_mux_stats = {"mode": "direct_mux", "attempted_codecs": []}
         for codec in attempts:
+            self.last_mux_stats["attempted_codecs"].append(codec[1])
             try:
                 cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(video_path),
                        "-i", str(audio_wav), *codec, *common, str(output_path)]
@@ -174,6 +266,7 @@ class VideoMuxer:
                         output_path.unlink(missing_ok=True)
                         return self._extend_and_mux(video_path, audio_wav, output_path, actual,
                                                     required_video_duration)
+                self.last_mux_stats["encoder"] = codec[1]
                 return output_path
             except Exception as exc:
                 last_error = exc
@@ -191,8 +284,10 @@ class VideoMuxer:
         except FFmpegError:
             logger.warning("Frame count unavailable; using picture duration hint for tail repetition.")
         plan = self._tail_plan(fps, source_duration, required)
+        details: dict = {}
         render_video_plan(source, plan, output, audio=audio, audio_bitrate=self.audio_bitrate,
-                          workers=self.video_workers, use_nvenc=self._gpu_encoder())
+                          workers=self.video_workers, use_nvenc=self._gpu_encoder(), diagnostics=details)
+        self.last_mux_stats.update({"mode": "tail_extended", "render": details})
         self._verify_picture(output, required)
         return output
 

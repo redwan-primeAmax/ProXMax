@@ -9,6 +9,9 @@ from typing import Any, List, Mapping, Optional, Sequence
 
 from .models import Segment, StageTimings
 from .reporting_common import _fmt_seconds, _md, report_path_for
+from .reporting_activity import postmux_seconds
+from .reporting_packets import picture_packet_seconds
+from .reporting_seconds import media_timeline_lines
 from .reporting_media import (
     _ACTIVITY_FRAME_MS, _ACTIVITY_THRESHOLD_DBFS, _activity_summary, _audio_section,
     _media_section, _probe_media, _safe_config, _window_rms,
@@ -28,6 +31,7 @@ def write_detailed_report(
     stats: Optional[Mapping[str, Any]],
     config: Any,
     total_duration: Optional[float] = None,
+    video_plan: Any = None,
 ) -> Path:
     """Write one detailed `.markdown` report; no separate subtitle files are written."""
     source = Path(video_path)
@@ -49,6 +53,11 @@ def write_detailed_report(
 
     data = dict(stats or {})
     rows = _unit_timing_rows(segments, source_duration, config)
+    # Inspect the published copy, not merely its local precursor: otherwise a
+    # copy/Drive problem could be missed while the report claims to measure it.
+    post_audio = postmux_seconds(output_video, work, getattr(video_plan, "duration", None))
+    source_packets = picture_packet_seconds(source)
+    output_packets = picture_packet_seconds(output_video)
     children = [child for unit in segments for child in _unit_children(unit)]
     translated_units = sum(bool((unit.text_bn or "").strip()) for unit in segments)
     tts_units = sum(bool(unit.tts_audio_path) for unit in segments)
@@ -80,7 +89,8 @@ def write_detailed_report(
         f"- **Dubbed output:** `{_md(output_video.name)}`",
         f"- **Report:** `{_md(report.name)}`",
         "- This report replaces separate English/Bengali `.srt` outputs. It contains their timestamped text plus processing diagnostics.",
-        "- API keys, tokens, and absolute filesystem/Drive paths are intentionally excluded.",
+        "- API keys, tokens, and absolute filesystem/Drive paths are intentionally excluded from processing diagnostics.",
+        "- This report includes the filename and transcripts, which may themselves contain sensitive information; review them before sharing.",
         "- The action/event timeline below is **derived from spoken transcript text**. No visual action-recognition model is run, so it does not claim to identify on-screen events.",
         "",
         "## Executive summary",
@@ -91,7 +101,7 @@ def write_detailed_report(
         f"- **Transcript units:** {len(segments)}; **source STT pieces:** {len(children)}; "
         f"**translated units:** {translated_units}; **units with TTS clips:** {tts_units}; **placed units:** {placed_units}.",
         f"- **Source transcription review:** {low_confidence_units} units have at least one recognizer word probability below 0.35. Confidence is an uncalibrated review cue, not proof of an error or accuracy.",
-        f"- **Translation review:** {translation_issues} units with unresolved number/script signals; "
+        f"- **Translation review:** {translation_issues} units with unresolved number/script/corruption signals; "
         f"{translation_notes} with automatic-correction notes; {rewritten_units} historical fit rewrites. "
         "Current sync does not rewrite translations. These checks do not prove meaning, names, or naturalness.",
         f"- **Sync policy:** {(data.get('sync') or {}).get('policy', 'not recorded')}. "
@@ -140,6 +150,42 @@ def write_detailed_report(
         ]
     else:
         lines.append("Stage timings unavailable.")
+    lines += ["", "## Performance diagnostics", ""]
+    translation = data.get("translation") or {}
+    if translation:
+        lines.append(
+            f"- **Gemini:** {translation.get('attempts', 0)} attempts, {translation.get('retries', 0)} retries, "
+            f"{translation.get('failures', 0)} failed attempts; "
+            f"peak {translation.get('peak_in_flight', 0)} requests in flight; "
+            f"{translation.get('quality_recheck_units', 0)} units rechecked."
+        )
+        lines.append(
+            f"- **Summed Gemini time:** attempts {float(translation.get('attempt_seconds_sum', 0)):.3f} s; "
+            f"RPM pacing {float(translation.get('pacing_wait_seconds_sum', 0)):.3f} s; "
+            f"retry sleeps {float(translation.get('retry_wait_seconds_sum', 0)):.3f} s. "
+            "These are summed across workers and may overlap; they are not elapsed wall time."
+        )
+        lines.append(f"- **Failure categories:** `{_md(json.dumps(translation.get('failure_types', {}), sort_keys=True))}` (no request contents).")
+    else:
+        lines.append("- Gemini request diagnostics unavailable for this backend.")
+    picture = data.get("picture_preparation") or {}
+    if picture:
+        lines.append(
+            f"- **Source picture preparation:** {float(picture.get('seconds', 0)):.3f} s; "
+            f"source re-encoded: {bool(picture.get('source_reencoded'))}."
+        )
+    mux = data.get("video_mux") or {}
+    render = mux.get("render") or {}
+    if render:
+        lines.append(
+            f"- **Video rendering:** {render.get('planned_pieces', 0)} planned pieces, "
+            f"{render.get('unique_groups', 0)} unique encoded groups, "
+            f"encoder `{_md(render.get('encoder', 'unknown'))}`, "
+            f"strategy `{_md(render.get('strategy', 'unknown'))}`, "
+            f"{render.get('fallbacks', 0)} fallback(s)."
+        )
+    elif mux:
+        lines.append(f"- **Video mux mode:** `{_md(mux.get('mode', 'unknown'))}`.")
     lines += ["", "## Safe processing configuration", "", "Secret fields and absolute paths are not included.", ""]
     safe = _safe_config(config)
     for section, values in safe.items():
@@ -201,6 +247,8 @@ def write_detailed_report(
     lines.append(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True, default=str))
     lines += ["```", "", "## Automated review flags", ""]
     lines.extend(f"- {warning}" for warning in warnings)
+    lines += [""] + media_timeline_lines(rows, source_audio, dub_audio, post_audio, source_duration,
+                                           video_plan, source_packets, output_packets)
     lines += [
         "",
         "## Interpretation limits",

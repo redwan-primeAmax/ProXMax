@@ -69,6 +69,7 @@ gemini:
   retry_max_delay: 1.0          # পুরোনো কনফিগের সাথে সামঞ্জস্যের জন্য; base_delay-এর কম নয়
   retry_cap_delay: 1.0          # retry-র অপেক্ষার সর্বোচ্চ সীমা (সেকেন্ড)
   requests_per_minute: 15       # rate limit — আপনার API plan অনুযায়ী বাড়ান/কমান
+  concurrency: 2                # সর্বোচ্চ দুইটি independent request; 1 = sequential
   temperature: 0.2              # কম = বেশি নির্ভুল ও ধারাবাহিক অনুবাদ
   timeout: 120                  # এক request-এর timeout (সেকেন্ড)
   max_output_tokens: 8192       # উত্তরে সর্বোচ্চ টোকেন

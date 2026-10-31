@@ -61,6 +61,16 @@ class TestDetailedReport(unittest.TestCase):
                                  "silence_trimmed_seconds": .4, "silence_trimmed_tail_seconds": .1,
                                  "silence_trimmed_internal_seconds": .3},
                         "stt": {"words": 2},
+                        "translation": {"attempts": 5, "retries": 2, "failures": 2,
+                                        "peak_in_flight": 2, "quality_recheck_units": 1,
+                                        "attempt_seconds_sum": 7.0, "pacing_wait_seconds_sum": 1.0,
+                                        "retry_wait_seconds_sum": 2.0, "failure_types": {"HTTP_429": 2}},
+                        "picture_preparation": {"seconds": 3.0, "source_reencoded": True},
+                        "video_mux": {"mode": "edited_picture", "render": {
+                            "planned_pieces": 10, "unique_groups": 4, "encoder": "libx264",
+                            "strategy": "grouped", "fallbacks": 1,
+                            "attempts": [{"encoder": "h264_nvenc", "error_type": "FFmpegError"}],
+                        }},
                         "audio_validation": {
                             "status": "review", "method": "synthetic test",
                             "summary": {"checked": 1, "likely_complete": 0, "review": 1, "missing": 0},
@@ -80,11 +90,17 @@ class TestDetailedReport(unittest.TestCase):
             self.assertIn("Translation review note:** Fit rewrite needs review", text)
             self.assertIn("Low-confidence source words (review cues, not proof):** Hello", text)
             self.assertIn("1 units have at least one recognizer word probability below 0.35", text)
-            self.assertIn("1 units with unresolved number/script signals", text)
+            self.assertIn("1 units with unresolved number/script/corruption signals", text)
             self.assertIn("TTS time excludes waiting for translation queue items", text)
             self.assertIn("| Initial translation + TTS combined elapsed | 0.450 |", text)
             self.assertIn("| Mux processing | 0.350 |", text)
             self.assertIn("| Output file copy | 0.250 |", text)
+            self.assertIn("**Gemini:** 5 attempts, 2 retries, 2 failed attempts", text)
+            self.assertIn("These are summed across workers and may overlap", text)
+            self.assertIn("**Source picture preparation:** 3.000 s; source re-encoded: True", text)
+            self.assertIn("10 planned pieces, 4 unique encoded groups", text)
+            self.assertIn("HTTP_429", text)
+            self.assertIn("h264_nvenc", text)
             self.assertIn("Source word timestamps", text)
             self.assertIn('"gemini_max_paragraphs_per_request": 12', text)
             self.assertIn('"post_mux_bengali_asr_validation": false', text)

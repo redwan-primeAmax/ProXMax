@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import queue
 import threading
 import time
@@ -11,6 +12,7 @@ from typing import List
 from .audio_quality import assess_bengali_coverage
 from .models import Segment
 from .pipeline_helpers import _usable
+from .pipeline_parallel import translate_groups_in_order
 from .pipeline_validation import bengali_validator
 from .tts.base import TTSError
 from .utils import get_logger
@@ -56,21 +58,18 @@ class PipelineTranslationMixin:
         def producer() -> None:
             started = time.perf_counter()
             try:
-                for group in groups:
-                    if stop.is_set():
-                        break
-                    self.translator.translate_segments(group)
-                    if stop.is_set():
-                        break
-                    # No look-ahead is needed: each translated group is ready for TTS.
-                    outbox.put(group)
+                translate_groups_in_order(
+                    self.translator, groups, stop, outbox.put,
+                    workers=max(1, min(2, int(getattr(cfg, "gemini_concurrency", 1)))),
+                )
             except BaseException as exc:
                 errors.append(exc)
             finally:
                 produced_seconds[0] = time.perf_counter() - started
                 outbox.put(sentinel)
 
-        worker = threading.Thread(target=producer, name="proxmax-translate", daemon=True)
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=lambda: context.run(producer), name="proxmax-translate", daemon=True)
         worker.start()
 
         tts_seconds = 0.0

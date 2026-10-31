@@ -15,6 +15,8 @@ from .pipeline_helpers import (
     _TOTAL_STEPS, _report_is_usable, _safe_dirname, existing_output_is_usable, _usable,
 )
 from .reporting import write_detailed_report
+from .reporting_failure import write_failure_report
+from .reporting_runtime import OperationalTrace, append_runtime
 from .utils import format_duration, get_logger, get_media_duration, output_filename_for
 
 logger = get_logger(__name__)
@@ -71,6 +73,10 @@ class PipelineProcessingMixin:
                 output_path.unlink(missing_ok=True)
 
         work_dir = self.config.resolved_work_dir / _safe_dirname(video_path.stem)
+        trace = OperationalTrace(started) if self.config.save_report else None
+        if trace is not None:
+            trace.activate()
+            self._trace = trace
         try:
             if self.config.save_report:
                 report_path.unlink(missing_ok=True)
@@ -93,7 +99,10 @@ class PipelineProcessingMixin:
                         stats=stats,
                         config=self.config,
                         total_duration=timings.audio_seconds,
+                        video_plan=getattr(getattr(self, "sync_engine", None), "video_plan", None),
                     )
+                if trace is not None:
+                    append_runtime(report_path, trace.snapshot())
                 stats["report"] = {
                     "file": report_path.name,
                     "size_bytes": report_path.stat().st_size,
@@ -117,11 +126,22 @@ class PipelineProcessingMixin:
                 "❌ ব্যর্থ: %s — %s: %s", video_path.name, type(exc).__name__, exc
             )
             logger.debug("Full traceback:", exc_info=True)
+            failure_stats = {}
+            if trace is not None:
+                try:
+                    write_failure_report(report_path, video_path, work_dir, self.config, trace, exc)
+                    failure_stats["report"] = {"file": report_path.name, "status": "failed"}
+                except Exception as report_exc:
+                    logger.warning("Could not write failure report (%s).", type(report_exc).__name__)
+            elapsed = time.perf_counter() - started
             return VideoResult(
                 video_path=video_path, status="failed", output_path=output_path if output_path.is_file() else None,
-                error=f"{type(exc).__name__}: {exc}", elapsed_seconds=elapsed,
+                error=f"{type(exc).__name__}: {exc}", elapsed_seconds=elapsed, stats=failure_stats,
             )
         finally:
+            if trace is not None:
+                trace.close()
+                self._trace = None
             if not self.config.keep_temp_files and work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -162,6 +182,8 @@ class PipelineProcessingMixin:
                 raise RuntimeError("ভিডিওর দৈর্ঘ্য শনাক্ত করা যায়নি (duration = 0)।")
         timings.extract = time.perf_counter() - marker
         timings.audio_seconds = total_duration
+        if getattr(self, "_trace", None) is not None:
+            self._trace.source_duration = total_duration
         logger.info("ভিডিওর দৈর্ঘ্য: %s", format_duration(total_duration))
 
         # 2) Speech-to-Text -----------------------------------------------------
@@ -171,6 +193,8 @@ class PipelineProcessingMixin:
             if callable(setter):
                 setter(video_path.stem)
             segments = self.stt.transcribe(audio_wav)
+            if getattr(self, "_trace", None) is not None:
+                self._trace.segments = segments
             if not segments:
                 raise RuntimeError("ভিডিওতে কোনো কথা (speech) পাওয়া যায়নি।")
             stats["stt"] = dict(getattr(self.stt, "last_stats", {}) or {})
@@ -196,6 +220,8 @@ class PipelineProcessingMixin:
                 unit_summary(units),
             )
             segments = units
+        if getattr(self, "_trace", None) is not None:
+            self._trace.segments = segments
 
         if cfg.unload_stt_before_tts:
             logger.info("TTS-এর আগে Whisper আনলোড করা হচ্ছে (VRAM খালি রাখতে)…")
@@ -210,6 +236,9 @@ class PipelineProcessingMixin:
             engine.describe(), spoken,
         )
 
+        metrics = getattr(self.translator, "diagnostics", None)
+        if callable(getattr(metrics, "reset", None)):
+            metrics.reset()
         marker = time.perf_counter()
         with self._step(3, "অনুবাদ (Gemini) + Bangla TTS (ভয়েস)"):
             translate_seconds, tts_seconds = self._translate_and_synthesize(
@@ -225,6 +254,8 @@ class PipelineProcessingMixin:
         timings.translate_tts_wall = time.perf_counter() - marker
         timings.translate = translate_seconds
         timings.tts = tts_seconds
+        if callable(getattr(metrics, "snapshot", None)):
+            stats["translation"] = metrics.snapshot()
         stats["tts"] = {
             "engine": engine.describe(),
             "segments": len(synthesized),
@@ -235,6 +266,7 @@ class PipelineProcessingMixin:
         marker = time.perf_counter()
         invalid_tts_seconds = 0.0
         with self._step(4, "Audio-Video Sync (silence trim + video timeline edits)"):
+            picture_started = time.perf_counter()
             video_fps = self.muxer.video_frame_rate(video_path)
             picture_measure = getattr(self.muxer, "picture_timeline_duration", None)
             if decoded_audio_duration and callable(picture_measure):
@@ -245,9 +277,19 @@ class PipelineProcessingMixin:
                                        total_duration, measured_duration)
                     total_duration = measured_duration
                     timings.audio_seconds = total_duration
+                    if getattr(self, "_trace", None) is not None:
+                        self._trace.source_duration = total_duration
                 except Exception as exc:
                     logger.warning("Could not independently measure source picture (%s); using duration hint.", exc)
-            picture_source = self.muxer.ensure_picture_duration(video_path, total_duration, work_dir, video_fps)
+            picture_prepare = getattr(self.muxer, "prepare_picture_for_timeline", None)
+            if not callable(picture_prepare):
+                picture_prepare = self.muxer.ensure_picture_duration
+            picture_source = picture_prepare(video_path, total_duration, work_dir, video_fps)
+            stats["picture_preparation"] = {
+                "seconds": round(time.perf_counter() - picture_started, 3),
+                "source_reencoded": Path(picture_source) != Path(video_path),
+                "details": dict(getattr(self.muxer, "last_picture_prepare_stats", {}) or {}),
+            }
             sync_passes = []
 
             def build_track():
@@ -280,6 +322,8 @@ class PipelineProcessingMixin:
             if self.sync_engine.video_plan is None:
                 raise RuntimeError("No verified picture-edit plan was produced")
             timeline_duration = self.sync_engine.video_plan.duration
+            if getattr(self, "_trace", None) is not None:
+                self._trace.video_plan = self.sync_engine.video_plan
         timings.sync = max(0.0, time.perf_counter() - marker - invalid_tts_seconds)
         if invalid_tts_seconds:
             stats["tts"]["total_audio_seconds"] = round(
@@ -296,6 +340,7 @@ class PipelineProcessingMixin:
                 video_plan=self.sync_engine.video_plan,
             )
             timings.mux_processing = time.perf_counter() - mux_started
+            stats["video_mux"] = dict(getattr(self.muxer, "last_mux_stats", {}) or {})
             output_path.parent.mkdir(parents=True, exist_ok=True)
             copy_started = time.perf_counter()
             shutil.copy2(local_output, output_path)

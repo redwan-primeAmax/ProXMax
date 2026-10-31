@@ -62,6 +62,40 @@ class TestTranslationQuality(unittest.TestCase):
         self.assertFalse(segments[1].translation_issues)
         self.assertNotIn("Hello there", [text for text, _ in batches.call_args_list[1].args[0]])
 
+    def test_corrupted_repetitions_and_extreme_single_token_loss_are_reviewed(self):
+        repetition = assess_translation("This is a source sentence", "অকককককক")
+        self.assertTrue(any("repeated" in issue for issue in repetition.issues))
+        short = assess_translation("A much longer source sentence with several details about the video", "আখওঅইঅআইআইআইআই")
+        self.assertTrue(any("single-token" in issue for issue in short.issues))
+        self.assertFalse(assess_translation("Hello", "হ্যালো").issues)
+        self.assertFalse(assess_translation("A much longer source sentence with several details about the video",
+                                            "এখানে স্বাভাবিক বাংলা অনুবাদ আছে।").issues)
+
+    def test_corrupt_only_is_retranslated_and_unresolved_is_not_cached(self):
+        translator = _make_translator(_FakeClient(lambda *_: "{}"))
+        segments = [Segment(0, 0, 1, "First sentence with useful details"),
+                    Segment(1, 1, 2, "Second is a normal sentence")]
+        with mock.patch.object(translator, "_run_batches", side_effect=[
+            ["অকককককক", "এটি একটি সাধারণ বাক্য।"],
+            ["এটি সম্পূর্ণ অর্থপূর্ণ বাংলা বাক্য।"],
+        ]) as batches:
+            translator.translate_segments(segments)
+        self.assertEqual(batches.call_count, 2)
+        self.assertEqual([item[0] for item in batches.call_args_list[1].args[0]],
+                         [segments[0].text_en])
+        self.assertEqual(segments[0].text_bn, "এটি সম্পূর্ণ অর্থপূর্ণ বাংলা বাক্য।")
+        self.assertFalse(segments[0].translation_issues)
+        self.assertTrue(segments[0].translation_notes)
+        self.assertEqual(segments[1].text_bn, "এটি একটি সাধারণ বাক্য।")
+        self.assertEqual(translator.diagnostics.snapshot()["quality_recheck_units"], 1)
+
+        bad = Segment(2, 2, 3, "A different source sentence")
+        with mock.patch.object(translator, "_run_batches", return_value=["অকককককক"]):
+            translator.translate_segments([bad])
+        self.assertTrue(bad.translation_issues)
+        self.assertEqual(bad.text_bn, "অকককককক")  # surfaced for review, never silently dropped
+        self.assertNotIn(bad.text_en, translator._cache)
+
     def test_quality_recheck_uses_real_id_protocol_and_existing_retry_policy(self):
         def responder(contents, call):
             if call == 1:
