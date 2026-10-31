@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import shutil
 import time
+import wave
 from pathlib import Path
 from typing import List, Optional
 
 from .models import Segment, StageTimings, VideoResult
 from .prosody import build_units, unit_summary
 from .pipeline_integrity import recover_invalid_waveforms, recover_missing_speech
-from .sync_fallback import build_complete_track
 from .pipeline_helpers import (
     _TOTAL_STEPS, _report_is_usable, _safe_dirname, existing_output_is_usable, _usable,
 )
@@ -18,6 +18,16 @@ from .reporting import write_detailed_report
 from .utils import format_duration, get_logger, get_media_duration, output_filename_for
 
 logger = get_logger(__name__)
+
+
+def _decoded_wav_duration(path: Path) -> Optional[float]:
+    """Read the actual extracted audio length from its WAV header, without loading it."""
+    try:
+        with wave.open(str(path), "rb") as source:
+            rate = source.getframerate()
+            return source.getnframes() / float(rate) if rate > 0 else None
+    except (OSError, EOFError, wave.Error, ValueError):
+        return None
 
 
 class PipelineProcessingMixin:
@@ -138,8 +148,11 @@ class PipelineProcessingMixin:
                 work_dir / "audio_16k.wav",
                 duration_seconds=total_duration or None,
             )
+            decoded_audio_duration = _decoded_wav_duration(audio_wav)
             if total_duration <= 0:
                 total_duration = self.extractor.last_duration or 0.0
+            if decoded_audio_duration:
+                total_duration = max(total_duration, decoded_audio_duration)
             if total_duration <= 0:
                 try:
                     total_duration = get_media_duration(audio_wav)
@@ -218,20 +231,30 @@ class PipelineProcessingMixin:
             "total_audio_seconds": round(sum(float(s.tts_duration or 0.0) for s in synthesized), 2),
         }
 
-        # 4) Sync: time-stretch + non-overlapping assembly ---------------------
+        # 4) Trim speech, optionally slow it and plan per-window video edits.
         marker = time.perf_counter()
-        fit_stats = {
-            "checked": 0, "overlong_before": 0, "shortened": 0,
-            "translation_seconds": 0.0, "tts_seconds": 0.0,
-        }
-        with self._step(4, f"Audio-Video Sync (silence-fit + tempo {cfg.min_tempo:.2f}×–{cfg.max_tempo:.2f}×)"):
+        invalid_tts_seconds = 0.0
+        with self._step(4, "Audio-Video Sync (silence trim + video timeline edits)"):
+            video_fps = self.muxer.video_frame_rate(video_path)
+            picture_measure = getattr(self.muxer, "picture_timeline_duration", None)
+            if decoded_audio_duration and callable(picture_measure):
+                try:
+                    measured_duration = max(decoded_audio_duration, picture_measure(video_path, video_fps))
+                    if abs(measured_duration - total_duration) > 1 / float(video_fps):
+                        logger.warning("Container duration %.3fs disagrees with measured audio/picture %.3fs; using measured timeline.",
+                                       total_duration, measured_duration)
+                    total_duration = measured_duration
+                    timings.audio_seconds = total_duration
+                except Exception as exc:
+                    logger.warning("Could not independently measure source picture (%s); using duration hint.", exc)
+            picture_source = self.muxer.ensure_picture_duration(video_path, total_duration, work_dir, video_fps)
             sync_passes = []
 
             def build_track():
                 started = time.perf_counter()
                 output = self.sync_engine.build_final_track(
                     segments, total_duration, work_dir, work_dir / "final_audio_bn.wav",
-                    allow_empty_intermediate=True,
+                    allow_empty_intermediate=True, video_fps=video_fps,
                 )
                 current = dict(getattr(self.sync_engine, "last_stats", {}) or {})
                 stats["sync"] = current
@@ -244,64 +267,21 @@ class PipelineProcessingMixin:
                 return output
 
             final_audio = build_track()
-            invalid_tts_seconds = 0.0
             if int(stats["sync"].get("unplaced", 0) or 0):
                 invalid_tts_seconds, repaired = recover_invalid_waveforms(self, segments, tts_dir)
                 if repaired:
                     timings.tts += invalid_tts_seconds
                     stats["tts"]["recovered_invalid_waveforms"] = repaired
                     final_audio = build_track()
-            if int(stats["sync"].get("unplaced", 0) or 0):
-                # Exactly one semantic fit rewrite. Failed/rejected rewrites retain
-                # their prior text and TTS and still reach the final fallback.
-                result = self._repair_overlong_tts(
-                    segments, tts_dir, total_duration, only_unfit=True, retry_round=1,
-                )
-                if result["shortened"]:
-                    final_audio = build_track()
-                result["still_unfit_after_sync"] = [
-                    int(segment.index) for segment in segments
-                    if segment.placed_duration is None
-                ]
-                if result["overlong_before"] or result.get("awaiting_tempo_cap"):
-                    fit_stats = dict(result)
-                    fit_stats["rounds"] = [dict(result)]
-                    stats["tts_fit_retry"] = fit_stats
-
-            if int(stats["sync"].get("unplaced", 0) or 0):
-                started = time.perf_counter()
-                final_audio = build_complete_track(
-                    self.sync_engine, segments, total_duration, work_dir,
-                    work_dir / "final_audio_bn.wav",
-                )
-                stats["sync"] = dict(self.sync_engine.last_stats)
-                sync_passes.append({
-                    "phase": "complete_fallback", "seconds": round(time.perf_counter() - started, 3),
-                    "unplaced": int(stats["sync"].get("unplaced", 0) or 0),
-                    "prepared_reused": 0, "prepared_computed": 0,
-                })
             stats["sync_passes"] = sync_passes
             missing = [int(s.index) for s in _usable(segments) if s.placed_duration is None]
-            if "tts_fit_retry" in stats:
-                fit_stats["still_unfit_before_fallback"] = fit_stats["still_unfit_after_sync"]
-                fit_stats["still_unfit_after_sync"] = list(missing)
             if missing or int(stats["sync"].get("unplaced", 0) or 0) or stats["sync"].get("overlaps"):
                 raise RuntimeError(f"Incomplete or overlapping dubbing; unplaced segments: {missing}")
-            timeline_duration = max(
-                total_duration,
-                max((s.actual_start + float(s.placed_duration or 0.0) for s in segments), default=0.0),
-            )
-            stats["sync"]["timeline_duration_seconds"] = timeline_duration
-            stats["sync"]["video_extension_seconds"] = max(0.0, timeline_duration - total_duration)
-
-        retry_translation = float(fit_stats.get("translation_seconds", 0.0))
-        retry_tts = float(fit_stats.get("tts_seconds", 0.0))
-        timings.fit_audio_check = float(fit_stats.get("audio_check_seconds", 0.0))
-        timings.translate += retry_translation
-        timings.tts += retry_tts
-        timings.sync = max(0.0, time.perf_counter() - marker - retry_translation - retry_tts
-                           - invalid_tts_seconds - timings.fit_audio_check)
-        if fit_stats.get("shortened") or invalid_tts_seconds:
+            if self.sync_engine.video_plan is None:
+                raise RuntimeError("No verified picture-edit plan was produced")
+            timeline_duration = self.sync_engine.video_plan.duration
+        timings.sync = max(0.0, time.perf_counter() - marker - invalid_tts_seconds)
+        if invalid_tts_seconds:
             stats["tts"]["total_audio_seconds"] = round(
                 sum(float(s.tts_duration or 0.0) for s in synthesized), 2
             )
@@ -311,8 +291,10 @@ class PipelineProcessingMixin:
         with self._step(5, "Final Muxing (ভিডিও + Bangla অডিও)"):
             local_output = work_dir / output_filename_for(video_path)
             mux_started = time.perf_counter()
-            speech_end = max((s.actual_start + float(s.placed_duration or 0.0) for s in segments), default=0.0)
-            self.muxer.mux(video_path, final_audio, local_output, required_video_duration=speech_end)
+            self.muxer.mux(
+                picture_source, final_audio, local_output, required_video_duration=timeline_duration,
+                video_plan=self.sync_engine.video_plan,
+            )
             timings.mux_processing = time.perf_counter() - mux_started
             output_path.parent.mkdir(parents=True, exist_ok=True)
             copy_started = time.perf_counter()

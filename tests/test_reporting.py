@@ -81,7 +81,7 @@ class TestDetailedReport(unittest.TestCase):
             self.assertIn("Low-confidence source words (review cues, not proof):** Hello", text)
             self.assertIn("1 units have at least one recognizer word probability below 0.35", text)
             self.assertIn("1 units with unresolved number/script signals", text)
-            self.assertIn("TTS call time excludes waiting for translation queue items", text)
+            self.assertIn("TTS time excludes waiting for translation queue items", text)
             self.assertIn("| Initial translation + TTS combined elapsed | 0.450 |", text)
             self.assertIn("| Mux processing | 0.350 |", text)
             self.assertIn("| Output file copy | 0.250 |", text)
@@ -90,10 +90,10 @@ class TestDetailedReport(unittest.TestCase):
             self.assertIn('"post_mux_bengali_asr_validation": false', text)
             self.assertIn("trimmed=0.200 s", text)
             self.assertIn("Detected silence removed, tail/internal/head:** 0.100/0.300/0.000 s (2 internal pauses)", text)
-            self.assertIn("allowed tempo cap measured:** True (cap 1.20×", text)
+            self.assertIn("audio is not sped up for sync", text)
             self.assertIn("internal 0.300 s", text)
             self.assertIn("quiet speech can be misclassified", text)
-            self.assertIn("audio was sped up (1.200×; initial cap 1.20×; final recovery is uncapped)", text)
+            self.assertIn("unexpected audio speedup (1.200×) violates the current policy", text)
             self.assertIn("Post-mux Bengali speech coverage check", text)
             self.assertIn("**Post-mux Bangla ASR coverage:** review", text)
             self.assertIn("**Post-mux ASR heard:** হ্যালো", text)
@@ -102,21 +102,21 @@ class TestDetailedReport(unittest.TestCase):
             self.assertFalse((output_dir / "source_en.srt").exists())
             self.assertFalse((output_dir / "source_bn.srt").exists())
 
-    def test_unplaced_clip_still_reports_internal_silence_and_cap_failure(self):
+    def test_unplaced_clip_still_reports_internal_silence_and_picture_error(self):
         from proxmax.reporting_timeline import _render_unit, _unit_timing_rows
 
         unit = Segment(
             0, 0.0, 1.0, "Hello", "হ্যালো।", tts_audio_path=Path("audio.wav"),
             stretched_audio_path=Path("stretched.wav"), sync_trimmed_internal_seconds=.25,
             sync_trimmed_internal_cuts=1, sync_tempo_cap_measured=False,
-            sync_issue="stretched clip exceeds safe window; allowed tempo cap could not be measured",
+            sync_issue="measured clip exceeds its planned video window; not truncated",
         )
         row = _unit_timing_rows([unit], 1.5, AppConfig())[0]
         text = "\n".join(_render_unit(row, {}, {}))
         self.assertIn("no audio was recorded as placed", text)
         self.assertIn("tail/internal/head:** 0.000/0.250/0.000 s (1 internal pauses)", text)
-        self.assertIn("allowed tempo cap measured:** False", text)
-        self.assertIn("allowed tempo cap could not be measured", text)
+        self.assertIn("audio is not sped up for sync", text)
+        self.assertIn("measured clip exceeds its planned video window; not truncated", text)
 
 
 class TestPipelineReportEmission(unittest.TestCase):

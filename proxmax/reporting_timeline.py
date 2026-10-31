@@ -54,12 +54,15 @@ def _unit_timing_rows(
     previous_dub_end: Optional[float] = None
     for position, unit in enumerate(ordered, start=1):
         window = windows.get(id(unit))
+        if unit.video_source_start is not None and unit.video_source_end is not None:
+            window = (unit.video_source_start, unit.video_source_end)
         placed = float(unit.placed_duration) if unit.placed_duration is not None else None
         actual_start = unit.actual_start if placed is not None else None
         actual_end = actual_start + placed if actual_start is not None else None
         next_unit = ordered[position] if position < len(ordered) else None
-        next_start = next_unit.actual_start if next_unit is not None else max(total_duration, actual_end or 0.0)
+        next_start = next_unit.actual_start if next_unit is not None else (unit.video_window_end or actual_end or 0.0)
         allocated_end = float(window[1]) if window else None
+        output_window_end = unit.video_window_end if unit.video_window_end is not None else allocated_end
         trimmed = max(0.0, float(unit.stretched_duration or 0.0) - placed) if placed is not None else None
         rows.append({
             "number": position,
@@ -71,18 +74,21 @@ def _unit_timing_rows(
             "actual_start": actual_start,
             "actual_end": actual_end,
             "tts_duration": unit.tts_duration,
+            "tts_raw_duration": unit.tts_raw_duration,
             "stretched_duration": unit.stretched_duration,
             "placed_duration": placed,
             "tempo": getattr(unit, "tempo_used", None),
-            "tempo_cap": float(getattr(config, "max_tempo", 1.20)),
-            "tempo_cap_measured": getattr(unit, "sync_tempo_cap_measured", False),
+            "video_start": unit.video_window_start,
+            "video_end": unit.video_window_end,
+            "video_speed": unit.video_speed,
+            "video_added_seconds": unit.video_added_seconds,
             "overrun_before_silence_trim": getattr(unit, "sync_overrun_before_seconds", 0.0),
-            "trimmed_head_seconds": getattr(unit, "sync_trimmed_head_seconds", 0.0),
-            "trimmed_internal_seconds": getattr(unit, "sync_trimmed_internal_seconds", 0.0),
-            "trimmed_internal_cuts": getattr(unit, "sync_trimmed_internal_cuts", 0),
-            "trimmed_tail_seconds": getattr(unit, "sync_trimmed_tail_seconds", 0.0),
+            "trimmed_head_seconds": unit.tts_trimmed_head_seconds + unit.sync_trimmed_head_seconds,
+            "trimmed_internal_seconds": unit.tts_trimmed_internal_seconds + unit.sync_trimmed_internal_seconds,
+            "trimmed_internal_cuts": unit.tts_trimmed_internal_cuts + unit.sync_trimmed_internal_cuts,
+            "trimmed_tail_seconds": unit.tts_trimmed_tail_seconds + unit.sync_trimmed_tail_seconds,
             "trimmed_seconds": trimmed,
-            "unused_slot_seconds": max(0.0, allocated_end - actual_end) if allocated_end is not None and actual_end is not None else None,
+            "unused_slot_seconds": max(0.0, output_window_end - actual_end) if output_window_end is not None and actual_end is not None else None,
             "gap_after_audio": max(0.0, next_start - actual_end) if actual_end is not None else None,
         })
         previous_source_end = max(previous_source_end, float(unit.end))
@@ -109,10 +115,17 @@ def _render_unit(
         )
     else:
         lines.append("- **Sync target window:** no generated TTS clip/window.")
+    if row.get("video_start") is not None and row.get("video_end") is not None:
+        lines.append(
+            f"- **Edited video window:** {_fmt_seconds(row['video_start'])}–{_fmt_seconds(row['video_end'])}; "
+            f"picture speed={float(row['video_speed']):.3f}×; "
+            f"repeated tail={float(row['video_added_seconds']):.3f} s."
+        )
     if row.get("actual_start") is not None:
         lines.append(
             f"- **Dub actually placed:** {_fmt_seconds(row['actual_start'])}–{_fmt_seconds(row['actual_end'])} "
             f"({row['placed_duration']:.3f} s); TTS={float(row['tts_duration'] or 0.0):.3f} s; "
+            f"raw TTS={float(row['tts_raw_duration'] if row['tts_raw_duration'] is not None else row['tts_duration'] or 0.0):.3f} s; "
             f"stretched={float(row['stretched_duration'] or 0.0):.3f} s; "
             f"tempo={float(row['tempo'] or 1.0):.3f}×; estimated trimmed={float(row['trimmed_seconds'] or 0.0):.3f} s; "
             f"pre-fit overrun={float(row['overrun_before_silence_trim'] or 0.0):.3f} s; "
@@ -128,13 +141,12 @@ def _render_unit(
             f"{float(row['trimmed_internal_seconds'] or 0.0):.3f}/"
             f"{float(row['trimmed_head_seconds'] or 0.0):.3f} s "
             f"({int(row['trimmed_internal_cuts'] or 0)} internal pauses); "
-            f"**allowed tempo cap measured:** {bool(row['tempo_cap_measured'])} "
-            f"(cap {float(row['tempo_cap']):.2f}×; not needed for every clip)."
+            "audio is not sped up for sync."
         )
     if getattr(unit, "sync_issue", None):
         lines.append(f"- **Sync repair flag:** {_md(unit.sync_issue)}")
     if getattr(unit, "sync_recovery", None):
-        lines.append(f"- **Last-resort recovery:** {_md(unit.sync_recovery)}; source timestamps remain unchanged.")
+        lines.append(f"- **Sync safeguard:** {_md(unit.sync_recovery)}; source timestamps remain unchanged.")
     if validation:
         lines.append(
             f"- **Post-mux Bangla ASR coverage:** {validation.get('status', 'n/a')} "
@@ -145,7 +157,7 @@ def _render_unit(
             lines.append(f"- **Post-mux ASR heard:** {_md(validation['recognized_text'])}")
     lines.append(
         f"- **Window RMS:** source {_window_rms(source_audio, start, end)}; "
-        f"dub {_window_rms(dub_audio, float(row.get('actual_start') or start), float(row.get('actual_end') or end))}."
+        f"dub {_window_rms(dub_audio, float(row['actual_start'] if row.get('actual_start') is not None else start), float(row['actual_end'] if row.get('actual_end') is not None else end))}."
     )
     lines.append(f"- **English transcript:** {_md(unit.text_en or '')}")
     lines.append(f"- **Bengali translation:** {_md(unit.text_bn or '') if (unit.text_bn or '').strip() else '**MISSING**'}")
@@ -206,11 +218,11 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
         for issue in unit.translation_issues:
             warnings.append(f"{label}: translation review needed: {issue}.")
         if unit.translation_notes:
-            warnings.append(f"{label}: translation or fit-retry note; compare with the source.")
+            warnings.append(f"{label}: translation note; compare with the source.")
         if getattr(unit, "sync_issue", None):
             warnings.append(f"{label}: sync did not place this full clip: {unit.sync_issue}.")
         if getattr(unit, "sync_recovery", None):
-            warnings.append(f"{label}: last-resort fit was used; compare timing and listen for intelligibility.")
+            warnings.append(f"{label}: sync safeguard: {unit.sync_recovery}; review the result.")
         if unit.placed_start is not None and abs(unit.actual_start - float(unit.start)) > 0.001:
             warnings.append(f"{label}: dubbed speech was shifted by {unit.actual_start - float(unit.start):.3f} s relative to the source.")
         if (unit.text_bn or "").strip() and not unit.tts_audio_path:
@@ -225,11 +237,13 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
             warnings.append(f"{label}: approximately {trimmed:.3f} s exceeded the placed duration; listen for fit issues.")
         if silence_trimmed > 0.08:
             warnings.append(
-                f"{label}: {silence_trimmed:.3f} s of detected silence was removed end-first; above-threshold frames and padding were retained, but quiet speech can be misclassified."
+                f"{label}: {silence_trimmed:.3f} s of detected silence was removed; above-threshold frames and padding were retained, but quiet speech can be misclassified."
             )
         tempo = float(row.get("tempo") or 1.0)
-        if tempo > 1.10:
-            warnings.append(f"{label}: audio was sped up ({tempo:.3f}×; initial cap {float(row.get('tempo_cap', 1.20)):.2f}×; final recovery is uncapped); verify intelligibility/prosody.")
+        if tempo > 1.0 + 1e-6:
+            warnings.append(f"{label}: unexpected audio speedup ({tempo:.3f}×) violates the current policy.")
+        if unit.video_added_seconds > 0:
+            warnings.append(f"{label}: {unit.video_added_seconds:.3f} s of picture tail was repeated; motion may visibly jump.")
         if row.get("unused_slot_seconds") is not None and row["unused_slot_seconds"] > 0.8:
             warnings.append(f"{label}: {row['unused_slot_seconds']:.3f} s of the bounded target slot remained unused; this is not automatically an error if it is a genuine pause.")
     if float(stats.get("untranslated_seconds", 0.0) or 0.0) > 0:
@@ -238,7 +252,7 @@ def _quality_warnings(rows: Sequence[Mapping[str, Any]], stats: Mapping[str, Any
     if isinstance(sync, Mapping):
         if int(sync.get("silence_trimmed_clips", 0) or 0) > 0:
             warnings.append(
-                f"Silence heuristic trimmed {int(sync['silence_trimmed_clips'])} clip(s), from the end toward the start; review unit-level timing details."
+                f"Silence heuristic trimmed {int(sync['silence_trimmed_clips'])} clip(s); review quiet speech and unit-level timing details."
             )
         if int(sync.get("unplaced", 0) or 0) > 0:
             warnings.append(f"Sync safely left {int(sync['unplaced'])} full clip(s) unplaced instead of truncating the sentence.")

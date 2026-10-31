@@ -232,7 +232,7 @@ def subtitles_for_unit(
     cursor = unit.actual_start
     for order, (piece, weight) in enumerate(zip(refined, weights)):
         # Never give every line an independent minimum that can exceed the
-        # measured clip duration, particularly after an extreme-speed fallback.
+        # measured clip duration, including after a timeline shift.
         share = duration * (weight / total)
         lines.append(
             Segment(

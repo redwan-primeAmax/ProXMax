@@ -51,28 +51,15 @@ class TestTranslatorExpandPass(unittest.TestCase):
         self.assertEqual(seg.text_bn, "খুব ছোট।")
         run.assert_not_called()
 
-    def test_measured_shorten_retry_includes_source_and_relative_fit_goal(self):
-        translator = _make_translator(_FakeClient(lambda _c, _n: "{}"))
+    def test_measured_shorten_hook_is_a_noop_even_for_long_audio(self):
+        client = _FakeClient(lambda _c, _n: "{}")
+        translator = _make_translator(client)
         original = "এটি একটি দীর্ঘ বাংলা অনুবাদের উদাহরণ।"
-        concise = "এটি দীর্ঘ বাংলা অনুবাদের উদাহরণ।"
         seg = Segment(index=0, start=0.0, end=1.0,
-                      text_en="This is a long Bangla translation example.", text_bn=original)
-        seg.stretched_duration = 1.0
-        captured = {}
-
-        def batches(items, instruction, task, description):
-            captured.update(items=list(items), instruction=instruction, task=task)
-            return [concise]
-
-        with mock.patch.object(translator, "_run_batches", side_effect=batches):
-            changed = translator.shorten_to_durations([seg], [0.75])
-        self.assertEqual(changed, 1)
-        payload = json.loads(captured["items"][0][0])
-        self.assertEqual(payload["english_source"], seg.text_en)
-        self.assertEqual(payload["current_bangla"], original)
-        self.assertEqual(payload["reference_bangla"], original)
-        self.assertEqual(payload["target_percent"], 75)
-        prompt_text = f"{captured['instruction']} {captured['task']} {captured['items']}"
-        self.assertNotRegex(prompt_text.lower(), r"duration|seconds|speaking time|timestamp")
-        self.assertNotIn("0.75", prompt_text)
-        self.assertEqual(seg.text_bn, concise)
+                      text_en="This is a long example.", text_bn=original)
+        seg.stretched_duration = 3.0
+        with mock.patch.object(translator, "_run_batches") as batches:
+            self.assertEqual(translator.shorten_to_durations([seg], [0.75]), 0)
+        batches.assert_not_called()
+        self.assertEqual(seg.text_bn, original)
+        self.assertEqual(client.calls, [])

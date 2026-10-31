@@ -125,16 +125,14 @@ class TestTranslatorCalls(unittest.TestCase):
         self.assertEqual(client.calls, [])
         self.assertEqual(translator._skipped_lines, 1)
 
-    def test_measured_shortening_request_contains_no_duration_hints(self):
+    def test_legacy_measured_shortening_hook_makes_no_gemini_request(self):
         client = _FakeClient(lambda contents, _n: json.dumps({"translations": ["ছোট বাক্য।"]}))
         translator = _make_translator(client)
-        segment = Segment(index=0, start=12.5, end=16.0, text_bn="এটি অনেক লম্বা একটি বাংলা বাক্য।")
-        translator.shorten_to_durations([segment], [0.72])
-        contents = client.calls[0]["contents"]
-        self.assertIn("Paragraph 1:", contents)
-        self.assertIn("এটি অনেক লম্বা একটি বাংলা বাক্য।", contents)
-        self.assertNotIn("0.72", contents)
-        self.assertNotRegex(contents.lower(), r"duration|seconds|speaking time|timestamp")
+        original = "এটি অনেক লম্বা একটি বাংলা বাক্য।"
+        segment = Segment(index=0, start=12.5, end=16.0, text_bn=original)
+        self.assertEqual(translator.shorten_to_durations([segment], [0.72]), 0)
+        self.assertEqual(segment.text_bn, original)
+        self.assertEqual(client.calls, [])
 
     # ---- ফরম্যাট ভুলেও একই নির্দিষ্ট বিরতিতে retry ----------------------
     def test_format_error_retries_after_one_second(self):

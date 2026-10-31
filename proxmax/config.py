@@ -8,6 +8,7 @@ sync ইত্যাদি) একটাই ``AppConfig`` dataclass-এ থা�
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
@@ -58,6 +59,16 @@ DEFAULT_TTS_GENDER = "male"
 DEFAULT_TTS_VOICE = BANGLA_VOICES[DEFAULT_TTS_GENDER]
 #: Parallel Edge TTS requests; can be reduced if the service throttles.
 DEFAULT_TTS_CONCURRENCY = 12
+
+
+def safe_tts_rate(rate: str) -> str:
+    """Do not request a faster-than-default voice from the TTS provider."""
+    text = str(rate).strip()
+    match = re.fullmatch(r"([+-]?)(\d+(?:\.\d+)?)%", text)
+    if match and match.group(1) != "-" and float(match.group(2)) > 0:
+        logger.warning("TTS speedup %s is disabled; using +0%%.", text)
+        return "+0%"
+    return text
 
 
 @dataclass
@@ -134,8 +145,8 @@ class AppConfig:
     tts_pitch: str = "+0Hz"
     tts_concurrency: int = DEFAULT_TTS_CONCURRENCY
     tts_max_retries: int = 3
-    #: পূর্ণ TTS edge trim বন্ধ; overrun হলে sync-এ শেষ থেকে প্রয়োজনীয় silence বাদ যায়
-    tts_trim_silence: bool = False
+    #: শনাক্ত head/internal/tail silence সবসময় বাদ যায় (speech padding সহ)
+    tts_trim_silence: bool = True
     tts_trim_pad_ms: int = 25
     #: এক clip-এ কয় সেকেন্ড পর্যন্ত কথা (বাক্য জোড়া লাগিয়ে)
     tts_unit_max_seconds: float = 5.0
@@ -145,14 +156,16 @@ class AppConfig:
     tts_unit_max_gap: float = 0.6
 
     # --- audio-video sync ----------------------------------------------------
-    min_tempo: float = 0.90                # সর্বোচ্চ ১০% ধীর
-    fill_extension: float = 0.12
-    max_tempo: float = 1.20                 # প্রথম fit-এ সর্বোচ্চ; শেষ fallback সীমাহীন
-    slow_down_short_clips: bool = True
+    min_tempo: float = 0.90                # speech may slow, never below 0.90×
+    fill_extension: float = 0.12            # obsolete compatibility setting
+    max_tempo: float = 1.0                  # legacy field; audio speedup is disabled
+    slow_down_short_clips: bool = True       # legacy field; short speech is always considered
+    video_max_speed: float = 1.15           # speed up picture only, never above 1.15×
     slot_gap_ms: int = 80
     borrow_silence_ms: int = 250
     prefer_rubberband: bool = True
     sync_workers: int = 4
+    video_workers: int = 2                  # bounded concurrent picture encoders
     sync_sample_rate: int = 24000
 
     # --- runtime -------------------------------------------------------------
@@ -288,6 +301,7 @@ class AppConfig:
             },
             "sync": {
                 "min_tempo": "min_tempo", "max_tempo": "max_tempo",
+                "video_max_speed": "video_max_speed", "video_workers": "video_workers",
                 "slow_down_short_clips": "slow_down_short_clips",
                 "slot_gap_ms": "slot_gap_ms",
                 "borrow_silence_ms": "borrow_silence_ms",

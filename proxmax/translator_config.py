@@ -63,18 +63,6 @@ EXPAND_INSTRUCTION = (
     "concise, complete, and faithful to its meaning. Return only the Bangla paragraphs."
 )
 
-SHORTEN_INSTRUCTION = (
-    "Each labeled paragraph contains its English source and current Bangla translation. "
-    "Use the source as evidence and rewrite the Bangla more concisely only if all "
-    "meaning, names, numbers, negation, and key facts remain intact. Prefer natural "
-    "Bangladeshi spoken wording and Bangla script; remove filler, not information. "
-    "An optional target percentage is a rough length goal, not permission to omit "
-    "content; return the original Bangla unchanged if it cannot be safely shortened. "
-    "Keep all source digits unchanged. Do not complete a fragment, add information, "
-    "or borrow from another paragraph. Preserve every ID; do not merge or split. "
-    "Return only the Bangla translation for each ID, with no explanations."
-)
-
 _RESPONSE_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {

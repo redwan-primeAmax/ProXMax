@@ -1,4 +1,4 @@
-"""End-first silence fitting, timing caps, and waveform safety regressions."""
+"""Conservative silence removal and slowdown safety regressions."""
 
 import tempfile
 import unittest
@@ -66,7 +66,7 @@ class TestReverseSilenceTrim(unittest.TestCase):
         np.testing.assert_array_equal(result.audio, self.audio[:-200])
 
     def test_quiet_but_above_conservative_threshold_is_never_cut(self):
-        # -50 dBFS is below the old -45 detector, but not below the new -55 threshold.
+        # -50 dBFS is below the old -45 detector, but not the conservative -70 threshold.
         quiet = np.full(250, 10 ** (-50 / 20), dtype=np.float32)
         clip = np.r_[np.full(200, .1), np.zeros(400), quiet, np.zeros(400), np.full(200, .2)].astype(np.float32)
         result = trim_silence_for_overrun(clip, self.rate, 10, threshold_dbfs=-45)
@@ -114,214 +114,71 @@ class TestReverseSilenceTrim(unittest.TestCase):
 
 
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
-class TestMeasuredCapRetry(unittest.TestCase):
-    def _setup(self, root, cap=1.20):
+class TestSafeSlowdown(unittest.TestCase):
+    def _setup(self, root, speech=1.0, window=2.0):
         source = root / "source.wav"
-        audio_fx.write_wav(source, tone(1.1), 8000)
-        segment = Segment(0, 0.0, 1.0, "A long line", "একটি লম্বা বাক্য।", tts_audio_path=source)
-        engine = SyncEngine(max_tempo=cap, sample_rate=8000, max_workers=1,
-                            slot_gap_ms=0, borrow_silence_ms=0, prefer_rubberband=False)
+        audio_fx.write_wav(source, tone(speech), 8000)
+        segment = Segment(0, 0, window, "A line", "একটি বাক্য।", tts_audio_path=source)
+        engine = SyncEngine(sample_rate=8000, max_workers=1, slot_gap_ms=0,
+                            borrow_silence_ms=0, prefer_rubberband=False)
         return source, segment, engine
 
-    def test_real_output_overruns_at_calculated_tempo_then_measures_cap(self):
+    def test_suspicious_short_slowdown_retains_original(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source, segment, engine = self._setup(root)
-            calls = []
+            _, seg, engine = self._setup(root)
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg", side_effect=lambda cmd, **_: audio_fx.write_wav(cmd[-1], tone(.2), 8000)):
+                engine.build_final_track([seg], 2, root, root / "track.wav")
+            self.assertEqual(seg.tempo_used, 1.0)
+            self.assertEqual(seg.placed_duration, 1.0)
+            self.assertIn("unreliable", seg.sync_recovery)
 
-            def render(command, **_kwargs):
-                filter_spec = command[command.index("-filter:a") + 1]
-                calls.append((command[command.index("-i") + 1], filter_spec))
-                duration = .95 if "atempo=1.2000" in filter_spec else 1.05
-                audio_fx.write_wav(command[-1], tone(duration), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertEqual(len(calls), 2)
-            self.assertIn("atempo=1.1000", calls[0][1])
-            self.assertIn("atempo=1.2000", calls[1][1])
-            self.assertEqual([path for path, _ in calls], [str(source), str(source)])
-            self.assertEqual(engine.last_stats["unplaced"], 0)
-            self.assertTrue(segment.sync_tempo_cap_measured)
-            self.assertEqual(segment.tempo_used, 1.2)
-            self.assertAlmostEqual(segment.stretched_duration, .95)
-            self.assertLessEqual(segment.placed_duration, 1.0)
-
-    def test_rounding_at_video_end_reaches_cap_instead_of_overhanging(self):
+    def test_silent_slowdown_retains_original(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _source, segment, _engine = self._setup(root)
-            engine = SyncEngine(sample_rate=8000, max_workers=1, slot_gap_ms=80,
-                                borrow_silence_ms=0, prefer_rubberband=False)
-            filters = []
+            _, seg, engine = self._setup(root)
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg", side_effect=lambda cmd, **_: audio_fx.write_wav(cmd[-1], np.zeros(4000), 8000)):
+                engine.build_final_track([seg], 2, root, root / "track.wav")
+            self.assertEqual(seg.tempo_used, 1.0)
+            self.assertAlmostEqual(seg.placed_duration, 1.0)
+            self.assertIn("unreliable", seg.sync_recovery)
 
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                filters.append(spec)
-                audio_fx.write_wav(command[-1], tone(.95 if "1.2000" in spec else 1.005), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertEqual(len(filters), 2)
-            self.assertIn("atempo=1.2000", filters[-1])
-            self.assertLessEqual(segment.placed_duration, 1.0)
-            self.assertEqual(engine.last_stats["unplaced"], 0)
-
-    def test_mutating_engine_cap_above_global_limit_is_clamped(self):
+    def test_overlong_speech_never_invokes_audio_speedup_even_if_old_cap_is_mutated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _source, segment, engine = self._setup(root)
-            engine.max_tempo = 5.0
-            filters = []
+            _, seg, engine = self._setup(root, speech=1.4, window=1)
+            engine.max_tempo = 8.0
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg") as render:
+                engine.build_final_track([seg], 1, root, root / "track.wav")
+            render.assert_not_called()
+            self.assertEqual(seg.tempo_used, 1)
+            self.assertEqual(engine.max_tempo, 1)
+            self.assertGreater(seg.video_added_seconds, 0)
 
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                filters.append(spec)
-                audio_fx.write_wav(command[-1], tone(.95 if "1.2000" in spec else 1.05), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertEqual(engine.max_tempo, 1.20)
-            self.assertIn("atempo=1.2000", filters[-1])
-            self.assertLessEqual(segment.tempo_used, 1.20)
-
-    def test_explicitly_lower_cap_is_never_exceeded(self):
+    def test_measured_slowdown_not_just_filter_ratio_respects_floor(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _source, segment, engine = self._setup(root, cap=1.15)
-            filters = []
+            _, seg, engine = self._setup(root)
+            lengths = iter((1.20, 1.09))
+            def padded_render(cmd, **_):
+                audio_fx.write_wav(cmd[-1], tone(next(lengths)), 8000)
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg", side_effect=padded_render) as render:
+                engine.build_final_track([seg], 2, root, root / "track.wav")
+            self.assertEqual(render.call_count, 2)
+            self.assertGreater(seg.tempo_used, .90)
+            self.assertLessEqual(seg.placed_duration, 1 / .90 + .5 / 8000)
+            self.assertIsNone(seg.sync_recovery)
 
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                filters.append(spec)
-                audio_fx.write_wav(command[-1], tone(.95 if "1.1500" in spec else 1.05), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertEqual(len(filters), 2)
-            self.assertIn("atempo=1.1500", filters[1])
-            self.assertEqual(segment.tempo_used, 1.15)
-            self.assertEqual(engine.last_stats["unplaced"], 0)
-
-    def test_cap_retry_replaces_rather_than_double_counts_post_stretch_trim(self):
+    def test_slowdown_fallback_is_not_cached_as_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _source, segment, engine = self._setup(root)
-
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                voice = tone(.95 if "1.2000" in spec else 1.0)
-                audio_fx.write_wav(command[-1], np.r_[voice, np.zeros(800)], 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertTrue(segment.sync_tempo_cap_measured)
-            self.assertEqual(engine.last_stats["unplaced"], 0)
-            self.assertAlmostEqual(segment.sync_trimmed_tail_seconds, .05, places=3)
-            self.assertAlmostEqual(engine.last_stats["silence_trimmed_seconds"], .05, places=3)
-            self.assertAlmostEqual(segment.stretched_duration, 1.0, places=3)
-
-    def test_valid_but_worse_cap_render_keeps_the_shorter_prior_waveform(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _source, segment, engine = self._setup(root)
-            calls = []
-
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                calls.append(spec)
-                audio_fx.write_wav(command[-1], tone(1.08 if "1.2000" in spec else 1.05), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "first.wav")
-                engine.build_final_track([segment], 1.0, root, root / "second.wav")
-            self.assertEqual(len(calls), 2)  # The measured unfit result is safely cached.
-            self.assertEqual(engine.last_stats["prepared_reused"], 1)
-            self.assertTrue(segment.sync_tempo_cap_measured)
-            self.assertAlmostEqual(segment.tempo_used, 1.1)
-            self.assertAlmostEqual(segment.stretched_duration, 1.05)
-            self.assertEqual(engine.last_stats["unplaced"], 1)
-            self.assertIsNone(segment.placed_duration)
-            self.assertIn("allowed cap 1.20x was measured", segment.sync_issue)
-
-    def test_unexpectedly_short_stretch_is_rejected_instead_of_losing_speech(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source, segment, engine = self._setup(root)
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=lambda command, **_: audio_fx.write_wav(command[-1], tone(.4), 8000)):
-                output = engine._stretch_one(segment, (0.0, 1.0), root / "out.wav")
-            self.assertIsNone(output)
-            self.assertFalse(segment.sync_tempo_cap_measured)
-            self.assertIn("possible speech loss", segment.sync_issue)
-            self.assertTrue(source.exists())
-
-    def test_suspiciously_short_cap_render_does_not_trigger_rewrite(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _source, segment, engine = self._setup(root)
-
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                audio_fx.write_wav(command[-1], tone(.4 if "1.2000" in spec else 1.05), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertEqual(engine.last_stats["unplaced"], 1)
-            self.assertFalse(segment.sync_tempo_cap_measured)
-            self.assertAlmostEqual(segment.stretched_duration, 1.05)
-
-    def test_silent_cap_render_is_not_accepted_as_a_measured_fit(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _source, segment, engine = self._setup(root)
-
-            def render(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                clip = np.zeros(7000, np.float32) if "1.2000" in spec else tone(1.05)
-                audio_fx.write_wav(command[-1], clip, 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=render):
-                engine.build_final_track([segment], 1.0, root, root / "track.wav")
-            self.assertFalse(segment.sync_tempo_cap_measured)
-            self.assertAlmostEqual(segment.stretched_duration, 1.05)
-            self.assertEqual(engine.last_stats["unplaced"], 1)
-            self.assertIn("cap could not be measured", segment.sync_issue)
-
-    def test_cap_failure_blocks_rewrite_and_is_not_cached_as_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _source, segment, engine = self._setup(root)
-            calls = []
-
-            def broken(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                calls.append(spec)
-                if "1.2000" in spec:
-                    raise RuntimeError("temporary encoder error")
-                audio_fx.write_wav(command[-1], tone(1.05), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=broken):
-                engine.build_final_track([segment], 1.0, root, root / "first.wav")
-            self.assertEqual(len(calls), 2)
-            self.assertEqual(engine.last_stats["unplaced"], 1)
-            self.assertFalse(segment.sync_tempo_cap_measured)
-            self.assertIn("cap could not be measured", segment.sync_issue)
-            pipeline = DubbingPipeline.__new__(DubbingPipeline)
-            pipeline.config = AppConfig(slot_gap_ms=0, borrow_silence_ms=0).validate()
-            pipeline.translator = mock.Mock()
-            result = pipeline._repair_overlong_tts([segment], root / "tts", 1.0)
-            self.assertEqual(result["awaiting_tempo_cap"], [0])
-            pipeline.translator.shorten_to_durations.assert_not_called()
-
-            def recovered(command, **_kwargs):
-                spec = command[command.index("-filter:a") + 1]
-                audio_fx.write_wav(command[-1], tone(.95 if "1.2000" in spec else 1.05), 8000)
-
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=recovered):
-                engine.build_final_track([segment], 1.0, root, root / "second.wav")
-            self.assertEqual(engine.last_stats["prepared_computed"], 1)
-            self.assertEqual(engine.last_stats["unplaced"], 0)
-            self.assertTrue(segment.sync_tempo_cap_measured)
+            _, seg, engine = self._setup(root)
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg", side_effect=OSError("temporary")) as render:
+                engine.build_final_track([seg], 2, root, root / "first.wav")
+                engine.build_final_track([seg], 2, root, root / "second.wav")
+            self.assertGreaterEqual(render.call_count, 2)
+            self.assertEqual(engine.last_stats["prepared_reused"], 0)
+            self.assertEqual(seg.tempo_used, 1)
 
 
 if __name__ == "__main__":

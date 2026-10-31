@@ -59,8 +59,8 @@ def build_stretch_filter(tempo: float, sample_rate: int, prefer_rubberband: bool
     """
     if abs(tempo - 1.0) < 1e-6:
         return f"aresample={sample_rate}"
-    # Rubberband has a hard 100x filter limit. Chained atempo supports larger
-    # requested ratios without imposing an application-level final tempo cap.
+    # This general filter helper supports arbitrary rates; the dubbing sync
+    # caller restricts speech to 0.90–1.00x and validates actual output length.
     if prefer_rubberband and tempo <= 100.0 and "rubberband" in available_filters():
         return f"rubberband=tempo={tempo:.4f},aresample={sample_rate}"
     return f"{build_atempo_filter(tempo)},aresample={sample_rate}"
@@ -69,40 +69,20 @@ def compute_tempo(
     tts_duration: float,
     target_duration: float,
     min_tempo: float = 0.90,
-    max_tempo: float = 1.20,
+    max_tempo: float = 1.0,
     slow_down_short_clips: bool = True,
     fill_extension: float = 0.0,
     fill_gap_seconds: float = 0.05,
 ) -> float:
-    """Tempo ratio to fit ``tts_duration`` into ``target_duration``.
+    """Slow short speech only as much as needed, never below 0.90x.
 
-    tempo > 1 মানে দ্রুত করা (বাংলা অডিও লম্বা), tempo < 1 মানে ধীর করা।
-
-    Pipeline defaults to ``slow_down_short_clips=True``: short clips are slowed
-    only within ``min_tempo`` (normally 0.90×), and are never expanded by rewriting
-    text. ``fill_extension`` remains only for legacy callers that explicitly disable
-    the preferred slowdown behavior.
+    Long speech is never sped up. The legacy max/disable/fill arguments are
+    accepted for compatibility but cannot override the no-speedup policy.
     """
-    min_tempo = min(1.0, max(0.90, float(min_tempo)))
-    max_tempo = max(1.0, min(1.20, float(max_tempo)))
+    minimum = min(1.0, max(0.90, float(min_tempo)))
     if tts_duration <= 0 or target_duration <= 0:
         return 1.0
-    tempo = tts_duration / target_duration
-    if tempo < 1.0:
-        if slow_down_short_clips:
-            return min(max(tempo, min_tempo), max_tempo)
-        if fill_extension <= 0:
-            return 1.0
-        longest = min(
-            max(target_duration - fill_gap_seconds, 0.05),
-            tts_duration * (1.0 + float(fill_extension)),
-        )
-        legacy_tempo = min(
-            1.0,
-            max(tts_duration / max(longest, 0.05), 1.0 / (1.0 + float(fill_extension))),
-        )
-        return max(min_tempo, legacy_tempo)
-    return min(max(tempo, min_tempo), max_tempo)
+    return max(minimum, min(1.0, tts_duration / target_duration))
 
 def plan_windows(
     segments: Sequence[Segment],
@@ -132,8 +112,8 @@ def plan_windows(
             hard_end = float(total_duration)
         source_end = max(start + 0.15, float(seg.end))
         borrow = max(0.0, float(borrow_seconds))
-        # TTS length must not turn a multi-second source pause into extra speech time.
-        # If it overruns this bounded source window, shorten/tempo-fit it instead.
+        # Do not absorb a multi-second source pause. An overlong dub is handled
+        # by repeating picture frames in this bounded window, not speeding speech.
         end = min(hard_end, source_end + borrow)
         end = max(end, min(hard_end, start + 0.15))
         windows.append((start, end))

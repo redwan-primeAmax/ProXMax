@@ -37,7 +37,9 @@ class SyncAssemblyMixin:
         হিসেবে নথিভুক্ত হয়, তাই sentence tail নীরবে বাদ যায় না।
         """
         sr = self.sample_rate
-        canvas = np.zeros(int(total_duration * sr) + int(0.1 * sr), dtype=np.float32)
+        # The picture plan already rounds each edit to a whole video frame.
+        # Do not append extra silence beyond the planned picture timeline.
+        canvas = np.zeros(max(1, int(round(total_duration * sr))), dtype=np.float32)
 
         clips: List[Tuple[Segment, np.ndarray, float]] = []
         levels: List[float] = []
@@ -62,21 +64,13 @@ class SyncAssemblyMixin:
             # Round absolute boundaries, not the duration independently; that
             # avoids a one-sample overlap when neighbouring windows touch.
             max_samples = max(1, int(round(window[1] * sr)) - int(round(start * sr)))
-            # Rubberband/atempo can add a few samples through frame rounding.
-            # Use only part of the already-reserved inter-clip gap; never crop audio.
-            tolerance_seconds = min(
-                0.01, max(0.0, self.slot_gap_seconds / 2.0), max(0.0, total_duration - window[1])
-            )
-            allowed_samples = max_samples + int(round(tolerance_seconds * sr))
-            if clip.size > allowed_samples:
+            # The frame planner has already reserved enough picture for the
+            # *measured* waveform. If the file changed or a boundary disagrees,
+            # fail instead of spilling into another window or cropping speech.
+            if clip.size > max_samples:
                 overrun = (clip.size - max_samples) / float(sr)
-                cap_status = (
-                    f"allowed cap {self.max_tempo:.2f}x was measured; selected {seg.tempo_used:.2f}x"
-                    if seg.sync_tempo_cap_measured else "allowed tempo cap could not be measured"
-                )
                 seg.sync_issue = (
-                    f"stretched clip exceeds safe window by {overrun:.3f}s after silence trim; "
-                    f"{cap_status}; not truncated"
+                    f"measured clip exceeds its planned video window by {overrun:.3f}s; not truncated"
                 )
                 self.last_stats["unplaced"] = int(self.last_stats.get("unplaced", 0)) + 1
                 self.last_stats.setdefault("sync_issues", []).append({
@@ -89,12 +83,11 @@ class SyncAssemblyMixin:
                     "trimmed_internal_cuts": seg.sync_trimmed_internal_cuts,
                     "trimmed_tail_seconds": round(seg.sync_trimmed_tail_seconds, 3),
                     "tempo_used": round(float(seg.tempo_used), 3),
-                    "tempo_cap_measured": seg.sync_tempo_cap_measured,
-                    "reason": "clip still overlong after silence trim and tempo fitting; left unplaced",
+                    "reason": "measured speech exceeds planned video window; left unplaced",
                 })
                 logger.error(
-                    "🛑 Segment %d: silence trim ও %.2f× tempo-র পরও window-এর চেয়ে %.3fs বেশি; বাক্য কাটা হয়নি, retry/review হবে।",
-                    seg.index, seg.tempo_used, overrun,
+                    "🛑 Segment %d: measured speech exceeds planned picture by %.3fs; বাক্য কাটা হয়নি।",
+                    seg.index, overrun,
                 )
                 continue
             clips.append((seg, clip, start))

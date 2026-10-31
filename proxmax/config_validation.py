@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import SUPPORTED_TTS_ENGINES, SUPPORTED_TRANSLATORS, SUPPORTED_WHISPER_MODELS
+from .config import SUPPORTED_TTS_ENGINES, SUPPORTED_TRANSLATORS, SUPPORTED_WHISPER_MODELS, safe_tts_rate
 from .translator_config import MAX_GEMINI_BATCH_SIZE, MAX_GEMINI_RETRIES
 from .utils import get_logger
 
@@ -112,11 +112,21 @@ def validate_config(config):
     if int(self.tts_concurrency) < 1:
         raise ValueError("tts_concurrency অন্তত 1 হতে হবে।")
 
-    if not (0.90 <= self.min_tempo <= 1.0 < self.max_tempo <= 1.20):
-        raise ValueError(
-            f"tempo সীমা অবৈধ: min_tempo={self.min_tempo}, max_tempo={self.max_tempo} "
-            f"(শর্ত: 0.90 <= min_tempo <= 1 < max_tempo <= 1.20)"
-        )
+    if not 0.90 <= float(self.min_tempo) <= 1.0:
+        raise ValueError("sync.min_tempo অবশ্যই ০.৯০–১.০০ এর মধ্যে হতে হবে।")
+    if not 1.0 <= float(self.video_max_speed) <= 1.15:
+        raise ValueError("sync.video_max_speed অবশ্যই ১.০০–১.১৫ এর মধ্যে হতে হবে।")
+    if not 1 <= int(self.sync_workers) <= 16 or not 1 <= int(self.video_workers) <= 4:
+        raise ValueError("sync workers ১–১৬ এবং video_workers ১–৪ হতে হবে।")
+    if float(self.max_tempo) != 1.0 or not self.slow_down_short_clips or not self.tts_trim_silence:
+        logger.warning("পুরোনো sync/TTS flags উপেক্ষা: speech speedup বন্ধ এবং silence trim বাধ্যতামূলক।")
+    self.max_tempo = 1.0
+    self.slow_down_short_clips = True
+    self.tts_trim_silence = True
+    self.tts_rate = safe_tts_rate(self.tts_rate)
+    if int(self.tts_trim_pad_ms) < 10:
+        logger.warning("Speech boundary padding কমপক্ষে ১০ ms রাখা হবে।")
+        self.tts_trim_pad_ms = 10
     if self.slot_gap_ms < 0 or self.borrow_silence_ms < 0:
         raise ValueError("slot_gap_ms ও borrow_silence_ms ঋণাত্মক হতে পারবে না।")
     if self.sync_sample_rate < 8000:

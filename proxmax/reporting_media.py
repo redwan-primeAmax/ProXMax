@@ -118,7 +118,7 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
             "gemini_input_token_budget": getattr(config, "gemini_max_input_tokens", None),
             "gemini_max_paragraphs_per_request": getattr(config, "gemini_batch_size", None),
             "pre_tts_duration_prediction": False,
-            "shorten_retry_policy": "source-aware after measured TTS and initial tempo cap; one rewrite, then uncapped measured recovery with shifts/extension if necessary",
+            "shorten_retry_policy": "disabled; sync does not ask Gemini to rewrite for fit",
             "text_expansion_to_fill_gaps": False,
         },
         "TTS": {
@@ -133,10 +133,11 @@ def _safe_config(config: Any) -> Dict[str, Dict[str, Any]]:
         },
         "Sync": {
             "min_tempo": getattr(config, "min_tempo", None),
-            "max_tempo": getattr(config, "max_tempo", None),
+            "max_audio_tempo": 1.0,
+            "max_video_speed": getattr(config, "video_max_speed", None),
+            "video_workers": getattr(config, "video_workers", None),
             "slot_gap_ms": getattr(config, "slot_gap_ms", None),
             "borrow_silence_ms": getattr(config, "borrow_silence_ms", None),
-            "fill_extension": getattr(config, "fill_extension", None),
             "sample_rate": getattr(config, "sync_sample_rate", None),
             "reuse_unchanged_prepared_clips": True,
         },
