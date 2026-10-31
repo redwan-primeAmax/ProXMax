@@ -15,6 +15,7 @@ import numpy as np
 
 from .. import audio_fx
 from ..models import Segment
+from ..sync_silence import trim_silence_for_overrun
 from ..utils import get_logger
 
 logger = get_logger(__name__)
@@ -33,11 +34,12 @@ class BaseTTSEngine(ABC):
     sample_rate: int = 24000
 
     def __init__(self, trim_silence: bool = True, trim_pad_ms: int = 25) -> None:
-        #: ক্লিপের শুরু/শেষের নীরবতা ছাঁটবে কি না — TTS মডেলগুলো সাধারণত
-        #: ০.৫–০.৮ সেকেন্ড নীরবতা জুড়ে দেয়; না ছাঁটলে প্রতিটি বাক্যের পরে
-        #: অযথা বিরতি শোনায় আর ক্যালিব্রেশনও ভুল হার মাপে।
-        self.trim_silence = bool(trim_silence)
-        self.trim_pad_ms = max(0, int(trim_pad_ms))
+        # Kept as a legacy constructor argument. All clips are now trimmed
+        # before timing, including when an older config requested False.
+        if not trim_silence:
+            logger.info("tts.trim_silence=false is obsolete; detected silence is always trimmed.")
+        self.trim_silence = True
+        self.trim_pad_ms = max(10, int(trim_pad_ms))  # never remove all speech-boundary padding
 
     # ------------------------------------------------------------------
     def prepare(self) -> None:
@@ -98,29 +100,32 @@ class BaseTTSEngine(ABC):
             self.sample_rate, in_ms=8, out_ms=8,
         )
 
-    def _finalize(self, audio: np.ndarray) -> np.ndarray:
-        """নীরবতা ছেঁটে + লাউডনেস ঠিক করে চূড়ান্ত ক্লিপ বানায়।
+    def _trim_all_silence(self, audio: np.ndarray):
+        """Conservatively remove detected head, internal and tail silence."""
+        return trim_silence_for_overrun(
+            audio, self.sample_rate, audio.size / float(self.sample_rate),
+            threshold_dbfs=-70.0, pad_ms=self.trim_pad_ms,
+        )
 
-        TTS মডেলের দেওয়া ক্লিপে সাধারণত শুরুতে ~০.১s আর শেষে ~০.৫–০.৮s
-        নীরবতা থাকে। ওটা রেখে দিলে প্রতিটি বাক্যের পর অকারণ বিরতি শোনায়
-        (ব্যবহারকারীর অভিযোগ: "এক লাইন বলে বলার পরে অনেকক্ষণ গ্যাপ")।
-        """
+    def _finalize(self, audio: np.ndarray, seg: Optional[Segment] = None) -> np.ndarray:
+        """Trim detected silence immediately, then normalize and apply short fades."""
         if audio.size == 0:
             return audio
-        trimmed = audio
-        if self.trim_silence:
-            trimmed = audio_fx.trim_silence(
-                audio, self.sample_rate,
-                threshold_dbfs=-70.0, pad_ms=self.trim_pad_ms,
-            )
-        if trimmed.size < int(0.05 * self.sample_rate):  # প্রায় ফাঁকা — মূলটাই রাখা
-            trimmed = audio
-        return self._postprocess(trimmed)
+        trimmed = self._trim_all_silence(audio)
+        final = self._postprocess(trimmed.audio)
+        if seg is not None:
+            seg.tts_raw_duration = audio.size / float(self.sample_rate)
+            seg.tts_silence_trimmed = True
+            seg.tts_trimmed_head_seconds = trimmed.head_seconds
+            seg.tts_trimmed_internal_seconds = trimmed.internal_seconds
+            seg.tts_trimmed_tail_seconds = trimmed.tail_seconds
+            seg.tts_trimmed_internal_cuts = trimmed.internal_cuts
+        return final
 
     def _write_clip(self, seg: Segment, audio: np.ndarray, output_dir: Path) -> Path:
-        """ক্লিপ WAV হিসেবে লিখে segment-এ পাথ/দৈর্ঘ্য বসায়।"""
+        """Write a trimmed TTS clip and retain audit information."""
         path = output_dir / f"seg_{seg.index:04d}.wav"
-        final = self._finalize(audio)
+        final = self._finalize(audio, seg)
         audio_fx.write_wav(path, final, self.sample_rate)
         seg.tts_audio_path = path
         seg.tts_duration = final.size / float(self.sample_rate)

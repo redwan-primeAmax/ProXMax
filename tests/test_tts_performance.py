@@ -182,7 +182,7 @@ class TestTTSThroughput(unittest.TestCase):
         async def fake_sleep(delay):
             sleep_delays.append(delay)
 
-        def convert(mp3, wav):
+        def convert(mp3, wav, seg):
             wav.write_bytes(b"converted")
             mp3.unlink()
             return 1.25
@@ -199,6 +199,35 @@ class TestTTSThroughput(unittest.TestCase):
         self.assertEqual(sleep_delays, [1.0])
         self.assertEqual(segment.tts_duration, 1.25)
 
+    def test_edge_conversion_records_immediate_trim_for_sync_reports(self):
+        from proxmax.sync_engine import SyncEngine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = EdgeTTSEngine(sample_rate=24000)
+            segment = _segments(1)[0]
+            wave = (.2 * np.sin(2 * np.pi * 220 * np.arange(7200) / 24000)).astype(np.float32)
+            raw = np.r_[np.zeros(9600), wave, np.zeros(7200), wave, np.zeros(9600)].astype(np.float32)
+            mp3, wav = root / "edge.mp3", root / "edge.wav"
+            def convert(_mp3, output):
+                audio_fx.write_wav(output, raw, 24000)
+            with mock.patch.object(engine, "_to_wav", side_effect=convert):
+                duration = engine._convert_and_finalize(mp3, wav, segment)
+            segment.tts_audio_path = wav
+            self.assertTrue(segment.tts_silence_trimmed)
+            self.assertAlmostEqual(segment.tts_raw_duration, 1.7, places=3)
+            self.assertAlmostEqual(segment.tts_trimmed_head_seconds, .375, places=3)
+            self.assertAlmostEqual(segment.tts_trimmed_internal_seconds, .25, places=3)
+            self.assertAlmostEqual(segment.tts_trimmed_tail_seconds, .375, places=3)
+            self.assertEqual(segment.tts_trimmed_internal_cuts, 1)
+            self.assertAlmostEqual(duration, .7, places=3)
+            segment.start, segment.end = 0, .4
+            sync = SyncEngine(borrow_silence_ms=0, slot_gap_ms=0)
+            sync.build_final_track([segment], 1, root, root / "dub.wav")
+            self.assertEqual(segment.sync_trimmed_internal_seconds, 0)
+            self.assertAlmostEqual(segment.sync_overrun_before_seconds, 1.3, places=3)
+            self.assertAlmostEqual(sync.last_stats["silence_trimmed_seconds"], 1.0, places=3)
+
     @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
     def test_parallel_audio_conversion_preserves_unique_clips_and_timing(self):
         engine = EdgeTTSEngine(concurrency=4, trim_silence=False)
@@ -206,9 +235,9 @@ class TestTTSThroughput(unittest.TestCase):
         finalize_threads = []
         original_finalize = engine._finalize
 
-        def finalize(audio):
+        def finalize(audio, seg=None):
             finalize_threads.append(threading.get_ident())
-            return original_finalize(audio)
+            return original_finalize(audio, seg)
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

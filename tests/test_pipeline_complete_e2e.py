@@ -1,4 +1,4 @@
-"""Complete fallback through real audio extraction and held-frame video muxing."""
+"""Conflicting speech windows through real extraction and repeated-picture muxing."""
 
 import shutil
 import subprocess
@@ -72,12 +72,12 @@ class TestCompletePipeline(unittest.TestCase):
                 segments, _timings, stats = pipeline._run_steps(source, root / "work", output)
 
             self.assertTrue(output.is_file())
-            self.assertEqual(pipeline.translator.calls, 1)
+            self.assertEqual(pipeline.translator.calls, 0)
             self.assertEqual(stats["sync"]["unplaced"], 0)
             self.assertEqual(stats["sync"]["overlaps"], 0)
             self.assertGreater(stats["sync"]["video_extension_seconds"], .5)
             self.assertEqual([s.start for s in segments], [0, 0])
-            self.assertAlmostEqual(segments[1].placed_start, .68, places=3)
+            self.assertAlmostEqual(segments[1].placed_start, .60, places=3)
             self.assertAlmostEqual(segments[0].placed_duration, .6, places=3)
             self.assertAlmostEqual(segments[1].placed_duration, .6, places=3)
             speech_end = segments[-1].actual_start + segments[-1].placed_duration
@@ -93,7 +93,7 @@ class TestCompletePipeline(unittest.TestCase):
             coverage = assess_bengali_coverage([segments[1]], words)
             self.assertEqual(coverage["units"][0]["status"], "likely_complete")
             self.assertEqual(coverage["units"][0]["source_start"], 0.0)
-            self.assertAlmostEqual(coverage["units"][0]["start"], .68, places=3)
+            self.assertAlmostEqual(coverage["units"][0]["start"], .60, places=3)
 
 
 if __name__ == "__main__":

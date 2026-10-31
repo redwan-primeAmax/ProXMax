@@ -57,9 +57,12 @@ class TestVoiceSafety(unittest.TestCase):
         rate = engine.sample_rate
         quiet = np.full(int(.1 * rate), 10 ** (-65 / 20), np.float32)
         clip = np.r_[np.full(rate // 4, .1, np.float32), np.zeros(rate // 5), quiet, np.zeros(rate // 4)]
+        trimmed = engine._trim_all_silence(clip)
         result = engine._finalize(clip)
-        # Postprocessing may scale and fade, but the protected quiet tail remains.
-        self.assertGreater(result.size, int(.5 * rate))
+        # The gap is removed, but all -65 dBFS samples survive.
+        self.assertEqual(np.count_nonzero(trimmed.audio == quiet[0]), quiet.size)
+        self.assertGreater(result.size, int(.35 * rate))
+        self.assertLess(result.size, int(.5 * rate))
 
     def test_shifted_short_multisentence_cues_never_exceed_actual_speech(self):
         text = "প্রথম বাক্য। দ্বিতীয় বাক্য। তৃতীয় বাক্য।"

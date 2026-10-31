@@ -1,7 +1,8 @@
-"""Measured fit retries preserve the original audio/text unless proven better."""
+"""Long/short clips never trigger a Gemini timing rewrite or extra TTS call."""
 
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
 from unittest import mock
 
@@ -15,224 +16,74 @@ from proxmax.sync_engine import SyncEngine
 from tests._support import FFMPEG
 
 
-def make_audio(path, seconds):
-    rate = 24000
-    t = np.arange(int(seconds * rate), dtype=np.float32) / rate
-    audio_fx.write_wav(path, .1 * np.sin(2 * np.pi * 350 * t), rate)
-
-
-class Rewriter:
-    def __init__(self, text):
-        self.text = text
-        self.calls = 0
-        self.measured_durations = []
-
-    def shorten_to_durations(self, segments, targets):
-        self.calls += 1
-        self.measured_durations.extend(s.stretched_duration for s in segments)
-        for segment in segments:
-            segment.text_bn = self.text
-        return len(segments)
-
-
-class LengthTTS:
-    def __init__(self, seconds):
-        self.seconds = seconds
-        self.calls = 0
-
-    def synthesize(self, segments, output_dir):
-        self.calls += 1
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for segment in segments:
-            path = output_dir / f"seg_{segment.index:04d}.wav"
-            make_audio(path, self.seconds)
-            segment.tts_audio_path = path
-            segment.tts_duration = self.seconds
-        return segments
-
-
-class TestFitRewriteSafety(unittest.TestCase):
-    def _setup(self, root, rewrite, seconds):
-        pipeline = DubbingPipeline.__new__(DubbingPipeline)
-        pipeline.config = AppConfig().validate()
-        pipeline.translator = Rewriter(rewrite)
-        pipeline._tts = LengthTTS(seconds)
-        original = root / "original.wav"
-        make_audio(original, 2.0)
-        segment = Segment(
-            0, 0.0, 1.0, "We have 126 OVR and 5 stars",
-            "আমাদের কাছে ১২৬ ওভিআর এবং ৫ স্টার আছে।",
-            tts_audio_path=original, tts_duration=2.0, stretched_duration=1.7,
-            sync_issue="stretched clip exceeds safe window after tempo cap",
-            sync_tempo_cap_measured=True,
-        )
-        return pipeline, segment, original
-
-    def test_lost_number_is_rejected_before_synthesis(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            pipeline, seg, original = self._setup(root, "আমাদের ২৬ ওভিআর ও ৫ স্টার আছে।", .8)
-            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0)
-            self.assertEqual(stats["shortened"], 0)
-            self.assertEqual(stats["retry_failed"], [0])
-            self.assertEqual(pipeline._tts.calls, 0)
-            self.assertEqual(seg.tts_audio_path, original)
-            self.assertTrue(any("number" in note for note in seg.translation_notes))
-            self.assertEqual(pipeline.translator.measured_durations, [1.7])
-
-    def test_shorter_text_with_longer_spoken_audio_keeps_the_original(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            pipeline, seg, original = self._setup(root, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।", 2.2)
-            text = seg.text_bn
-            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0)
-            self.assertEqual(stats["shortened"], 0)
-            self.assertEqual(stats["not_shorter_audio"], [0])
-            self.assertEqual(seg.text_bn, text)
-            self.assertEqual(seg.tts_audio_path, original)
-            self.assertIsNone(seg.original_text_bn)
-            self.assertTrue(any("not shorter" in note for note in seg.translation_notes))
-
-    def test_silent_retry_audio_is_not_accepted_as_a_shorter_clip(self):
-        class SilentTTS:
-            def synthesize(self, segments, output_dir):
-                Path(output_dir).mkdir(parents=True, exist_ok=True)
-                for segment in segments:
-                    path = Path(output_dir) / f"seg_{segment.index:04d}.wav"
-                    audio_fx.write_wav(path, np.zeros(12000, dtype=np.float32), 24000)
-                    segment.tts_audio_path, segment.tts_duration = path, .5
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            pipeline, seg, original = self._setup(root, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।", .8)
-            pipeline._tts = SilentTTS()
-            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0)
-            self.assertEqual(stats["shortened"], 0)
-            self.assertEqual(stats["retry_failed"], [0])
-            self.assertEqual(seg.tts_audio_path, original)
-
-    def test_safe_shorter_audio_keeps_original_text_for_report(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            pipeline, seg, original = self._setup(root, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।", .8)
-            text = seg.text_bn
-            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0)
-            self.assertEqual(stats["shortened"], 1)
-            self.assertEqual(stats["shortened_segments"], [0])
-            self.assertEqual(seg.original_text_bn, text)
-            self.assertTrue(seg.translation_notes)
-            self.assertNotEqual(seg.tts_audio_path, original)
-            self.assertTrue(original.exists())
-            self.assertAlmostEqual(seg.tts_duration, .8)
-
-    def test_longer_raw_retry_with_more_removable_silence_can_still_be_better(self):
-        class PausedTTS:
-            def synthesize(self, segments, output_dir):
-                Path(output_dir).mkdir(parents=True, exist_ok=True)
-                rate = 24000
-                t = np.arange(int(.6 * rate), dtype=np.float32) / rate
-                voice = .1 * np.sin(2 * np.pi * 350 * t)
-                path = Path(output_dir) / "paused.wav"
-                audio_fx.write_wav(path, np.r_[voice, np.zeros(int(1.5 * rate)), voice], rate)
-                segments[0].tts_audio_path = path
-                segments[0].tts_duration = 99.0  # Trust the WAV, not provider metadata.
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            pipeline, seg, original = self._setup(root, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।", .8)
-            pipeline._tts = PausedTTS()
-            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0)
-            self.assertEqual(stats["shortened"], 1)
-            self.assertNotEqual(seg.tts_audio_path, original)
-            self.assertAlmostEqual(seg.tts_duration, 2.7)
-            if FFMPEG:
-                engine = SyncEngine(max_workers=1, prefer_rubberband=False)
-                engine.build_final_track([seg], 2.0, root, root / "track.wav")
-                self.assertEqual(engine.last_stats["unplaced"], 0)
-                self.assertLessEqual(seg.placed_duration, 1.26)
-                self.assertGreater(seg.sync_trimmed_internal_seconds, 1.0)
-
-    def test_second_round_only_targets_eligible_remaining_clips(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            pipeline, seg, original = self._setup(root, "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।", .8)
-            stats = pipeline._repair_overlong_tts([seg], root / "tts", 2.0, retry_round=2, eligible_indexes={99})
-            self.assertEqual(stats["overlong_before"], 0)
-            self.assertEqual(pipeline.translator.calls, 0)
-            self.assertEqual(seg.tts_audio_path, original)
-
-
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
-class TestFitRetryOrchestration(unittest.TestCase):
-    def test_one_rewrite_reuses_unchanged_clip_then_completes_fallback(self):
+class TestNoFitRewriteOrchestration(unittest.TestCase):
+    def test_long_and_short_audio_preserve_text_and_use_video_edits(self):
         class Extractor:
-            def extract(self, video, destination, duration_seconds=None):
-                make_audio(destination, 3.0)
-                return destination
-
+            def extract(self, source, target, **kwargs):
+                audio_fx.write_wav(target, np.full(16000 * 3, .1, np.float32), 16000)
+                return target
         class STT:
             last_stats = {}
-
-            def transcribe(self, path):
-                return [Segment(0, 0.0, 1.0, "We have 126 OVR and 5 stars"),
-                        Segment(1, 1.8, 2.6, "Another nice card")]
-
+            def transcribe(self, _path):
+                return [Segment(0, 0, .8, "126 rating"), Segment(1, 1, 2.5, "Next")]
         class Translator:
-            calls = 0
-
-            def translate_segments(self, segments):
-                for segment in segments:
-                    segment.text_bn = ("আমাদের কাছে এখানে ১২৬ ওভিআর এবং ৫ স্টার আছে।"
-                                       if segment.index == 0 else "একটি ভালো কার্ড।")
-
-            def shorten_to_durations(self, segments, targets):
-                self.calls += 1
-                for segment in segments:
-                    segment.text_bn = ("আমাদের কাছে ১২৬ ওভিআর এবং ৫ স্টার আছে।"
-                                       if self.calls == 1 else "আমাদের ১২৬ ওভিআর ও ৫ স্টার আছে।")
-                return len(segments)
-
+            def __init__(self):
+                self.translation_calls = self.fit_calls = 0
+            def translate_segments(self, segs):
+                self.translation_calls += 1
+                for s in segs:
+                    s.text_bn = "আমাদের ১২৬ রেটিং আছে।" if s.index == 0 else "পরের কার্ড।"
+            def shorten_to_durations(self, *_):
+                self.fit_calls += 1
+                raise AssertionError("Gemini fit rewrite is forbidden")
         class TTS:
+            def __init__(self):
+                self.calls = 0
             def describe(self):
-                return "fake-measured-tts"
-
-            def set_budget(self, *_args):
+                return "fake"
+            def set_budget(self, *_):
                 pass
-
-            def synthesize(self, segments, output_dir):
-                output_dir = Path(output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                for segment in segments:
-                    duration = (.8 if segment.index == 1 else
-                                1.65 if output_dir.name == "fit_retry_1" else
-                                1.1 if output_dir.name == "fit_retry_2" else 2.0)
-                    path = output_dir / f"seg_{segment.index:04d}.wav"
-                    make_audio(path, duration)
-                    segment.tts_audio_path, segment.tts_duration = path, duration
-
+            def synthesize(self, segs, directory):
+                self.calls += 1
+                Path(directory).mkdir(parents=True, exist_ok=True)
+                for s in segs:
+                    duration = 2.0 if s.index == 0 else .3
+                    samples = np.arange(round(duration * 8000)) / 8000
+                    path = Path(directory) / f"seg_{s.index}.wav"
+                    audio_fx.write_wav(path, .2 * np.sin(2 * np.pi * 300 * samples), 8000)
+                    s.tts_audio_path, s.tts_duration = path, duration
         class Muxer:
-            def mux(self, source, audio, output, **_kwargs):
-                Path(output).write_bytes(b"synthetic video")
+            def video_frame_rate(self, source):
+                return Fraction(25)
+            def ensure_picture_duration(self, source, required, work, fps):
+                return source
+            def mux(self, source, audio, output, *, required_video_duration, video_plan):
+                self.plan = video_plan
+                Path(output).write_bytes(b"synthetic output")
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pipeline = DubbingPipeline.__new__(DubbingPipeline)
-            pipeline.config = AppConfig(enable_overlap=False, unload_stt_before_tts=False).validate()
-            pipeline.extractor, pipeline.stt = Extractor(), STT()
-            pipeline.translator, pipeline._tts, pipeline.muxer = Translator(), TTS(), Muxer()
-            pipeline.sync_engine = SyncEngine(max_workers=1, prefer_rubberband=False)
-            with mock.patch("proxmax.pipeline_process.get_media_duration", return_value=3.0), \
+            pipeline.config = AppConfig(enable_overlap=False).validate()
+            pipeline.extractor, pipeline.stt, pipeline.translator = Extractor(), STT(), Translator()
+            pipeline._tts, pipeline.muxer = TTS(), Muxer()
+            pipeline.sync_engine = SyncEngine(sample_rate=8000, max_workers=2, prefer_rubberband=False)
+            with mock.patch("proxmax.pipeline_process.get_media_duration", return_value=3), \
                  mock.patch("proxmax.pipeline_process.build_units", return_value=[]):
-                segments, timings, stats = pipeline._run_steps(root / "video.mp4", root, root / "out.mp4")
-            self.assertEqual(pipeline.translator.calls, 1)
-            self.assertEqual(len(stats["tts_fit_retry"]["rounds"]), 1)
+                segs, _, stats = pipeline._run_steps(root / "source.mp4", root, root / "dub.mp4")
+            self.assertEqual(pipeline.translator.translation_calls, 1)
+            self.assertEqual(pipeline.translator.fit_calls, 0)
+            self.assertEqual(pipeline._tts.calls, 1)
+            self.assertEqual(segs[0].text_bn, "আমাদের ১২৬ রেটিং আছে।")
+            self.assertTrue(all(s.placed_duration for s in segs))
+            self.assertTrue(all(.90 <= s.tempo_used <= 1 for s in segs))
+            self.assertGreater(segs[0].video_added_seconds, 0)
+            self.assertGreater(segs[1].video_speed, 1)
+            self.assertLessEqual(segs[1].video_speed, 1.15)
             self.assertEqual(stats["sync"]["unplaced"], 0)
-            self.assertEqual([item["prepared_reused"] for item in stats["sync_passes"]], [0, 1, 0])
-            self.assertEqual(segments[0].original_text_bn, "আমাদের কাছে এখানে ১২৬ ওভিআর এবং ৫ স্টার আছে।")
-            self.assertEqual(segments[0].text_bn, "আমাদের কাছে ১২৬ ওভিআর এবং ৫ স্টার আছে।")
-            self.assertTrue(segments[0].tts_audio_path.is_file())
-            self.assertGreater(timings.translate_tts_wall, 0)
+            self.assertNotIn("tts_fit_retry", stats)
+            self.assertTrue(pipeline.muxer.plan.changed)
 
 
 if __name__ == "__main__":

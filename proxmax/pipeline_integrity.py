@@ -28,6 +28,14 @@ def _indexes(segments: Sequence[Segment]) -> str:
     return ", ".join(str(segment.index) for segment in segments[:20]) + (" …" if len(segments) > 20 else "")
 
 
+def _reset_tts(segment: Segment) -> None:
+    segment.tts_audio_path = segment.tts_duration = segment.tts_raw_duration = None
+    segment.tts_silence_trimmed = False
+    segment.tts_trimmed_head_seconds = segment.tts_trimmed_internal_seconds = 0.0
+    segment.tts_trimmed_tail_seconds = 0.0
+    segment.tts_trimmed_internal_cuts = 0
+
+
 def recover_missing_speech(pipeline, segments: list[Segment], tts_dir: Path) -> tuple[float, float]:
     """Retry just missing translations/audio; fail rather than emit a silent gap.
 
@@ -53,8 +61,7 @@ def recover_missing_speech(pipeline, segments: list[Segment], tts_dir: Path) -> 
     if missing_audio:
         logger.warning("%dটি TTS অডিও অনুপস্থিত; শুধু ওই segment আবার তৈরি করা হচ্ছে।", len(missing_audio))
         for segment in missing_audio:
-            segment.tts_audio_path = None
-            segment.tts_duration = None
+            _reset_tts(segment)
         started = time.perf_counter()
         try:
             pipeline._synthesize(missing_audio, tts_dir / "missing_recovery")
@@ -69,8 +76,8 @@ def recover_missing_speech(pipeline, segments: list[Segment], tts_dir: Path) -> 
 
 def recover_invalid_waveforms(pipeline, segments: Sequence[Segment], tts_dir: Path) -> tuple[float, int]:
     """Retry only unreadable/silent TTS sources discovered by the first sync pass."""
-    reasons = ("TTS audio file missing", "TTS audio unreadable", "stretched audio measurement failed",
-               "stretched clip unreadable")
+    reasons = ("TTS audio file missing", "TTS audio unreadable", "TTS preparation failed",
+               "stretched audio measurement failed", "stretched clip unreadable")
     candidates = [s for s in segments if s.placed_duration is None and
                   any(reason in (s.sync_issue or "") for reason in reasons)]
 
@@ -79,7 +86,7 @@ def recover_invalid_waveforms(pipeline, segments: Sequence[Segment], tts_dir: Pa
             if not seg.tts_audio_path:
                 return False
             clip, rate = audio_fx.read_wav(seg.tts_audio_path)
-            return bool(rate > 0 and clip.size and np.any(clip))
+            return bool(rate > 0 and clip.size and np.all(np.isfinite(clip)) and np.any(clip))
         except Exception:
             return False
 
@@ -88,7 +95,7 @@ def recover_invalid_waveforms(pipeline, segments: Sequence[Segment], tts_dir: Pa
         return 0.0, 0
     logger.warning("%dটি silent/অপাঠযোগ্য TTS clip আবার তৈরি করা হচ্ছে।", len(invalid))
     for seg in invalid:
-        seg.tts_audio_path, seg.tts_duration = None, None
+        _reset_tts(seg)
     started = time.perf_counter()
     try:
         pipeline._synthesize(invalid, tts_dir / "invalid_recovery")

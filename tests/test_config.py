@@ -24,13 +24,13 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
         self.assertEqual(cfg.gemini_batch_size, 12)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
-        self.assertFalse(cfg.tts_trim_silence)
+        self.assertTrue(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertTrue(cfg.save_report)
         self.assertFalse(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
-        self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.90, 1.20))
+        self.assertEqual((cfg.min_tempo, cfg.max_tempo), (0.90, 1.00))
         self.assertLess(cfg.chunk_min_seconds, cfg.chunk_max_seconds)
         self.assertLessEqual(cfg.chunk_max_seconds, 29.5)
         self.assertTrue(cfg.input_dir.endswith("Video/input"))
@@ -53,13 +53,15 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.gemini_max_input_tokens, 5000)
         self.assertEqual(cfg.gemini_batch_size, 12)
         self.assertEqual(cfg.tts_unit_max_seconds, 5.0)
-        self.assertFalse(cfg.tts_trim_silence)
+        self.assertTrue(cfg.tts_trim_silence)
         self.assertEqual(cfg.tts_engine, "edge")
         self.assertEqual(cfg.stt_hotwords_file, "hotwords.txt")
         self.assertTrue(cfg.save_report)
         self.assertFalse(cfg.validate_dub_audio)
         self.assertAlmostEqual(cfg.audio_validation_min_coverage, 0.58)
-        self.assertAlmostEqual(cfg.max_tempo, 1.20)
+        self.assertAlmostEqual(cfg.max_tempo, 1.00)
+        self.assertAlmostEqual(cfg.video_max_speed, 1.15)
+        self.assertEqual(cfg.video_workers, 2)
         self.assertAlmostEqual(cfg.min_tempo, 0.90)
         self.assertGreaterEqual(cfg.carry_context_chars, 100)
         self.assertTrue(cfg.seam_repair)
@@ -124,7 +126,8 @@ class TestConfig(unittest.TestCase):
             {"gemini_max_retries": 0},
             {"gemini_max_retries": 101},
             {"gemini_max_input_tokens": 999},
-            {"max_tempo": 1.2001},
+            {"video_max_speed": 1.1501},
+            {"video_workers": 5},
             {"min_tempo": 0.89},
             {"translator_backend": "google"},
             {"translator_backend": "deepl"},
@@ -140,6 +143,25 @@ class TestConfig(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(ValueError):
                     AppConfig(**kwargs).validate()
+
+    def test_old_flags_cannot_enable_speedup_or_disable_trimming(self):
+        cfg = AppConfig(max_tempo=5.0, tts_trim_silence=False, slow_down_short_clips=False).validate()
+        self.assertEqual(cfg.max_tempo, 1.0)
+        self.assertTrue(cfg.tts_trim_silence)
+        self.assertTrue(cfg.slow_down_short_clips)
+
+    def test_tts_provider_speedup_and_zero_padding_cannot_bypass_safety(self):
+        from proxmax.tts import EdgeTTSEngine
+        for rate, expected in (("+15%", "+0%"), ("5%", "+0%"), ("-5%", "-5%"), ("+0%", "+0%")):
+            with self.subTest(rate=rate):
+                cfg = AppConfig(tts_rate=rate, tts_trim_pad_ms=0).validate()
+                self.assertEqual(cfg.tts_rate, expected)
+                self.assertEqual(cfg.tts_trim_pad_ms, 10)
+                edge = EdgeTTSEngine(rate=rate, trim_pad_ms=0)
+                self.assertEqual(edge.rate, expected)
+                self.assertEqual(edge.trim_pad_ms, 10)
+        self.assertEqual(SyncEngine(max_workers=500, silence_pad_ms=0).max_workers, 16)
+        self.assertEqual(SyncEngine(silence_pad_ms=0).silence_pad_ms, 10)
 
     def test_work_dir_resolution(self):
         cfg = AppConfig(work_dir="/tmp/proxmax-test-work")

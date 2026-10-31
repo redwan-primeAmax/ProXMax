@@ -92,8 +92,10 @@ def write_detailed_report(
         f"**translated units:** {translated_units}; **units with TTS clips:** {tts_units}; **placed units:** {placed_units}.",
         f"- **Source transcription review:** {low_confidence_units} units have at least one recognizer word probability below 0.35. Confidence is an uncalibrated review cue, not proof of an error or accuracy.",
         f"- **Translation review:** {translation_issues} units with unresolved number/script signals; "
-        f"{translation_notes} with automatic-correction or fit-retry notes; {rewritten_units} rewritten for fit. "
-        "These limited checks do not verify meaning, names, or naturalness.",
+        f"{translation_notes} with automatic-correction notes; {rewritten_units} historical fit rewrites. "
+        "Current sync does not rewrite translations. These checks do not prove meaning, names, or naturalness.",
+        f"- **Sync policy:** {(data.get('sync') or {}).get('policy', 'not recorded')}. "
+        "Detected TTS silence is removed; audio is never sped up for fitting.",
         f"- **Approximate generated speech:** {float((data.get('sync') or {}).get('speech_seconds', 0.0) or 0.0):.2f} s; "
         f"**remaining track silence:** {float((data.get('sync') or {}).get('silence_seconds', 0.0) or 0.0):.2f} s "
         "(includes intentional source pauses and any unfilled windows; not all is an error).",
@@ -104,10 +106,10 @@ def write_detailed_report(
         f"{int((data.get('sync') or {}).get('silence_trimmed_clips', 0) or 0)} clips); "
         f"**unplaced clips:** {int((data.get('sync') or {}).get('unplaced', 0) or 0)}; "
         f"**overlaps:** {int((data.get('sync') or {}).get('overlaps', 0) or 0)}.",
-        f"- **Last-resort recovered units:** {len((data.get('sync') or {}).get('fallback_segments', []) or [])}; "
-        f"**shifted units:** {len((data.get('sync') or {}).get('shifted_segments', []) or [])}; "
-        f"**timeline beyond source container:** {float((data.get('sync') or {}).get('video_extension_seconds', 0.0) or 0.0):.3f} s; "
-        f"**maximum selected tempo:** {float((data.get('sync') or {}).get('max_tempo', 1.0) or 1.0):.3f}×.",
+        f"- **Shifted units:** {len((data.get('sync') or {}).get('shifted_segments', []) or [])}; "
+        f"**picture tail repeated:** {float((data.get('sync') or {}).get('video_added_seconds', 0.0) or 0.0):.3f} s; "
+        f"**picture time saved:** {float((data.get('sync') or {}).get('video_saved_seconds', 0.0) or 0.0):.3f} s; "
+        f"**maximum picture speed:** {float((data.get('sync') or {}).get('video_max_speed', 1.0) or 1.0):.3f}×.",
         "",
         "## Media metadata",
         "",
@@ -118,19 +120,16 @@ def write_detailed_report(
     lines += ["", "## Pipeline stage timings", ""]
     if timings is not None:
         lines += [
-            "Translation and TTS can overlap; their worker/call times include fit retries and must not be added to obtain total elapsed time. TTS call time excludes waiting for translation queue items. The initial combined elapsed time excludes later fit retries.",
+            "Translation and TTS can overlap, so their worker/call times must not be added to obtain total elapsed time. TTS time excludes waiting for translation queue items; missing/invalid speech can be retried.",
             "",
             "| Stage | Wall time (s) |",
             "|---|---:|",
             f"| Audio extraction | {timings.extract:.3f} |",
             f"| Speech recognition | {timings.stt:.3f} |",
-            f"| Translation worker, including fit retries | {timings.translate:.3f} |",
-            f"| TTS calls, including fit retries | {timings.tts:.3f} |",
+            f"| Translation worker | {timings.translate:.3f} |",
+            f"| TTS calls, including invalid-clip recovery | {timings.tts:.3f} |",
             f"| Initial translation + TTS combined elapsed | {timings.translate_tts_wall:.3f} |",
-            f"| Fit-retry translation | {float((data.get('tts_fit_retry') or {}).get('translation_seconds', 0.0)):.3f} |",
-            f"| Fit-retry TTS | {float((data.get('tts_fit_retry') or {}).get('tts_seconds', 0.0)):.3f} |",
-            f"| Fit-retry audio comparison | {timings.fit_audio_check:.3f} |",
-            f"| Sync / waveform assembly, excluding fit requests and comparison | {timings.sync:.3f} |",
+            f"| Sync / waveform assembly | {timings.sync:.3f} |",
             f"| Mux / copy combined | {timings.mux:.3f} |",
             f"| Mux processing | {timings.mux_processing:.3f} |",
             f"| Output file copy | {timings.output_copy:.3f} |",

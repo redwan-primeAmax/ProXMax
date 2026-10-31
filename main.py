@@ -155,9 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     voice_label = f"বিল্ট-ইন {config.resolved_tts_voice} ({config.tts_gender})"
     logger.info(
-        "STT=%s | অনুবাদ=%s | কণ্ঠ=%s | tempo %.2f–%.2f",
+        "faster-whisper=%s | অনুবাদ=%s | কণ্ঠ=%s | speech %.2f–1.00× | video ≤%.2f×",
         config.whisper_model, translator_label, voice_label,
-        config.min_tempo, config.max_tempo,
+        config.min_tempo, config.video_max_speed,
     )
     if config.stt_hotwords:
         logger.info("অতিরিক্ত Whisper hotwords: %s", config.stt_hotwords)

@@ -46,8 +46,7 @@ translation:
   # "indictrans2" = AI4Bharat IndicTrans2 লোকাল মডেল (আগে requirements-indictrans2.txt)
   backend: "gemini"
 
-  # Legacy speech-rate setting; initial translation-এ কোনো timing hint যায় না।
-  # শুধু measured TTS-fit retry-তে আপেক্ষিক length goal যেতে পারে, timestamp নয়।
+  # Legacy speech-rate setting; Gemini-তে timing hint বা fit-rewrite পাঠানো হয় না।
   char_rate: 12.0
   # Legacy compatibility; pre-TTS calibration/prediction and text expansion are disabled.
   calibrate_speech_rate: false
@@ -87,26 +86,25 @@ tts:
   gender: "male"
   # gender=custom হলেই কেবল এই ভয়েস ব্যবহার হয়
   voice: ""
-  # পূর্ণ edge trim বন্ধ; overrun হলে sync-এ শেষ থেকে প্রয়োজনীয় silence বাদ যায়
-  trim_silence: false
+  # শুরু, মাঝ ও শেষের শনাক্ত silence সবসময় বাদ; নিচু speech বাঁচাতে padding থাকে
+  trim_silence: true
   trim_pad_ms: 25
-  rate: "+0%"
+  rate: "+0%"               # ধনাত্মক speech-rate speedup অনুমোদিত নয়; +0% নেওয়া হবে
   volume: "+0%"
   pitch: "+0Hz"
   concurrency: 12             # একসাথে সর্বোচ্চ Edge TTS request; throttling হলে কমান
   max_retries: 3
 
-# --- Audio-Video Sync (time-stretch) -------------------------------------------
+# --- Audio-Video Sync (speech slowdown + picture edits) -----------------------
 sync:
-  # কোনো দুই ক্লিপ কখনো একসাথে বাজবে না — এটি hard guarantee।
-  min_tempo: 0.90           # সর্বোচ্চ ১০% ধীর; এর বেশি করা হবে না
-  max_tempo: 1.20           # প্রথম fit-এর সর্বোচ্চ গতি; চূড়ান্ত fallback-এ কোনো cap নেই
-  fill_extension: 0.12      # legacy fallback; slow_down_short_clips চালু থাকলে ব্যবহৃত হয় না
-  slow_down_short_clips: true
-  slot_gap_ms: 80           # দুই ক্লিপের মাঝে ন্যূনতম ফাঁক
-  borrow_silence_ms: 250    # পরের নীরবতা থেকে সর্বোচ্চ কতটুকু ধার নেওয়া যাবে
-  prefer_rubberband: true   # ffmpeg-এ থাকলে rubberband (formant রক্ষা করে)
-  workers: 4                # সমান্তরাল ffmpeg প্রসেস
+  min_tempo: 0.90           # ছোট speech প্রয়োজনমতো ধীর হবে, ০.৯০×-এর নিচে নয়
+  max_tempo: 1.00           # legacy field: speech কখনো দ্রুত করা হয় না
+  video_max_speed: 1.15     # শুধু ছোট window-এর ছবি, সর্বোচ্চ ১.১৫× দ্রুত
+  slot_gap_ms: 80           # source window-এর মাঝে ফাঁক রাখার চেষ্টা
+  borrow_silence_ms: 250    # source speech শেষে slot-এ সর্বোচ্চ অতিরিক্ত সময়
+  prefer_rubberband: true   # slowdown-এ rubberband; দরকার হলে atempo fallback
+  workers: 4                # সমান্তরাল TTS waveform প্রস্তুতি
+  video_workers: 2          # সমান্তরাল video encoder (১–৪; GPU হলে সর্বোচ্চ ২)
   sample_rate: 24000
 
 # --- Runtime --------------------------------------------------------------------

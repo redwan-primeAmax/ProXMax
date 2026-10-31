@@ -81,30 +81,29 @@ class TestSyncPreparedClipReuse(unittest.TestCase):
                 segments[4].end += .1
                 engine.build_final_track(segments, 7.2, root / "work", root / "track.wav")
                 self.assertEqual(stretch.call_count, 8)
-                # A different engine setting invalidates every prior preparation.
-                engine.max_tempo = 1.10
+                # A different active engine setting invalidates every prior preparation.
+                engine.min_tempo = 0.95
                 engine.build_final_track(segments, 7.2, root / "work", root / "track.wav")
                 self.assertEqual(stretch.call_count, 13)
 
-    def test_post_stretch_silence_is_removed_without_cutting_speech(self):
+    def test_post_slowdown_added_silence_is_removed_without_cutting_speech(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.wav"
-            audio_fx.write_wav(source, tone(1.10), 24000)
-            seg = Segment(0, 0.0, .75, "line", "বাংলা", tts_audio_path=source)
-            engine = SyncEngine(max_workers=1, prefer_rubberband=False)
+            audio_fx.write_wav(source, tone(.90), 24000)
+            seg = Segment(0, 0.0, 1.0, "line", "বাংলা", tts_audio_path=source)
+            engine = SyncEngine(max_workers=1, prefer_rubberband=False, borrow_silence_ms=0)
 
             def fake_ffmpeg(command, **_kwargs):
-                # Filter added 150 ms tail; 50 ms must be removed to fit.
-                audio_fx.write_wav(command[-1], np.r_[tone(.90), np.zeros(3600, np.float32)], 24000)
+                audio_fx.write_wav(command[-1], np.r_[tone(.96), np.zeros(3600, np.float32)], 24000)
 
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg", side_effect=fake_ffmpeg):
                 engine.build_final_track([seg], 1.5, root, root / "track.wav")
             clip, _ = audio_fx.read_wav(seg.stretched_audio_path)
             self.assertEqual(engine.last_stats["unplaced"], 0)
             self.assertLessEqual(seg.stretched_duration, 1.0 + 1 / 24000)
-            self.assertAlmostEqual(seg.sync_trimmed_tail_seconds, .05, places=3)
-            np.testing.assert_allclose(clip[:int(.90 * 24000)], tone(.90), atol=1e-4)
+            self.assertAlmostEqual(seg.sync_trimmed_tail_seconds, .125, places=3)
+            np.testing.assert_allclose(clip[:int(.96 * 24000)], tone(.96), atol=1e-4)
 
     def test_voiced_overrun_is_never_cut_to_make_it_fit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -112,12 +111,14 @@ class TestSyncPreparedClipReuse(unittest.TestCase):
             source = root / "source.wav"
             audio_fx.write_wav(source, tone(1.10), 24000)
             seg = Segment(0, 0.0, .75, "line", "বাংলা", tts_audio_path=source)
-            engine = SyncEngine(max_workers=1, prefer_rubberband=False)
-            with mock.patch("proxmax.sync_engine.run_ffmpeg", side_effect=lambda command, **_: audio_fx.write_wav(command[-1], tone(1.05), 24000)):
+            engine = SyncEngine(max_workers=1, prefer_rubberband=False, borrow_silence_ms=0)
+            with mock.patch("proxmax.sync_prepare.run_ffmpeg") as render:
                 engine.build_final_track([seg], 1.5, root, root / "track.wav")
-            self.assertEqual(engine.last_stats["unplaced"], 1)
-            self.assertIsNone(seg.placed_duration)
-            self.assertAlmostEqual(seg.stretched_duration, 1.05, places=3)
+            render.assert_not_called()
+            self.assertEqual(engine.last_stats["unplaced"], 0)
+            self.assertAlmostEqual(seg.placed_duration, 1.10, places=3)
+            self.assertGreater(seg.video_added_seconds, 0)
+            self.assertEqual(seg.tempo_used, 1)
 
 
 if __name__ == "__main__":

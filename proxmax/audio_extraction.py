@@ -97,8 +97,13 @@ class AudioExtractor:
                 "-ac", "1",                  # mono
                 "-ar", str(self.sample_rate),
             ]
+            # WAV carries no stream start timestamp. Preserve the audio's
+            # offset relative to the container by padding its initial PTS with
+            # silence, rather than shifting late source speech to time zero.
+            filters = ["aresample=first_pts=0"]
             if self.audio_filter == "highpass60":
-                cmd += ["-af", "highpass=f=60"]
+                filters.append("highpass=f=60")
+            cmd += ["-af", ",".join(filters)]
             cmd += ["-c:a", "pcm_s16le", str(output_wav)]
             return cmd
 

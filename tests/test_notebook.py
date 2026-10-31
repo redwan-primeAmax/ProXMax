@@ -51,6 +51,49 @@ class TestNotebookRequirements(unittest.TestCase):
             if cell.get("cell_type") == "code":
                 compile("".join(cell.get("source", [])), f"notebook cell {index}", "exec")
 
+    def test_pull_failure_stops_and_updated_imports_require_restart(self):
+        nb = json.loads((REPO_ROOT / "notebook" / "ProXMax_Colab.ipynb").read_text(encoding="utf-8"))
+        setup = "".join(nb["cells"][4]["source"])
+        failure = subprocess.CalledProcessError(1, ["git", "pull"])
+        with mock.patch("pathlib.Path.exists", return_value=True), \
+             mock.patch("subprocess.run", side_effect=[types.SimpleNamespace(stdout="old"), failure]) as run, \
+             mock.patch("os.chdir") as chdir, \
+             self.assertRaisesRegex(RuntimeError, "clone/pull"):
+            exec(setup, {})
+        self.assertTrue(run.call_args.kwargs["check"])
+        chdir.assert_not_called()
+
+        scope = {}
+        results = [types.SimpleNamespace(stdout="old"), types.SimpleNamespace(),
+                   types.SimpleNamespace(stdout="new")]
+        with mock.patch("pathlib.Path.exists", return_value=True), \
+             mock.patch("subprocess.run", side_effect=results) as run, \
+             mock.patch("os.chdir") as chdir:
+            with self.assertRaisesRegex(RuntimeError, "Restart session"):
+                exec(setup, scope)
+            self.assertTrue(scope["_PROXMAX_RESTART_REQUIRED"])
+            self.assertEqual(run.call_count, 3)
+            with self.assertRaisesRegex(RuntimeError, "Restart session"):
+                exec(setup, scope)
+            self.assertEqual(run.call_count, 3)  # retry cannot bypass the restart
+            with self.assertRaisesRegex(RuntimeError, "restart"):
+                exec("".join(nb["cells"][10]["source"]), scope)
+            chdir.assert_not_called()
+
+    def test_force_option_preserves_yaml_skip_setting_by_default(self):
+        nb = json.loads((REPO_ROOT / "notebook" / "ProXMax_Colab.ipynb").read_text(encoding="utf-8"))
+        source = "".join(nb["cells"][10]["source"])
+        summary = types.SimpleNamespace(succeeded=[], skipped=[], failed=[])
+        for configured, force in ((False, False), (True, False), (True, True)):
+            with self.subTest(configured=configured, force=force):
+                cfg = AppConfig(skip_existing=configured)
+                cell = source.replace("FORCE_REPROCESS = False", f"FORCE_REPROCESS = {force}")
+                with mock.patch("proxmax.config.AppConfig.from_yaml", return_value=cfg), \
+                     mock.patch("proxmax.pipeline.run_Single_or_batch", return_value=summary), \
+                     mock.patch("proxmax.utils.setup_logging"):
+                    exec(cell, {})
+                self.assertEqual(cfg.skip_existing, configured and not force)
+
     def test_every_python_module_is_at_most_400_lines(self):
         excluded = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
         oversized = []

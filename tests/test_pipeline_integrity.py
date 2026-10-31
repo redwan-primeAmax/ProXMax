@@ -126,7 +126,7 @@ class TestSpeechAccounting(unittest.TestCase):
 
 
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
-class TestRewriteFallbackOrchestration(unittest.TestCase):
+class TestNoRewriteOrchestration(unittest.TestCase):
     def test_silent_tts_is_retried_before_final_sync(self):
         class Extractor:
             def extract(self, source, target, **_kwargs):
@@ -157,6 +157,8 @@ class TestRewriteFallbackOrchestration(unittest.TestCase):
                         make_audio(path, .3)
                     seg.tts_audio_path, seg.tts_duration = path, .3
         class Muxer:
+            def video_frame_rate(self, source): return 25
+            def ensure_picture_duration(self, source, required, work, fps): return source
             def mux(self, source, audio, output, **_kwargs):
                 Path(output).write_bytes(b"stub")
         with tempfile.TemporaryDirectory() as tmp:
@@ -205,6 +207,8 @@ class TestRewriteFallbackOrchestration(unittest.TestCase):
                     make_audio(path, duration)
                     seg.tts_audio_path, seg.tts_duration = path, duration
         class Muxer:
+            def video_frame_rate(self, source): return 25
+            def ensure_picture_duration(self, source, required, work, fps): return source
             def mux(self, source, audio, output, **_kwargs):
                 Path(output).write_bytes(b"stub")
         pipeline = DubbingPipeline.__new__(DubbingPipeline)
@@ -217,20 +221,18 @@ class TestRewriteFallbackOrchestration(unittest.TestCase):
             result = pipeline._run_steps(root / "video.mp4", root, root / "out.mp4")
         return pipeline, result
 
-    def test_rejected_or_failed_rewrite_still_uses_uncapped_fallback(self):
+    def test_overlong_audio_never_calls_rewrite_and_uses_picture_repetition(self):
         for mode in ("rejected", "error"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
                 pipeline, (segments, _timings, stats) = self._run(Path(tmp), mode)
-                self.assertEqual(pipeline.translator.calls, 1)
-                self.assertEqual(stats["tts_fit_retry"]["retry_failed"], [0])
+                self.assertEqual(pipeline.translator.calls, 0)
+                self.assertNotIn("tts_fit_retry", stats)
                 self.assertEqual(stats["sync"]["unplaced"], 0)
                 self.assertEqual(stats["sync"]["overlaps"], 0)
-                self.assertIn(0, stats["tts_fit_retry"]["still_unfit_before_fallback"])
-                self.assertEqual(stats["tts_fit_retry"]["still_unfit_after_sync"], [])
                 self.assertEqual(segments[0].text_bn, "আমাদের কাছে ১২৬ ওভিআর আছে।")
                 self.assertTrue(all(s.placed_duration for s in segments))
-                self.assertGreater(segments[0].tempo_used, 1.2)
-                self.assertIn("measured unlimited-tempo", segments[0].sync_recovery)
+                self.assertEqual(segments[0].tempo_used, 1.0)
+                self.assertGreater(segments[0].video_added_seconds, 0)
 
 
 if __name__ == "__main__":

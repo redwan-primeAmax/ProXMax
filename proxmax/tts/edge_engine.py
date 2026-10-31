@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import audio_fx
-from ..config import DEFAULT_TTS_CONCURRENCY
+from ..config import DEFAULT_TTS_CONCURRENCY, safe_tts_rate
 from ..models import Segment
 from ..text_utils import prepare_for_speech
 from ..utils import FFmpegError, ensure_tool, get_logger, run_ffmpeg
@@ -52,7 +52,7 @@ class EdgeTTSEngine(BaseTTSEngine):
         self.voice = voice
         #: ব্যর্থ ভয়েস হলে এই লিঙ্গের বিকল্পই খোঁজা হবে (নারী কণ্ঠ কখনো জোর করে বসবে না)
         self.gender = (gender or "male").lower()
-        self.rate = rate
+        self.rate = safe_tts_rate(rate)
         self.volume = volume
         self.pitch = pitch
         self.concurrency = max(1, int(concurrency))
@@ -226,7 +226,7 @@ class EdgeTTSEngine(BaseTTSEngine):
                 await communicate.save(str(mp3_path))
                 if not mp3_path.is_file() or mp3_path.stat().st_size == 0:
                     raise TTSError("edge-tts খালি অডিও ফেরত দিয়েছে (NoAudioReceived)")
-                duration = await asyncio.to_thread(self._convert_and_finalize, mp3_path, wav_path)
+                duration = await asyncio.to_thread(self._convert_and_finalize, mp3_path, wav_path, seg)
                 seg.tts_audio_path = wav_path
                 seg.tts_duration = duration
                 return
@@ -238,11 +238,12 @@ class EdgeTTSEngine(BaseTTSEngine):
         seg.tts_audio_path = None
         seg.tts_duration = None
 
-    def _convert_and_finalize(self, mp3_path: Path, wav_path: Path) -> float:
+    def _convert_and_finalize(self, mp3_path: Path, wav_path: Path,
+                              seg: Optional[Segment] = None) -> float:
         """Convert, postprocess and measure a clip outside the network event loop."""
         self._to_wav(mp3_path, wav_path)
         clip, rate = audio_fx.read_wav(wav_path)
-        final = self._finalize(clip)
+        final = self._finalize(clip, seg)
         actual_rate = rate or self.sample_rate
         audio_fx.write_wav(wav_path, final, actual_rate)
         return final.size / float(actual_rate)

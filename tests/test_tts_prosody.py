@@ -80,7 +80,7 @@ class TestMaleVoiceAndGaps(unittest.TestCase):
         self.assertLess(final.size, padded.size)
         self.assertAlmostEqual(final.size / sr, 1.04, delta=0.12)
 
-    def test_trimming_can_be_disabled(self):
+    def test_legacy_flag_cannot_disable_required_silence_trimming(self):
         from proxmax.tts.base import BaseTTSEngine
 
         class _Engine(BaseTTSEngine):
@@ -93,7 +93,8 @@ class TestMaleVoiceAndGaps(unittest.TestCase):
         sr = 24000
         audio = np.zeros(int(1.5 * sr), dtype=np.float32)
         audio[int(0.4 * sr):int(0.9 * sr)] = 0.4
-        self.assertEqual(engine._finalize(audio).size, audio.size)
+        self.assertTrue(engine.trim_silence)
+        self.assertLess(engine._finalize(audio).size, audio.size)
 
     # ---- slow short clips without expanding text -------------------------
     def test_short_clip_is_slowed_but_does_not_fill_the_whole_slot(self):
@@ -105,14 +106,14 @@ class TestMaleVoiceAndGaps(unittest.TestCase):
     def test_slowdown_respects_the_ninety_percent_floor(self):
         self.assertEqual(compute_tempo(7.0, 12.0), 0.90)
 
-    def test_legacy_extension_only_applies_if_slowdown_is_disabled(self):
+    def test_legacy_flags_cannot_disable_required_slowdown(self):
         self.assertEqual(
             compute_tempo(2.0, 2.5, slow_down_short_clips=False, fill_extension=0.0),
-            1.0,
+            0.90,
         )
 
-    def test_no_slowdown_for_a_clip_longer_than_its_slot(self):
-        self.assertGreater(compute_tempo(3.0, 2.4), 1.0)
+    def test_long_clip_is_never_sped_up(self):
+        self.assertEqual(compute_tempo(3.0, 2.4), 1.0)
 
 
 class TestEdgeVoiceResolution(unittest.TestCase):

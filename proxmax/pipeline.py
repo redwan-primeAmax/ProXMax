@@ -93,8 +93,10 @@ class DubbingPipeline(
             prefer_rubberband=cfg.prefer_rubberband,
             fill_extension=cfg.fill_extension,
             silence_pad_ms=cfg.tts_trim_pad_ms,
+            video_max_speed=cfg.video_max_speed,
         )
-        self.muxer = VideoMuxer(audio_bitrate=cfg.audio_bitrate, use_hwaccel=cfg.use_hwaccel)
+        self.muxer = VideoMuxer(audio_bitrate=cfg.audio_bitrate, use_hwaccel=cfg.use_hwaccel,
+                                video_workers=cfg.video_workers)
 
         # ব্যাচ জুড়ে একবারই তৈরি হয়
         self._tts: Optional[BaseTTSEngine] = None

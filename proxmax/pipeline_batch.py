@@ -46,10 +46,10 @@ class PipelineBatchMixin:
         cfg = self.config
         logger.info("=" * 70)
         logger.info(
-            "ব্যাচ শুরু: %dটি ভিডিও | STT=%s | অনুবাদ=%s | কণ্ঠ=বিল্ট-ইন %s (%s) | tempo %.2f–%.2f",
+            "ব্যাচ শুরু: %dটি ভিডিও | faster-whisper=%s | অনুবাদ=%s | কণ্ঠ=%s (%s) | "
+            "speech tempo %.2f–1.00; video সর্বোচ্চ %.2f×",
             len(videos), cfg.whisper_model, self.translator.describe(),
-            cfg.resolved_tts_voice, cfg.tts_gender,
-            cfg.min_tempo, cfg.max_tempo,
+            cfg.resolved_tts_voice, cfg.tts_gender, cfg.min_tempo, cfg.video_max_speed,
         )
         logger.info("=" * 70)
 

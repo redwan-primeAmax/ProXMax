@@ -68,8 +68,22 @@ class Segment:
     sync_tempo_cap_measured: bool = False
     #: Actual dub start; ``start``/``end`` remain the original source timestamps.
     placed_start: Optional[float] = None
-    #: How an initially unplaced clip was recovered (for review/reporting).
+    #: Timing/speech safeguard or recovery message for review.
     sync_recovery: Optional[str] = None
+    #: TTS-stage silence trim is always applied before sync calculations.
+    tts_silence_trimmed: bool = False
+    tts_raw_duration: Optional[float] = None
+    tts_trimmed_head_seconds: float = 0.0
+    tts_trimmed_internal_seconds: float = 0.0
+    tts_trimmed_tail_seconds: float = 0.0
+    tts_trimmed_internal_cuts: int = 0
+    #: Original and retimed video window details, populated by sync.
+    video_source_start: Optional[float] = None
+    video_source_end: Optional[float] = None
+    video_window_start: Optional[float] = None
+    video_window_end: Optional[float] = None
+    video_speed: float = 1.0
+    video_added_seconds: float = 0.0
 
     @property
     def actual_start(self) -> float:
